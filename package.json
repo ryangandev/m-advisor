@@ -4,16 +4,21 @@
   "description": "Discord Bot - M Advisor (测马军师)",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "dev": "ts-node src/index.ts",
+    "build": "tsc",
+    "start": "node dist/src/index.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "devDependencies": {
-    "typescript": "^5.3.3"
+    "@types/node": "^25.3.5",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3"
   },
   "dependencies": {
-    "discord.js": "^14.14.1",
-    "dotenv": "^16.3.1"
+    "discord.js": "^14.25.1",
+    "dotenv": "^17.3.1"
   }
 }
