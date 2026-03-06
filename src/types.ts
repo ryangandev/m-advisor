@@ -10,6 +10,11 @@ export interface RiotAccount {
   tagLine: string;
 }
 
+export interface ServerBinding {
+  discordUserId: string;
+  accounts: RiotAccount[];
+}
+
 export interface Summoner {
   id: string;
   accountId: string;
@@ -31,6 +36,12 @@ export interface RankedEntry {
 export interface BotCommand {
   data: SlashCommandBuilder;
   execute: (interaction: ChatInputCommandInteraction) => Promise<void>;
+}
+
+export interface BotEvent {
+  name: string;
+  once?: boolean;
+  execute: (...args: unknown[]) => Promise<void> | void;
 }
 
 declare module "discord.js" {

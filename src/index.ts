@@ -3,15 +3,9 @@ import { readdirSync } from "node:fs";
 import path from "node:path";
 import { Client, Collection, GatewayIntentBits } from "discord.js";
 import { loadCommands } from "./handlers/commandHandler";
-import { BotCommand } from "./types";
+import { BotCommand, BotEvent } from "./types";
 
 dotenv.config();
-
-type BotEvent = {
-  name: string;
-  once?: boolean;
-  execute: (...args: unknown[]) => Promise<void> | void;
-};
 
 const client = new Client({
   intents: [
