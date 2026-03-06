@@ -1,7 +1,9 @@
 import fs from "node:fs";
+import { spawn } from "node:child_process";
 import { Client, VoiceChannel } from "discord.js";
 import {
   AudioPlayerStatus,
+  StreamType,
   VoiceConnectionStatus,
   createAudioPlayer,
   createAudioResource,
@@ -126,7 +128,19 @@ async function announce(
     ttsPath = generateTTS(text, style);
 
     const player = createAudioPlayer();
-    const resource = createAudioResource(ttsPath);
+
+    // Convert AIFF → raw PCM via ffmpeg so Discord can play it
+    const ffmpeg = spawn("ffmpeg", [
+      "-i", ttsPath,
+      "-f", "s16le",
+      "-ar", "48000",
+      "-ac", "2",
+      "pipe:1",
+    ], { stdio: ["ignore", "pipe", "ignore"] });
+
+    const resource = createAudioResource(ffmpeg.stdout!, {
+      inputType: StreamType.Raw,
+    });
 
     connection.subscribe(player);
     player.play(resource);
