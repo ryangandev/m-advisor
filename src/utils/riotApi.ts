@@ -49,7 +49,7 @@ export async function getSummonerByPuuid(puuid: string): Promise<Summoner> {
   return riotFetch<Summoner>(url);
 }
 
-export async function getRankedEntries(summonerId: string): Promise<RankedEntry[]> {
-  const url = `${NA1_BASE_URL}/lol/league/v4/entries/by-summoner/${encodeURIComponent(summonerId)}`;
+export async function getRankedEntries(puuid: string): Promise<RankedEntry[]> {
+  const url = `${NA1_BASE_URL}/lol/league/v4/entries/by-puuid/${encodeURIComponent(puuid)}`;
   return riotFetch<RankedEntry[]>(url);
 }

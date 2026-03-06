@@ -40,7 +40,7 @@ const profileCommand: BotCommand = {
     try {
       const account = await getAccountByRiotId(gameName, tagLine);
       const summoner = await getSummonerByPuuid(account.puuid);
-      const rankedEntries = await getRankedEntries(summoner.id);
+      const rankedEntries = await getRankedEntries(account.puuid);
       const profileEmbed = buildProfileEmbed(riotId, summoner, rankedEntries);
 
       await interaction.editReply({ embeds: [profileEmbed] });
