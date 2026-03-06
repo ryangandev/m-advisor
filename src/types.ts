@@ -44,6 +44,33 @@ export interface BotEvent {
   execute: (...args: unknown[]) => Promise<void> | void;
 }
 
+export interface ParticipantStats {
+  puuid: string;
+  summonerName: string;
+  kills: number;
+  deaths: number;
+  assists: number;
+  win: boolean;
+  teamId: number;
+}
+
+export interface MatchDetail {
+  metadata: { matchId: string; participants: string[] };
+  info: {
+    queueId: number;
+    gameDuration: number;
+    participants: Array<{
+      puuid: string;
+      riotIdGameName: string;
+      kills: number;
+      deaths: number;
+      assists: number;
+      win: boolean;
+      teamId: number;
+    }>;
+  };
+}
+
 declare module "discord.js" {
   interface Client {
     commands: Collection<string, BotCommand>;
