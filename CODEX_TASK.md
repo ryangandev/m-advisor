@@ -1,93 +1,134 @@
-# Codex Task: Diagnose and Fix Voice Audio
+# Codex Task: Replace macOS `say` TTS with Azure Cognitive Services TTS
 
-## Problem
-Bot joins Discord VC successfully but plays no audio. Error: "The operation was aborted"
-from `entersState(player, AudioPlayerStatus.Idle, 30_000)` — player never reaches Idle.
+## Goal
+Replace the current `generateTTS()` in `src/utils/tts.ts` with Azure TTS REST API.
+The function must become async. Update all callers accordingly.
+The bot should still work exactly the same — just use Azure instead of macOS `say`.
 
-We've tried:
-1. Raw PCM via ffmpeg pipe → failed
-2. OGG Opus via createReadStream + StreamType.OggOpus → failed
-3. WAV file + ffmpeg-static + StreamType.Arbitrary → still failing
+## Why
+`say` is a synchronous blocking call that drops the Discord voice connection.
+Azure TTS is async (non-blocking) and supports Chinese (Mandarin, Cantonese) + English.
 
-## Diagnosis Tasks
+## Implementation
 
-### Task 1: Check all voice dependencies
-Run these diagnostic commands and show the output:
+### 1. Install dependencies
 ```bash
-node -e "const o = require('@discordjs/opus'); console.log('opus ok:', typeof o.OpusEncoder)"
-node -e "require('tweetnacl'); console.log('tweetnacl ok')"
-node -e "require('sodium-native'); console.log('sodium ok')" 2>&1 || echo "sodium not installed"
-node -e "const f = require('ffmpeg-static'); console.log('ffmpeg-static:', f)"
+npm install node-fetch@3
 ```
+Actually, use Node.js built-in `fetch` (Node 18+ has it). No extra deps needed.
 
-### Task 2: Test WAV generation
-```bash
-node -e "
-const { execSync } = require('child_process');
-const { existsSync, statSync } = require('fs');
-const os = require('os');
-const path = require('path');
-const f = require('ffmpeg-static');
-
-const aiff = path.join(os.tmpdir(), 'test-diag.aiff');
-const wav = path.join(os.tmpdir(), 'test-diag.wav');
-execSync('/usr/bin/say -v Samantha -o ' + aiff + ' \"Hello world\"');
-execSync(f + ' -y -i ' + aiff + ' -ar 48000 -ac 2 ' + wav);
-console.log('aiff exists:', existsSync(aiff), statSync(aiff).size);
-console.log('wav exists:', existsSync(wav), statSync(wav).size);
-"
-```
-
-### Task 3: Based on diagnosis, apply the correct fix
-
-**If @discordjs/opus fails to load:**
-- Run: `npm install opusscript` as fallback
-- OR: `npm rebuild @discordjs/opus`
-
-**If sodium/tweetnacl is an issue:**
-- Run: `npm install sodium-native`
-
-**Regardless of above — try this alternative playback approach in testvc.ts:**
-
-Replace the current resource creation with a child_process approach using the explicit ffmpeg-static path:
+### 2. Voice mapping
+Define voices for Chinese and English:
 ```typescript
-import { spawn } from 'node:child_process';
-import ffmpegStatic from 'ffmpeg-static';
+const VOICES = {
+  // Chinese (Mandarin)
+  zh: 'zh-CN-XiaoxiaoNeural',
+  // Cantonese
+  'zh-HK': 'zh-HK-HiuGaaiNeural',
+  // English
+  en: 'en-US-AriaNeural',
+  // Legacy style aliases (keep for announcer command compatibility)
+  sweet: 'zh-CN-XiaoxiaoNeural',
+  old: 'zh-CN-YunxiNeural',
+} as const;
+```
 
-// Instead of createAudioResource(ttsPath, ...)
-// Do this:
-const ffmpegPath = ffmpegStatic ?? 'ffmpeg';
-const ffmpegProcess = spawn(ffmpegPath, [
-  '-hide_banner',
-  '-loglevel', 'error', 
-  '-i', ttsPath,
-  '-f', 's16le',
-  '-ar', '48000',
-  '-ac', '2',
-  'pipe:1',
-], { stdio: ['ignore', 'pipe', 'pipe'] });
+### 3. Rewrite `src/utils/tts.ts`
+```typescript
+import { writeFileSync } from "node:fs";
+import path from "node:path";
+import os from "node:os";
+import ffmpegStatic from "ffmpeg-static";
+import { spawn } from "node:child_process";
 
-ffmpegProcess.stderr?.on('data', (d) => console.log('[ffmpeg]', d.toString()));
+const VOICES: Record<string, string> = {
+  sweet: "zh-CN-XiaoxiaoNeural",
+  old: "zh-CN-YunxiNeural",
+  zh: "zh-CN-XiaoxiaoNeural",
+  "zh-HK": "zh-HK-HiuGaaiNeural",
+  en: "en-US-AriaNeural",
+};
 
-const resource = createAudioResource(ffmpegProcess.stdout!, {
-  inputType: StreamType.Raw,
+export async function generateTTS(text: string, style: string = "sweet"): Promise<string> {
+  const voice = VOICES[style] ?? VOICES["sweet"];
+  const langCode = voice.slice(0, 5); // e.g. "zh-CN"
+
+  const key = process.env.AZURE_TTS_KEY;
+  const region = process.env.AZURE_TTS_REGION;
+  if (!key || !region) {
+    throw new Error("AZURE_TTS_KEY and AZURE_TTS_REGION must be set in .env");
+  }
+
+  const ssml = `<speak version='1.0' xml:lang='${langCode}'>
+    <voice xml:lang='${langCode}' name='${voice}'>${text}</voice>
+  </speak>`;
+
+  const response = await fetch(
+    `https://${region}.tts.speech.microsoft.com/cognitiveservices/v1`,
+    {
+      method: "POST",
+      headers: {
+        "Ocp-Apim-Subscription-Key": key,
+        "Content-Type": "application/ssml+xml",
+        "X-Microsoft-OutputFormat": "audio-16khz-128kbitrate-mono-mp3",
+        "User-Agent": "m-advisor",
+      },
+      body: ssml,
+    }
+  );
+
+  if (!response.ok) {
+    const msg = await response.text().catch(() => response.statusText);
+    throw new Error(`Azure TTS failed: ${response.status} ${msg}`);
+  }
+
+  const audioBuffer = Buffer.from(await response.arrayBuffer());
+  const base = path.join(os.tmpdir(), `tts-${Date.now()}`);
+  const mp3Path = `${base}.mp3`;
+  writeFileSync(mp3Path, audioBuffer);
+  return mp3Path;
+}
+```
+
+### 4. Update callers — generateTTS is now async
+
+In `src/commands/testvc.ts`:
+- Change `ttsPath = generateTTS(text, "sweet")` → `ttsPath = await generateTTS(text, "sweet")`
+- The outer execute function is already async, so this is fine
+
+In `src/services/gameMonitor.ts`:
+- Change `ttsPath = generateTTS(text, style)` → `ttsPath = await generateTTS(text, style)`
+
+### 5. Audio playback — use MP3 directly
+Since we now have MP3 (not WAV), use StreamType.Arbitrary with the file path directly:
+```typescript
+// Replace the ffmpeg spawn + StreamType.Raw approach with:
+import { createReadStream } from "node:fs";
+const resource = createAudioResource(mp3Path, {
+  inputType: StreamType.Arbitrary, // discord voice will use ffmpeg internally to decode MP3
 });
 ```
+Remove the `ffmpegProcess` spawn, `ffmpegProcess.kill()` in finally, and related imports.
 
-Also add these to the player in testvc.ts:
-```typescript
-player.on('stateChange', (o, n) => console.log(`[Player] ${o.status} → ${n.status}`));
-player.on('error', (e) => console.error('[Player error]', e.message, e.stack));
+### 6. Update .env.example
+Add:
+```
+# Azure Text-to-Speech
+AZURE_TTS_KEY=your_azure_speech_key_here
+AZURE_TTS_REGION=eastus
 ```
 
-And to the connection:
-```typescript
-connection.on('stateChange', (o, n) => console.log(`[Connection] ${o.status} → ${n.status}`));
-```
+### 7. Remove dead code
+- Remove unused `execFileSync`, `execSync` imports from tts.ts
+- Remove `afinfo` validation code if present (from previous Codex patch)
+- Remove the old `say`-based implementation entirely
 
-### Task 4: Apply same fix to gameMonitor.ts
+### 8. Build & verify
+Run `npm run build` — must pass with 0 TypeScript errors.
+Fix any type errors.
 
-### Task 5: Run `npm run build` and fix all TypeScript errors
-
-Do NOT remove testvc command.
-Do NOT touch .env, package.json scripts, or tsconfig.json.
+## Do NOT
+- Do not change `.env` (actual secrets file)
+- Do not change slash command logic
+- Do not remove `/testvc` command
+- Do not change tsconfig.json or package.json scripts

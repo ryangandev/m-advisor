@@ -14,8 +14,6 @@ import {
   joinVoiceChannel,
 } from "@discordjs/voice";
 import fs from "node:fs";
-import { spawn } from "node:child_process";
-import ffmpegStatic from "ffmpeg-static";
 import { BotCommand } from "../types";
 import { isAdmin } from "../utils/permissions";
 import { generateTTS } from "../utils/tts";
@@ -39,11 +37,11 @@ const testvcCommand: BotCommand = {
       return;
     }
 
-    // Generate TTS BEFORE joining VC so connection doesn't drop during blocking execSync
+    // Generate TTS before joining VC so the connection is only opened when audio is ready.
     const text = "Victory! Best player: not ry, with 8 kills, 2 deaths, and 5 assists. Worst player: Some Guy, with 1 kill, 12 deaths, and 0 assists.";
     let ttsPath: string | null = null;
     try {
-      ttsPath = generateTTS(text, "sweet");
+      ttsPath = await generateTTS(text, "sweet");
     } catch (err) {
       await interaction.reply({ content: `❌ TTS generation failed: ${err instanceof Error ? err.message : err}`, ephemeral: true });
       return;
@@ -57,8 +55,6 @@ const testvcCommand: BotCommand = {
       adapterCreator: voiceChannel.guild.voiceAdapterCreator,
       selfDeaf: false,
     });
-
-    let ffmpegProcess: ReturnType<typeof spawn> | null = null;
 
     try {
       await entersState(connection, VoiceConnectionStatus.Ready, 15_000);
@@ -75,29 +71,8 @@ const testvcCommand: BotCommand = {
         console.error("[Player error]", e.message, e.stack);
       });
 
-      const ffmpegPath = ffmpegStatic ?? "ffmpeg";
-      ffmpegProcess = spawn(
-        ffmpegPath,
-        [
-          "-hide_banner",
-          "-loglevel",
-          "error",
-          "-i",
-          ttsPath,
-          "-f",
-          "s16le",
-          "-ar",
-          "48000",
-          "-ac",
-          "2",
-          "pipe:1",
-        ],
-        { stdio: ["ignore", "pipe", "pipe"] },
-      );
-      ffmpegProcess.stderr?.on("data", (d) => console.log("[ffmpeg]", d.toString()));
-
-      const resource = createAudioResource(ffmpegProcess.stdout!, {
-        inputType: StreamType.Raw,
+      const resource = createAudioResource(ttsPath, {
+        inputType: StreamType.Arbitrary,
       });
       connection.subscribe(player);
       player.play(resource);
@@ -110,9 +85,6 @@ const testvcCommand: BotCommand = {
       await interaction.editReply({ content: `❌ Failed: ${msg}` });
     } finally {
       connection.destroy();
-      if (ffmpegProcess && !ffmpegProcess.killed) {
-        ffmpegProcess.kill("SIGKILL");
-      }
       if (ttsPath && fs.existsSync(ttsPath)) fs.unlinkSync(ttsPath);
     }
   },

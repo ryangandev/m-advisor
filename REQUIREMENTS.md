@@ -107,7 +107,7 @@ Map<guildId, {
 | Language | TypeScript |
 | Discord framework | discord.js v14 |
 | Voice | `@discordjs/voice` + ffmpeg |
-| TTS | macOS `say` command (free, local) |
+| TTS | Azure Cognitive Services Text-to-Speech (REST API) |
 | Riot API | Official Riot Games API (dev key) |
 | Storage (Phase 1) | In-memory Map |
 | Storage (Phase 2) | SQLite / PostgreSQL (future) |
