@@ -39,6 +39,16 @@ const testvcCommand: BotCommand = {
       return;
     }
 
+    // Generate TTS BEFORE joining VC so connection doesn't drop during blocking execSync
+    const text = "Victory! Best player: not ry, with 8 kills, 2 deaths, and 5 assists. Worst player: Some Guy, with 1 kill, 12 deaths, and 0 assists.";
+    let ttsPath: string | null = null;
+    try {
+      ttsPath = generateTTS(text, "sweet");
+    } catch (err) {
+      await interaction.reply({ content: `❌ TTS generation failed: ${err instanceof Error ? err.message : err}`, ephemeral: true });
+      return;
+    }
+
     await interaction.reply({ content: `Joining ${voiceChannel.name}...`, ephemeral: true });
 
     const connection = joinVoiceChannel({
@@ -48,14 +58,11 @@ const testvcCommand: BotCommand = {
       selfDeaf: false,
     });
 
-    let ttsPath: string | null = null;
     let ffmpegProcess: ReturnType<typeof spawn> | null = null;
 
     try {
       await entersState(connection, VoiceConnectionStatus.Ready, 15_000);
-
-      const text = "Victory! Best player: not ry, with 8 kills, 2 deaths, and 5 assists. Worst player: Some Guy, with 1 kill, 12 deaths, and 0 assists.";
-      ttsPath = generateTTS(text, "sweet");
+      console.log("[testvc] Connection ready, starting playback immediately");
 
       const player = createAudioPlayer();
       connection.on("stateChange", (o, n) => {

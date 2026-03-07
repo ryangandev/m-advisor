@@ -114,20 +114,28 @@ async function announce(
     return;
   }
 
+  // Generate TTS BEFORE joining VC — execSync blocks the event loop,
+  // which can drop the voice connection if called after joining
+  const style = getAnnouncerState(guildId).voiceStyle;
+  let ttsPath: string | null = null;
+  try {
+    ttsPath = generateTTS(text, style);
+  } catch (error) {
+    console.error("TTS generation failed:", error);
+    return;
+  }
+
   const connection = joinVoiceChannel({
     channelId: voiceChannelId,
     guildId,
     adapterCreator: channel.guild.voiceAdapterCreator,
   });
 
-  let ttsPath: string | null = null;
   let ffmpegProcess: ReturnType<typeof spawn> | null = null;
 
   try {
     await entersState(connection, VoiceConnectionStatus.Ready, 5_000);
-
-    const style = getAnnouncerState(guildId).voiceStyle;
-    ttsPath = generateTTS(text, style);
+    console.log("[announce] Connection ready, playing TTS immediately");
 
     const player = createAudioPlayer();
     connection.on("stateChange", (o, n) => {
