@@ -1,109 +1,93 @@
-# Codex Task: Fix Voice Audio Playback
+# Codex Task: Diagnose and Fix Voice Audio
 
 ## Problem
-The bot successfully joins a Discord voice channel but plays no audio. The error is:
-"The operation was aborted" — from `entersState(player, AudioPlayerStatus.Idle, 30_000)` timing out.
+Bot joins Discord VC successfully but plays no audio. Error: "The operation was aborted"
+from `entersState(player, AudioPlayerStatus.Idle, 30_000)` — player never reaches Idle.
 
-This means the player either:
-- Immediately errors without reaching Playing state
-- Gets stuck and never transitions to Idle
+We've tried:
+1. Raw PCM via ffmpeg pipe → failed
+2. OGG Opus via createReadStream + StreamType.OggOpus → failed
+3. WAV file + ffmpeg-static + StreamType.Arbitrary → still failing
 
-## Current approach (not working)
-1. macOS `say -v Samantha -o file.aiff "text"` → generates AIFF
-2. `ffmpeg -y -i file.aiff -c:a libopus -ar 48000 file.ogg` → converts to OGG Opus
-3. `createAudioResource(createReadStream(oggPath), { inputType: StreamType.OggOpus })` → fails silently
+## Diagnosis Tasks
 
-## Files to fix
-- `src/commands/testvc.ts` — the test command
-- `src/services/gameMonitor.ts` — production announcement
-- `src/utils/tts.ts` — TTS generation
+### Task 1: Check all voice dependencies
+Run these diagnostic commands and show the output:
+```bash
+node -e "const o = require('@discordjs/opus'); console.log('opus ok:', typeof o.OpusEncoder)"
+node -e "require('tweetnacl'); console.log('tweetnacl ok')"
+node -e "require('sodium-native'); console.log('sodium ok')" 2>&1 || echo "sodium not installed"
+node -e "const f = require('ffmpeg-static'); console.log('ffmpeg-static:', f)"
+```
 
-## What to investigate and fix
+### Task 2: Test WAV generation
+```bash
+node -e "
+const { execSync } = require('child_process');
+const { existsSync, statSync } = require('fs');
+const os = require('os');
+const path = require('path');
+const f = require('ffmpeg-static');
 
-### Step 1: Check @discordjs/opus installation
-Run: `node -e "const opus = require('@discordjs/opus'); console.log('opus ok', opus.OpusEncoder)"` in the project directory.
-If it errors, run `npm rebuild @discordjs/opus` and check again.
+const aiff = path.join(os.tmpdir(), 'test-diag.aiff');
+const wav = path.join(os.tmpdir(), 'test-diag.wav');
+execSync('/usr/bin/say -v Samantha -o ' + aiff + ' \"Hello world\"');
+execSync(f + ' -y -i ' + aiff + ' -ar 48000 -ac 2 ' + wav);
+console.log('aiff exists:', existsSync(aiff), statSync(aiff).size);
+console.log('wav exists:', existsSync(wav), statSync(wav).size);
+"
+```
 
-### Step 2: Install ffmpeg-static for reliable ffmpeg path
-Run: `npm install ffmpeg-static`
-This ensures @discordjs/voice can always find ffmpeg regardless of PATH.
+### Task 3: Based on diagnosis, apply the correct fix
 
-After installing, add to src/utils/ffmpeg-setup.ts:
+**If @discordjs/opus fails to load:**
+- Run: `npm install opusscript` as fallback
+- OR: `npm rebuild @discordjs/opus`
+
+**If sodium/tweetnacl is an issue:**
+- Run: `npm install sodium-native`
+
+**Regardless of above — try this alternative playback approach in testvc.ts:**
+
+Replace the current resource creation with a child_process approach using the explicit ffmpeg-static path:
 ```typescript
+import { spawn } from 'node:child_process';
 import ffmpegStatic from 'ffmpeg-static';
-import { setFfmpegPath } from '@discordjs/voice';
 
-if (ffmpegStatic) {
-  setFfmpegPath(ffmpegStatic);
-  console.log('ffmpeg path set:', ffmpegStatic);
-}
-```
+// Instead of createAudioResource(ttsPath, ...)
+// Do this:
+const ffmpegPath = ffmpegStatic ?? 'ffmpeg';
+const ffmpegProcess = spawn(ffmpegPath, [
+  '-hide_banner',
+  '-loglevel', 'error', 
+  '-i', ttsPath,
+  '-f', 's16le',
+  '-ar', '48000',
+  '-ac', '2',
+  'pipe:1',
+], { stdio: ['ignore', 'pipe', 'pipe'] });
 
-Then import this at the top of src/index.ts (before other imports):
-```typescript
-import './utils/ffmpeg-setup';
-```
+ffmpegProcess.stderr?.on('data', (d) => console.log('[ffmpeg]', d.toString()));
 
-### Step 3: Rewrite src/utils/tts.ts to output WAV instead of OGG
-WAV is simpler and @discordjs/voice handles it well via ffmpeg:
-```typescript
-import { execSync } from "node:child_process";
-import path from "node:path";
-import os from "node:os";
-import ffmpegStatic from 'ffmpeg-static';
-
-const VOICES = { sweet: "Samantha", old: "Albert" } as const;
-
-export function generateTTS(text: string, style: "sweet" | "old" = "sweet"): string {
-  const voice = VOICES[style];
-  const base = path.join(os.tmpdir(), `m-advisor-${Date.now()}`);
-  const aiffPath = `${base}.aiff`;
-  const wavPath = `${base}.wav`;
-  const ffmpeg = ffmpegStatic ?? 'ffmpeg';
-
-  const escaped = text.replace(/"/g, '\\"').replace(/`/g, '\\`');
-  execSync(`/usr/bin/say -v "${voice}" -o "${aiffPath}" "${escaped}"`);
-  execSync(`${ffmpeg} -y -i "${aiffPath}" -ar 48000 -ac 2 "${wavPath}" 2>/dev/null`);
-  
-  // Clean up aiff
-  try { require('node:fs').unlinkSync(aiffPath); } catch {}
-  
-  return wavPath;
-}
-```
-
-### Step 4: Rewrite announce in src/services/gameMonitor.ts
-Use StreamType.Arbitrary with the WAV file (let @discordjs/voice + ffmpeg handle conversion):
-```typescript
-import { StreamType } from '@discordjs/voice';
-
-// In announce function, replace resource creation with:
-const resource = createAudioResource(ttsPath, {
-  inputType: StreamType.Arbitrary,
+const resource = createAudioResource(ffmpegProcess.stdout!, {
+  inputType: StreamType.Raw,
 });
 ```
 
-Also add verbose logging in announce():
+Also add these to the player in testvc.ts:
 ```typescript
-connection.on('stateChange', (old, next) => {
-  console.log(`[Voice] Connection: ${old.status} → ${next.status}`);
-});
-
-player.on('stateChange', (old, next) => {
-  console.log(`[Voice] Player: ${old.status} → ${next.status}`);
-});
-
-player.on('error', (error) => {
-  console.error('[Voice] Player error:', error.message);
-});
+player.on('stateChange', (o, n) => console.log(`[Player] ${o.status} → ${n.status}`));
+player.on('error', (e) => console.error('[Player error]', e.message, e.stack));
 ```
 
-### Step 5: Same fix in src/commands/testvc.ts
-Apply the same resource creation approach (StreamType.Arbitrary + WAV file).
-Also add verbose state logging to both connection and player.
+And to the connection:
+```typescript
+connection.on('stateChange', (o, n) => console.log(`[Connection] ${o.status} → ${n.status}`));
+```
 
-### Step 6: Build and verify
-Run `npm run build` — fix all TypeScript errors.
+### Task 4: Apply same fix to gameMonitor.ts
 
-Do NOT remove the `testvc` command — it's needed for testing.
-Do NOT touch package.json scripts, tsconfig.json, or .env.
+### Task 5: Run `npm run build` and fix all TypeScript errors
+
+Do NOT remove testvc command.
+Do NOT touch .env, package.json scripts, or tsconfig.json.

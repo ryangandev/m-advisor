@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { spawn } from "node:child_process";
 import { Client, VoiceChannel } from "discord.js";
 import {
   AudioPlayerStatus,
@@ -9,6 +10,7 @@ import {
   entersState,
   joinVoiceChannel,
 } from "@discordjs/voice";
+import ffmpegStatic from "ffmpeg-static";
 import { getBinding } from "../store/bindingStore";
 import {
   getAnnouncerState,
@@ -119,6 +121,7 @@ async function announce(
   });
 
   let ttsPath: string | null = null;
+  let ffmpegProcess: ReturnType<typeof spawn> | null = null;
 
   try {
     await entersState(connection, VoiceConnectionStatus.Ready, 5_000);
@@ -127,18 +130,39 @@ async function announce(
     ttsPath = generateTTS(text, style);
 
     const player = createAudioPlayer();
-    connection.on("stateChange", (oldState, newState) => {
-      console.log(`[Voice] Connection: ${oldState.status} -> ${newState.status}`);
+    connection.on("stateChange", (o, n) => {
+      console.log(`[Connection] ${o.status} -> ${n.status}`);
     });
-    player.on("stateChange", (oldState, newState) => {
-      console.log(`[Voice] Player: ${oldState.status} -> ${newState.status}`);
+    player.on("stateChange", (o, n) => {
+      console.log(`[Player] ${o.status} -> ${n.status}`);
     });
-    player.on("error", (error) => {
-      console.error("[Voice] Player error:", error.message);
+    player.on("error", (e) => {
+      console.error("[Player error]", e.message, e.stack);
     });
 
-    const resource = createAudioResource(ttsPath, {
-      inputType: StreamType.Arbitrary,
+    const ffmpegPath = ffmpegStatic ?? "ffmpeg";
+    ffmpegProcess = spawn(
+      ffmpegPath,
+      [
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-i",
+        ttsPath,
+        "-f",
+        "s16le",
+        "-ar",
+        "48000",
+        "-ac",
+        "2",
+        "pipe:1",
+      ],
+      { stdio: ["ignore", "pipe", "pipe"] },
+    );
+    ffmpegProcess.stderr?.on("data", (d) => console.log("[ffmpeg]", d.toString()));
+
+    const resource = createAudioResource(ffmpegProcess.stdout!, {
+      inputType: StreamType.Raw,
     });
     connection.subscribe(player);
     player.play(resource);
@@ -148,6 +172,9 @@ async function announce(
     console.error("Voice announcement failed:", error);
   } finally {
     connection.destroy();
+    if (ffmpegProcess && !ffmpegProcess.killed) {
+      ffmpegProcess.kill("SIGKILL");
+    }
 
     if (ttsPath && fs.existsSync(ttsPath)) {
       try {
