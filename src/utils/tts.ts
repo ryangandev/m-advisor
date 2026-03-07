@@ -1,14 +1,27 @@
 import { execSync } from "node:child_process";
+import { unlinkSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import ffmpegStatic from "ffmpeg-static";
 
 const VOICES = { sweet: "Samantha", old: "Albert" } as const;
 
 export function generateTTS(text: string, style: "sweet" | "old" = "sweet"): string {
   const voice = VOICES[style];
-  const outputPath = path.join(os.tmpdir(), `m-advisor-${Date.now()}.aiff`);
-  const escapedText = text.replace(/"/g, '\\"');
+  const base = path.join(os.tmpdir(), `m-advisor-${Date.now()}`);
+  const aiffPath = `${base}.aiff`;
+  const wavPath = `${base}.wav`;
+  const ffmpeg = ffmpegStatic ?? "ffmpeg";
 
-  execSync(`say -v "${voice}" -o "${outputPath}" "${escapedText}"`);
-  return outputPath;
+  const escaped = text.replace(/"/g, '\\"').replace(/`/g, "\\`");
+  execSync(`/usr/bin/say -v "${voice}" -o "${aiffPath}" "${escaped}"`);
+  execSync(`${ffmpeg} -y -i "${aiffPath}" -ar 48000 -ac 2 "${wavPath}" 2>/dev/null`);
+
+  try {
+    unlinkSync(aiffPath);
+  } catch {
+    // Best-effort cleanup.
+  }
+
+  return wavPath;
 }

@@ -1,3 +1,4 @@
+import "./utils/ffmpeg-setup";
 import dotenv from "dotenv";
 import { readdirSync } from "node:fs";
 import path from "node:path";
