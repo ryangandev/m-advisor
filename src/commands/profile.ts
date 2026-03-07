@@ -6,6 +6,8 @@ import {
 import { getAccountByRiotId, getRankedEntries, getSummonerByPuuid } from "../utils/riotApi";
 import { buildErrorEmbed, buildProfileEmbed } from "../utils/embeds";
 import { BotCommand } from "../types";
+import { INVALID_RIOT_ID_MESSAGE, parseRiotId } from "../utils/riotId";
+import { getRiotUserErrorMessage } from "../utils/userFacingErrors";
 
 const profileCommand: BotCommand = {
   data: (new SlashCommandBuilder()
@@ -22,31 +24,26 @@ const profileCommand: BotCommand = {
     await interaction.deferReply();
 
     const riotId = interaction.options.getString("riotid", true).trim();
-    const parts = riotId.split("#");
+    const parsedRiotId = parseRiotId(riotId);
 
-    if (
-      parts.length !== 2 ||
-      parts[0].trim().length === 0 ||
-      parts[1].trim().length === 0
-    ) {
+    if (!parsedRiotId) {
       await interaction.editReply({
-        embeds: [buildErrorEmbed("Invalid Riot ID format. Use GameName#TAG (example: Faker#KR1).")],
+        embeds: [buildErrorEmbed(INVALID_RIOT_ID_MESSAGE)],
       });
       return;
     }
 
-    const [gameName, tagLine] = parts.map((part) => part.trim());
+    const { gameName, tagLine } = parsedRiotId;
 
     try {
       const account = await getAccountByRiotId(gameName, tagLine);
       const summoner = await getSummonerByPuuid(account.puuid);
       const rankedEntries = await getRankedEntries(account.puuid);
-      const profileEmbed = buildProfileEmbed(riotId, summoner, rankedEntries);
+      const profileEmbed = buildProfileEmbed(`${account.gameName}#${account.tagLine}`, summoner, rankedEntries);
 
       await interaction.editReply({ embeds: [profileEmbed] });
     } catch (error) {
-      const message = error instanceof Error ? error.message : "An unexpected error occurred.";
-      await interaction.editReply({ embeds: [buildErrorEmbed(message)] });
+      await interaction.editReply({ embeds: [buildErrorEmbed(getRiotUserErrorMessage(error))] });
     }
   },
 };

@@ -6,7 +6,6 @@ import {
 } from "discord.js";
 import { BotCommand } from "../types";
 import { buildErrorEmbed } from "../utils/embeds";
-import { isAdmin } from "../utils/permissions";
 import { setVoiceStyle } from "../store/announcerStore";
 
 const announcerCommand: BotCommand = {
@@ -25,14 +24,6 @@ const announcerCommand: BotCommand = {
     ) as SlashCommandOptionsOnlyBuilder) as SlashCommandBuilder,
 
   async execute(interaction: ChatInputCommandInteraction): Promise<void> {
-    if (!isAdmin(interaction)) {
-      await interaction.reply({
-        content: "You need Administrator permission to use this command.",
-        ephemeral: true,
-      });
-      return;
-    }
-
     const guildId = interaction.guildId;
     if (!guildId) {
       await interaction.reply({

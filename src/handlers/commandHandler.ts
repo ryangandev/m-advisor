@@ -3,9 +3,11 @@ import path from "node:path";
 import { REST, Routes } from "discord.js";
 import { BotCommand } from "../types";
 
+const RUNTIME_MODULE_EXTENSION = path.extname(__filename);
+
 export async function loadCommands(client: import("discord.js").Client): Promise<void> {
   const commandsPath = path.join(__dirname, "..", "commands");
-  const commandFiles = readdirSync(commandsPath).filter((file) => file.endsWith(".ts"));
+  const commandFiles = readdirSync(commandsPath).filter((file) => file.endsWith(RUNTIME_MODULE_EXTENSION));
 
   for (const file of commandFiles) {
     const filePath = path.join(commandsPath, file);
@@ -27,7 +29,7 @@ export async function registerCommands(): Promise<void> {
   }
 
   const commandsPath = path.join(__dirname, "..", "commands");
-  const commandFiles = readdirSync(commandsPath).filter((file) => file.endsWith(".ts"));
+  const commandFiles = readdirSync(commandsPath).filter((file) => file.endsWith(RUNTIME_MODULE_EXTENSION));
   const payload: ReturnType<BotCommand["data"]["toJSON"]>[] = [];
 
   for (const file of commandFiles) {

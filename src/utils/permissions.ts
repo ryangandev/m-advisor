@@ -1,5 +1,5 @@
-import { ChatInputCommandInteraction } from "discord.js";
+import { ChatInputCommandInteraction, PermissionFlagsBits } from "discord.js";
 
 export function isAdmin(interaction: ChatInputCommandInteraction): boolean {
-  return interaction.memberPermissions?.has("Administrator") ?? false;
+  return interaction.inGuild() && (interaction.memberPermissions?.has(PermissionFlagsBits.Administrator) ?? false);
 }

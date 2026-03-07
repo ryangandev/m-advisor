@@ -1,4 +1,3 @@
-import "./utils/ffmpeg-setup";
 import dotenv from "dotenv";
 import { readdirSync } from "node:fs";
 import path from "node:path";
@@ -7,6 +6,8 @@ import { loadCommands } from "./handlers/commandHandler";
 import { BotCommand, BotEvent } from "./types";
 
 dotenv.config();
+
+const RUNTIME_MODULE_EXTENSION = path.extname(__filename);
 
 const client = new Client({
   intents: [
@@ -20,7 +21,7 @@ client.commands = new Collection<string, BotCommand>();
 
 async function loadEvents(): Promise<void> {
   const eventsPath = path.join(__dirname, "events");
-  const eventFiles = readdirSync(eventsPath).filter((file) => file.endsWith(".ts"));
+  const eventFiles = readdirSync(eventsPath).filter((file) => file.endsWith(RUNTIME_MODULE_EXTENSION));
 
   for (const file of eventFiles) {
     const filePath = path.join(eventsPath, file);

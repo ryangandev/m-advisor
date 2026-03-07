@@ -1,16 +1,5 @@
-import fs from "node:fs";
-import { spawn } from "node:child_process";
+import { existsSync, unlinkSync } from "node:fs";
 import { Client, VoiceChannel } from "discord.js";
-import {
-  AudioPlayerStatus,
-  StreamType,
-  VoiceConnectionStatus,
-  createAudioPlayer,
-  createAudioResource,
-  entersState,
-  joinVoiceChannel,
-} from "@discordjs/voice";
-import ffmpegStatic from "ffmpeg-static";
 import { getBinding } from "../store/bindingStore";
 import {
   getAnnouncerState,
@@ -21,6 +10,7 @@ import {
 } from "../store/announcerStore";
 import { getBestAndWorst, getLatestSRMatchId, getMatchDetail } from "../utils/riotMatchApi";
 import { generateTTS } from "../utils/tts";
+import { playMp3InVoiceChannel } from "../utils/voicePlayback";
 
 const POLL_INTERVAL_MS = 45_000;
 
@@ -124,75 +114,14 @@ async function announce(
     return;
   }
 
-  const connection = joinVoiceChannel({
-    channelId: voiceChannelId,
-    guildId,
-    adapterCreator: channel.guild.voiceAdapterCreator,
-  });
-
-  let ffmpegProcess: ReturnType<typeof spawn> | null = null;
-
   try {
-    await entersState(connection, VoiceConnectionStatus.Ready, 5_000);
-    console.log("[announce] Connection ready, playing TTS immediately");
-
-    const player = createAudioPlayer();
-    connection.on("stateChange", (o, n) => {
-      console.log(`[Connection] ${o.status} -> ${n.status}`);
-    });
-    player.on("stateChange", (o, n) => {
-      console.log(`[Player] ${o.status} -> ${n.status}`);
-    });
-    player.on("error", (e) => {
-      console.error("[Player error]", e.message, e.stack);
-    });
-
-    const ffmpegPath = ffmpegStatic ?? "ffmpeg";
-    ffmpegProcess = spawn(
-      ffmpegPath,
-      [
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-i",
-        ttsPath,
-        "-f",
-        "s16le",
-        "-ar",
-        "48000",
-        "-ac",
-        "2",
-        "pipe:1",
-      ],
-      { stdio: ["ignore", "pipe", "pipe"] },
-    );
-    ffmpegProcess.on("error", (error) => {
-      console.error("[ffmpeg process error]", error);
-    });
-    ffmpegProcess.on("exit", (code, signal) => {
-      console.log(`[ffmpeg exit] code=${code ?? "null"} signal=${signal ?? "null"}`);
-    });
-    ffmpegProcess.stderr?.on("data", (d) => {
-      console.log("[ffmpeg]", d.toString());
-    });
-
-    const resource = createAudioResource(ffmpegProcess.stdout!, {
-      inputType: StreamType.Raw,
-    });
-    connection.subscribe(player);
-    player.play(resource);
-
-    await entersState(player, AudioPlayerStatus.Idle, 60_000);
+    await playMp3InVoiceChannel(channel, ttsPath, 60_000);
   } catch (error) {
     console.error("Voice announcement failed:", error);
   } finally {
-    connection.destroy();
-    if (ffmpegProcess && !ffmpegProcess.killed) {
-      ffmpegProcess.kill("SIGKILL");
-    }
-    if (ttsPath && fs.existsSync(ttsPath)) {
+    if (ttsPath && existsSync(ttsPath)) {
       try {
-        fs.unlinkSync(ttsPath);
+        unlinkSync(ttsPath);
       } catch (error) {
         console.error("Failed to clean up TTS file:", error);
       }

@@ -4,21 +4,13 @@ import {
   SlashCommandBuilder,
   VoiceChannel,
 } from "discord.js";
-import {
-  AudioPlayerStatus,
-  StreamType,
-  VoiceConnectionStatus,
-  createAudioPlayer,
-  createAudioResource,
-  entersState,
-  joinVoiceChannel,
-} from "@discordjs/voice";
-import fs from "node:fs";
-import { spawn } from "node:child_process";
-import ffmpegStatic from "ffmpeg-static";
+import { existsSync, unlinkSync } from "node:fs";
 import { BotCommand } from "../types";
+import { buildErrorEmbed } from "../utils/embeds";
 import { isAdmin } from "../utils/permissions";
 import { generateTTS } from "../utils/tts";
+import { getTtsUserErrorMessage } from "../utils/userFacingErrors";
+import { playMp3InVoiceChannel } from "../utils/voicePlayback";
 
 const testvcCommand: BotCommand = {
   data: new SlashCommandBuilder()
@@ -44,84 +36,33 @@ const testvcCommand: BotCommand = {
     let ttsPath: string | null = null;
     try {
       ttsPath = await generateTTS(text, "sweet");
-    } catch (err) {
-      await interaction.reply({ content: `❌ TTS generation failed: ${err instanceof Error ? err.message : err}`, ephemeral: true });
+    } catch (error) {
+      console.error("testvc TTS generation failed:", error);
+      await interaction.reply({
+        embeds: [buildErrorEmbed(getTtsUserErrorMessage(error))],
+        ephemeral: true,
+      });
       return;
     }
 
     await interaction.reply({ content: `Joining ${voiceChannel.name}...`, ephemeral: true });
 
-    const connection = joinVoiceChannel({
-      channelId: voiceChannel.id,
-      guildId: voiceChannel.guild.id,
-      adapterCreator: voiceChannel.guild.voiceAdapterCreator,
-      selfDeaf: false,
-    });
-
-    let ffmpegProcess: ReturnType<typeof spawn> | null = null;
-
     try {
-      await entersState(connection, VoiceConnectionStatus.Ready, 15_000);
-      console.log("[testvc] Connection ready, starting playback immediately");
-
-      const player = createAudioPlayer();
-      connection.on("stateChange", (o, n) => {
-        console.log(`[Connection] ${o.status} -> ${n.status}`);
-      });
-      player.on("stateChange", (o, n) => {
-        console.log(`[Player] ${o.status} -> ${n.status}`);
-      });
-      player.on("error", (e) => {
-        console.error("[Player error]", e.message, e.stack);
-      });
-
-      const ffmpegPath = ffmpegStatic ?? "ffmpeg";
-      ffmpegProcess = spawn(
-        ffmpegPath,
-        [
-          "-hide_banner",
-          "-loglevel",
-          "error",
-          "-i",
-          ttsPath,
-          "-f",
-          "s16le",
-          "-ar",
-          "48000",
-          "-ac",
-          "2",
-          "pipe:1",
-        ],
-        { stdio: ["ignore", "pipe", "pipe"] },
-      );
-      ffmpegProcess.on("error", (error) => {
-        console.error("[ffmpeg process error]", error);
-      });
-      ffmpegProcess.on("exit", (code, signal) => {
-        console.log(`[ffmpeg exit] code=${code ?? "null"} signal=${signal ?? "null"}`);
-      });
-      ffmpegProcess.stderr?.on("data", (d) => {
-        console.log("[ffmpeg]", d.toString());
-      });
-
-      const resource = createAudioResource(ffmpegProcess.stdout!, {
-        inputType: StreamType.Raw,
-      });
-      connection.subscribe(player);
-      player.play(resource);
-
-      await entersState(player, AudioPlayerStatus.Idle, 30_000);
+      await playMp3InVoiceChannel(voiceChannel, ttsPath, 30_000);
       await interaction.editReply({ content: "✅ Voice test complete!" });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Unknown error";
-      console.error("testvc error:", msg);
-      await interaction.editReply({ content: `❌ Failed: ${msg}` });
+    } catch (error) {
+      console.error("testvc playback failed:", error);
+      await interaction.editReply({
+        embeds: [buildErrorEmbed("Voice playback failed. Check bot voice permissions and ffmpeg availability.")],
+      });
     } finally {
-      connection.destroy();
-      if (ffmpegProcess && !ffmpegProcess.killed) {
-        ffmpegProcess.kill("SIGKILL");
+      if (ttsPath && existsSync(ttsPath)) {
+        try {
+          unlinkSync(ttsPath);
+        } catch (error) {
+          console.error("testvc cleanup failed:", error);
+        }
       }
-      if (ttsPath && fs.existsSync(ttsPath)) fs.unlinkSync(ttsPath);
     }
   },
 };

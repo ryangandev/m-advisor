@@ -9,6 +9,8 @@ import { buildErrorEmbed } from "../utils/embeds";
 import { isAdmin } from "../utils/permissions";
 import { getBinding, setBinding } from "../store/bindingStore";
 import { getAccountByRiotId } from "../utils/riotApi";
+import { INVALID_RIOT_ID_MESSAGE, parseRiotId } from "../utils/riotId";
+import { getRiotUserErrorMessage } from "../utils/userFacingErrors";
 
 const bindCommand: BotCommand = {
   data: (new SlashCommandBuilder()
@@ -48,27 +50,22 @@ const bindCommand: BotCommand = {
 
     const user = interaction.options.getUser("user", true);
     const riotId = interaction.options.getString("riotid", true).trim();
-    const parts = riotId.split("#");
+    const parsedRiotId = parseRiotId(riotId);
 
-    if (
-      parts.length !== 2 ||
-      parts[0].trim().length === 0 ||
-      parts[1].trim().length === 0
-    ) {
+    if (!parsedRiotId) {
       await interaction.editReply({
-        embeds: [buildErrorEmbed("Invalid Riot ID format. Use GameName#TAG (example: Faker#KR1).")],
+        embeds: [buildErrorEmbed(INVALID_RIOT_ID_MESSAGE)],
       });
       return;
     }
 
-    const [gameName, tagLine] = parts.map((part) => part.trim());
+    const { gameName, tagLine } = parsedRiotId;
 
     let account;
     try {
       account = await getAccountByRiotId(gameName, tagLine);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "An unexpected error occurred.";
-      await interaction.editReply({ embeds: [buildErrorEmbed(message)] });
+      await interaction.editReply({ embeds: [buildErrorEmbed(getRiotUserErrorMessage(error))] });
       return;
     }
 

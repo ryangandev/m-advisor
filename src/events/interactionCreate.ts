@@ -1,5 +1,6 @@
 import { Events, Interaction } from "discord.js";
 import { buildErrorEmbed } from "../utils/embeds";
+import { getCommandUserErrorMessage } from "../utils/userFacingErrors";
 
 export default {
   name: Events.InteractionCreate,
@@ -16,13 +17,15 @@ export default {
     try {
       await command.execute(interaction);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "An unexpected error occurred.";
-      const payload = { embeds: [buildErrorEmbed(message)] };
+      console.error(`Command execution failed for /${interaction.commandName}:`, error);
+      const errorEmbed = buildErrorEmbed(getCommandUserErrorMessage(error));
 
-      if (interaction.replied || interaction.deferred) {
-        await interaction.followUp(payload);
+      if (interaction.replied) {
+        await interaction.followUp({ embeds: [errorEmbed], ephemeral: true });
+      } else if (interaction.deferred) {
+        await interaction.editReply({ embeds: [errorEmbed] });
       } else {
-        await interaction.reply(payload);
+        await interaction.reply({ embeds: [errorEmbed], ephemeral: true });
       }
     }
   },
