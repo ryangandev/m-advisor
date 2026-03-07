@@ -55,6 +55,10 @@ export async function generateTTS(text: string, style = "sweet"): Promise<string
   }
 
   const audioBuffer = Buffer.from(await response.arrayBuffer());
+  if (audioBuffer.length === 0) {
+    throw new Error("Azure TTS returned an empty audio response");
+  }
+
   const base = path.join(os.tmpdir(), `m-advisor-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`);
   const mp3Path = `${base}.mp3`;
   writeFileSync(mp3Path, audioBuffer);

@@ -14,6 +14,8 @@ import {
   joinVoiceChannel,
 } from "@discordjs/voice";
 import fs from "node:fs";
+import { spawn } from "node:child_process";
+import ffmpegStatic from "ffmpeg-static";
 import { BotCommand } from "../types";
 import { isAdmin } from "../utils/permissions";
 import { generateTTS } from "../utils/tts";
@@ -56,6 +58,8 @@ const testvcCommand: BotCommand = {
       selfDeaf: false,
     });
 
+    let ffmpegProcess: ReturnType<typeof spawn> | null = null;
+
     try {
       await entersState(connection, VoiceConnectionStatus.Ready, 15_000);
       console.log("[testvc] Connection ready, starting playback immediately");
@@ -71,8 +75,37 @@ const testvcCommand: BotCommand = {
         console.error("[Player error]", e.message, e.stack);
       });
 
-      const resource = createAudioResource(ttsPath, {
-        inputType: StreamType.Arbitrary,
+      const ffmpegPath = ffmpegStatic ?? "ffmpeg";
+      ffmpegProcess = spawn(
+        ffmpegPath,
+        [
+          "-hide_banner",
+          "-loglevel",
+          "error",
+          "-i",
+          ttsPath,
+          "-f",
+          "s16le",
+          "-ar",
+          "48000",
+          "-ac",
+          "2",
+          "pipe:1",
+        ],
+        { stdio: ["ignore", "pipe", "pipe"] },
+      );
+      ffmpegProcess.on("error", (error) => {
+        console.error("[ffmpeg process error]", error);
+      });
+      ffmpegProcess.on("exit", (code, signal) => {
+        console.log(`[ffmpeg exit] code=${code ?? "null"} signal=${signal ?? "null"}`);
+      });
+      ffmpegProcess.stderr?.on("data", (d) => {
+        console.log("[ffmpeg]", d.toString());
+      });
+
+      const resource = createAudioResource(ffmpegProcess.stdout!, {
+        inputType: StreamType.Raw,
       });
       connection.subscribe(player);
       player.play(resource);
@@ -85,6 +118,9 @@ const testvcCommand: BotCommand = {
       await interaction.editReply({ content: `❌ Failed: ${msg}` });
     } finally {
       connection.destroy();
+      if (ffmpegProcess && !ffmpegProcess.killed) {
+        ffmpegProcess.kill("SIGKILL");
+      }
       if (ttsPath && fs.existsSync(ttsPath)) fs.unlinkSync(ttsPath);
     }
   },
