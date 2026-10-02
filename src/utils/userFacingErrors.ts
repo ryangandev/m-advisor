@@ -12,6 +12,33 @@ function getStatusCode(message: string): number | null {
 }
 
 export function getRiotUserErrorMessage(error: unknown): string {
+  let simulated = error instanceof RiotApiError && error.simulated;
+  try { simulated ||= isMockData(); }
+  catch { /* An invalid configuration must still produce a safe error reply. */ }
+  const message = riotUserErrorMessage(error);
+  return simulated ? `模拟数据: ${message}` : message;
+}
+
+function riotUserErrorMessage(error: unknown): string {
+  if (error instanceof RiotApiError) {
+    switch (error.code) {
+      case "invalid_mode": return "The bot data mode needs attention. RIOT_MODE must be mock or real.";
+      case "missing_key":
+      case "unauthorized":
+      case "forbidden": return "The Riot API request was rejected. The bot configuration needs attention.";
+      case "not_found": return "No Riot account or match was found.";
+      case "rate_limited": {
+        const seconds = Math.ceil((error.retryAfterMs ?? 1000) / 1000);
+        return `The Riot API is rate-limiting requests. Please try again in ${seconds} seconds.`;
+      }
+      case "unavailable": return "The Riot API is unavailable right now. Please try again later.";
+      case "timeout": return "The Riot API request timed out. Please try again shortly.";
+      case "network": return "Unable to reach the Riot API. Please try again shortly.";
+      case "invalid_response": return "The Riot API returned an unexpected response. Please try again later.";
+      case "mock_only": return "Simulated matches are only available when RIOT_MODE=mock.";
+      case "bad_request": return "Unable to complete this Riot request. Check the Riot ID and bot configuration.";
+    }
+  }
   const message = getErrorMessage(error);
   if (!message) {
     return "Unable to complete the Riot lookup right now.";
@@ -69,6 +96,7 @@ export function getTtsUserErrorMessage(error: unknown): string {
 }
 
 export function getCommandUserErrorMessage(error: unknown): string {
+  if (error instanceof RiotApiError) return getRiotUserErrorMessage(error);
   const message = getErrorMessage(error);
   if (!message) {
     return "Something went wrong while handling that command.";
@@ -83,3 +111,4 @@ export function getCommandUserErrorMessage(error: unknown): string {
 
   return "Something went wrong while handling that command.";
 }
+import { isMockData, RiotApiError } from "../services/riotData";

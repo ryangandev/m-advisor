@@ -1,5 +1,20 @@
 import { EmbedBuilder } from "discord.js";
-import { RankedEntry, Summoner } from "../types";
+import type { RankedEntry, Summoner } from "../types";
+import { getRiotDataLabel, isMockData } from "../services/riotData";
+
+// Verified against the official versions endpoint on 2026-10-02; configurable without changing code.
+const DEFAULT_DDRAGON_VERSION = "16.19.1";
+
+export function getProfileIconUrl(profileIconId: number): string | undefined {
+  const version = process.env.DDRAGON_VERSION?.trim() || DEFAULT_DDRAGON_VERSION;
+  if (!/^\d+\.\d+\.\d+$/.test(version) || !Number.isSafeInteger(profileIconId) || profileIconId < 0) return undefined;
+  return `https://ddragon.leagueoflegends.com/cdn/${version}/img/profileicon/${profileIconId}.png`;
+}
+
+function mockMode(): boolean {
+  try { return isMockData(); }
+  catch { return false; }
+}
 
 function formatRank(entry?: RankedEntry): string {
   if (!entry) {
@@ -20,23 +35,24 @@ export function buildProfileEmbed(
   const soloQueue = rankedEntries.find((entry) => entry.queueType === "RANKED_SOLO_5x5");
   const flexQueue = rankedEntries.find((entry) => entry.queueType === "RANKED_FLEX_SR");
 
-  return new EmbedBuilder()
-    .setTitle(riotId)
+  const mock = mockMode();
+  const embed = new EmbedBuilder()
+    .setTitle(mock ? `[模拟数据] ${riotId}` : riotId)
     .setColor(0xF0B232)
-    .setThumbnail(
-      `https://ddragon.leagueoflegends.com/cdn/14.1.1/img/profileicon/${summoner.profileIconId}.png`,
-    )
     .addFields(
       { name: "Summoner Level", value: String(summoner.summonerLevel), inline: true },
       { name: "Solo/Duo", value: formatRank(soloQueue), inline: false },
       { name: "Flex", value: formatRank(flexQueue), inline: false },
     )
-    .setFooter({ text: "NA Server • M-Advisor" });
+    .setFooter({ text: `NA Server • M-Advisor • ${getRiotDataLabel()}` });
+  const thumbnail = getProfileIconUrl(summoner.profileIconId);
+  if (thumbnail) embed.setThumbnail(thumbnail);
+  return embed;
 }
 
 export function buildErrorEmbed(message: string): EmbedBuilder {
   return new EmbedBuilder()
     .setColor(0xE74C3C)
-    .setTitle("Error")
+    .setTitle(mockMode() ? "模拟数据 - Error" : "Error")
     .setDescription(message);
 }
