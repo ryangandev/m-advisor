@@ -7,6 +7,7 @@
 | Where does each subsystem live? | [Architecture](architecture.md) | Update with module boundaries |
 | How are bindings and voice preferences saved? | [Storage](storage.md) | Update with database and store behavior |
 | How do mock fixtures and real Riot requests work? | [Riot data](riot-data.md) | Update with provider, fixtures and request policy |
+| How does local Qwen speech run? | [Local voice](local-voice.md) | Update with worker, providers and speech evidence |
 
 Subsystem implementation details belong in their routed document.
 Git history records completed tasks; status records current evidence and remaining blockers.

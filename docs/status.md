@@ -11,7 +11,9 @@ Runtime restoration passed compilation, executable FFmpeg conversion, Opus frame
 The updated dependency graph reports zero npm audit vulnerabilities.
 SQLite persistence passed 12 tests, including separate-process restart, transaction rollback and guild isolation.
 Explicit mock/real Riot data and mock UI labels passed 20 provider/request/UI tests.
-Local TTS and command integration are in progress.
+Persistent local Qwen speech passed worker/provider tests and actual offline generation with both Serena and Uncle_Fu.
+Warm Node API validation generated a valid WAV and shutdown removed its temporary directory.
+Monitoring repair and command/lifecycle integration are in progress.
 The pre-implementation audit verified Discord credentials and the installed offline Qwen model.
 The pre-implementation Riot credential check returned HTTP 401.
 Live Discord playback and human listening have not passed.
