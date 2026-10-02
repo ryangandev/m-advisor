@@ -12,6 +12,8 @@
 | `src/utils/tts.ts` | Speech generation provider boundary |
 | `src/utils/voicePlayback.ts` | Discord connection and audio playback |
 | `tests/` | Reproducible behavioral and integration checks |
+| `src/cli/` | Explicit guild command registration and local runtime diagnosis |
+| `scripts/` | Local launcher, persistent Python speech worker and acceptance verifier |
 
 ## Scope
 
@@ -43,3 +45,17 @@ See [Local voice](local-voice.md) for configuration, protocol, provider choice a
 Each monitoring session establishes a baseline and prevents concurrent polls.
 The shared voice queue generates audio before joining a channel and records success only after playback.
 See [Announcements](announcements.md) for retry, cancellation, channel authorization and safe mention behavior.
+
+## Lifecycle and test commands
+
+The entry point loads commands and events, validates the selected data mode and logs into Discord.
+The ready event restores eligible monitoring and prewarms speech.
+A shared stopping flag prevents new work during asynchronous teardown.
+SIGINT and SIGTERM close monitoring, voice connections, the client, speech and SQLite.
+Explicit registration is separate from startup and is limited to the configured test server.
+
+`/testvoice` uses the same speech and playback queue as game announcements.
+`/simulate` establishes a baseline, creates one mock result and verifies that this exact match was announced.
+Concurrent simulations for the same server are rejected until the first finishes.
+Both test commands require an administrator in the configured server and permitted voice channel.
+See [Acceptance](acceptance.md) for verification procedures and external prerequisites.
