@@ -69,6 +69,18 @@ After the Mac was unlocked, reloading Discord cleared the retired definitions fr
 The actual `/profile riotid:MockWin#NA1` displayed the simulated-data title and footer.
 The actual `/bind` and `/bindings` commands confirmed the intended member and visibly identified the saved mock account.
 Both native `/simulate` outcomes returned their completion confirmations, and the General chat displayed the corresponding mock win and loss reports.
+The normal bot then exited cleanly on Ctrl+C and relaunched with its saved MockWin binding and Old Man voice preference.
+The next native `/bindings` reply confirmed the restored account.
+No historical game was announced on restart.
+
+A new native simulation was started and the tracked member left General while speech was being generated.
+The command returned a failure reply without claiming completion; the cancelled match produced no report.
+A fresh REST inventory after restart, subsequent polls and cancellation still contained exactly the four completed reports from the verifier and native win/loss run.
+The ignored `test-results/native-report-inventory.json` records their IDs, timestamps and outcomes.
+The native `/unbind` reply and a subsequent `/bindings` empty-list reply confirmed removal; a separate process verified the binding was absent and the Old Man preference remained saved.
+For handoff, the native `/bind` command restored `MockWin#NA1` for Ryan, and the desktop client rejoined General with its microphone muted.
+The bot is running in mock/local mode for further authorized testing.
+Human listening and real Riot acceptance are the remaining user-supplied evidence.
 
 ## Repeatable actual Discord transport check
 
