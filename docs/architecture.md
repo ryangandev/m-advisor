@@ -31,3 +31,9 @@ See [Storage](storage.md) for database ownership, durability, shutdown and test 
 The public account and match wrappers share an explicit mock/real provider.
 Mock data is labeled in profiles and errors; real failures never switch providers.
 See [Riot data](riot-data.md) for fixture names, rate limiting, endpoint policy and queue support.
+
+## Local voice
+
+The bot owns one bounded, persistent Python speech worker.
+It reads the installed Media model record without modifying the shared environment or downloading weights.
+See [Local voice](local-voice.md) for configuration, protocol, provider choice and measured performance.
