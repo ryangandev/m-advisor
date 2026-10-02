@@ -39,6 +39,8 @@ The playback caller removes that file after playback, including when playback fa
 `shutdownTTS()` stops the Python worker, rejects pending requests and removes remaining temporary files.
 Shutdown is idempotent.
 The bot must call it when stopping so model memory is released.
+Once application shutdown begins, the public speech boundary rejects new requests and late completions.
+Azure shutdown aborts pending fetch and response-body work and waits for its temporary-file cleanup.
 
 `prewarmTTS()` starts and loads the selected provider before the first announcement.
 For local speech, `checkTTS()` also loads the worker and returns the provider, model and installed revision.
@@ -59,7 +61,7 @@ node --import tsx --test tests/tts-local.test.ts tests/tts-provider.test.ts
 ```
 
 The fake worker tests cover process reuse, serialized requests, both voices, queue limits, generation errors, crash recovery, deadline recovery, immediate startup retries, configuration repair, startup and shutdown, malformed responses, invalid audio, canonical paths, partial-file cleanup and credential isolation.
-Azure tests cover SSML escaping, explicit provider selection, configuration errors and sanitized failures.
+Azure tests cover SSML escaping, explicit provider selection, configuration errors, sanitized failures and in-flight shutdown.
 These tests do not load model weights or call any external speech service.
 
 Actual offline inference acceptance uses the installed Python runtime and model on Apple Silicon.

@@ -1,8 +1,11 @@
 import {
+  MessageFlags,
   ChatInputCommandInteraction,
   EmbedBuilder,
   SlashCommandBuilder,
 } from "discord.js";
+import { getRiotDataLabel } from "../services/riotData";
+import { isSyntheticAccount } from "../utils/bindingAccounts";
 import { BotCommand } from "../types";
 import { isAdmin } from "../utils/permissions";
 import { getBinding } from "../store/bindingStore";
@@ -16,7 +19,7 @@ const bindingsCommand: BotCommand = {
     if (!isAdmin(interaction)) {
       await interaction.reply({
         content: "You need Administrator permission to use this command.",
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
       });
       return;
     }
@@ -30,7 +33,7 @@ const bindingsCommand: BotCommand = {
             .setTitle("Error")
             .setDescription("This command can only be used in a server."),
         ],
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
       });
       return;
     }
@@ -43,15 +46,15 @@ const bindingsCommand: BotCommand = {
             .setColor(0x5865F2)
             .setTitle("Server Bindings")
             .setDescription("No bindings set for this server.")
-            .setFooter({ text: "NA Server • M-Advisor" }),
+            .setFooter({ text: `NA Server • M-Advisor • ${getRiotDataLabel()}` }),
         ],
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
       });
       return;
     }
 
     const accountList = binding.accounts
-      .map((account) => `• ${account.gameName}#${account.tagLine}`)
+      .map((account) => `• ${account.gameName}#${account.tagLine}${isSyntheticAccount(account) ? "（模拟账号；切换真实模式后请重新绑定）" : ""}`)
       .join("\n");
 
     const embed = new EmbedBuilder()
@@ -61,9 +64,9 @@ const bindingsCommand: BotCommand = {
         { name: "Tracked Member", value: `<@${binding.discordUserId}>`, inline: false },
         { name: "Bound Accounts", value: accountList || "None", inline: false },
       )
-      .setFooter({ text: "NA Server • M-Advisor" });
+      .setFooter({ text: `NA Server • M-Advisor • ${getRiotDataLabel()}` });
 
-    await interaction.reply({ embeds: [embed], ephemeral: true });
+    await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
   },
 };
 

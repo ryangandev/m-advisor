@@ -1,4 +1,5 @@
 import {
+  MessageFlags,
   ChatInputCommandInteraction,
   EmbedBuilder,
   SlashCommandBuilder,
@@ -10,7 +11,11 @@ import { isAdmin } from "../utils/permissions";
 import { getBinding, setBinding } from "../store/bindingStore";
 import { getAccountByRiotId } from "../utils/riotApi";
 import { INVALID_RIOT_ID_MESSAGE, parseRiotId } from "../utils/riotId";
+import { reconcileGuildMonitoring } from "../services/monitorLifecycle";
+import { getRiotDataLabel } from "../services/riotData";
+import { mergeBoundAccount } from "../utils/bindingAccounts";
 import { getRiotUserErrorMessage } from "../utils/userFacingErrors";
+import { assertRunning } from "../services/shutdownState";
 
 const bindCommand: BotCommand = {
   data: (new SlashCommandBuilder()
@@ -33,12 +38,13 @@ const bindCommand: BotCommand = {
     if (!isAdmin(interaction)) {
       await interaction.reply({
         content: "You need Administrator permission to use this command.",
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
       });
       return;
     }
 
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    assertRunning();
 
     const guildId = interaction.guildId;
     if (!guildId) {
@@ -69,6 +75,7 @@ const bindCommand: BotCommand = {
       return;
     }
 
+    assertRunning();
     const existingBinding = getBinding(guildId);
     if (existingBinding && existingBinding.discordUserId !== user.id) {
       await interaction.editReply({
@@ -84,8 +91,9 @@ const bindCommand: BotCommand = {
     if (existingBinding) {
       const duplicate = existingBinding.accounts.some(
         (boundAccount) =>
-          boundAccount.gameName.toLowerCase() === gameName.toLowerCase() &&
-          boundAccount.tagLine.toLowerCase() === tagLine.toLowerCase(),
+          boundAccount.puuid === account.puuid &&
+          boundAccount.gameName.toLowerCase() === account.gameName.toLowerCase() &&
+          boundAccount.tagLine.toLowerCase() === account.tagLine.toLowerCase(),
       );
 
       if (duplicate) {
@@ -94,19 +102,21 @@ const bindCommand: BotCommand = {
       }
     }
 
-    const updatedAccounts = existingBinding
-      ? [...existingBinding.accounts, account]
-      : [account];
+    const updatedAccounts = mergeBoundAccount(existingBinding?.accounts || [], account);
 
     setBinding(guildId, {
       discordUserId: user.id,
       accounts: updatedAccounts,
     });
 
+    await reconcileGuildMonitoring(interaction.client, guildId);
+    assertRunning();
+
     const normalizedRiotId = `${account.gameName}#${account.tagLine}`;
     const successEmbed = new EmbedBuilder()
       .setColor(0x2ECC71)
       .setTitle("Binding Updated")
+      .setFooter({ text: getRiotDataLabel() })
       .setDescription(`Bound ${normalizedRiotId} to <@${user.id}>`);
 
     await interaction.editReply({ embeds: [successEmbed] });

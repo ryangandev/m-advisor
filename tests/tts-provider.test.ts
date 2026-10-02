@@ -17,7 +17,6 @@ async function withAzure(run: () => Promise<void>): Promise<void> {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
     }
-    await shutdownTTS();
   }
 }
 
@@ -65,5 +64,52 @@ test("unknown provider and invalid Azure region fail without network requests", 
     await assert.rejects(generateTTS("测试"), /valid key and region/);
     await assert.rejects(generateTTS(""), /empty/);
     await assert.rejects(generateTTS("长".repeat(1001)), /1000/);
+  });
+});
+
+test("shutdown aborts in-flight Azure requests and rejects late completion and future speech", async () => {
+  await withAzure(async () => {
+    const signals: AbortSignal[] = [];
+    const releases: Array<(response: Response) => void> = [];
+    let releaseBody!: (audio: ArrayBuffer) => void;
+    let bodyStarted!: () => void;
+    const readingBody = new Promise<void>((resolve) => { bodyStarted = resolve; });
+    globalThis.fetch = (async (_url, options) => {
+      const signal = options?.signal as AbortSignal;
+      signals.push(signal);
+      if (signals.length === 3) {
+        const response = new Response("body-pending");
+        response.arrayBuffer = async () => {
+          bodyStarted();
+          return new Promise<ArrayBuffer>((resolve) => { releaseBody = resolve; });
+        };
+        return response;
+      }
+      return new Promise<Response>((resolve, reject) => {
+        if (signals.length === 1) signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+        // A transport that completes concurrently with cancellation must still
+        // never create an audio file or resolve synthesis after shutdown.
+        else releases.push(resolve);
+      });
+    }) as typeof fetch;
+    const first = generateTTS("等待网络的第一条");
+    const second = generateTTS("会晚到的第二条");
+    const third = generateTTS("正在读取音频的第三条");
+    const firstRejected = assert.rejects(first, /shut down/);
+    const secondRejected = assert.rejects(second, /shut down/);
+    const thirdRejected = assert.rejects(third, /shut down/);
+    await readingBody;
+    assert.equal(signals.length, 3);
+    const stopped = shutdownTTS();
+    assert.equal(shutdownTTS(), stopped);
+    assert.ok(signals.every((signal) => signal.aborted));
+    releases[0](new Response(Buffer.from("late-audio")));
+    releaseBody(new ArrayBuffer(8));
+    await Promise.all([stopped, firstRejected, secondRejected, thirdRejected]);
+    let extraCalls = 0;
+    globalThis.fetch = (async () => { extraCalls++; return new Response("unexpected"); }) as typeof fetch;
+    await assert.rejects(generateTTS("已经停止"), /shut down/);
+    await assert.rejects(checkTTS(), /shut down/);
+    assert.equal(extraCalls, 0);
   });
 });
