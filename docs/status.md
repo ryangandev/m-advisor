@@ -10,7 +10,8 @@ Each independently verified task is committed and pushed separately on `codex/lo
 Runtime restoration passed compilation, executable FFmpeg conversion, Opus frame round-trip, native encryption and DAVE loading checks.
 The updated dependency graph reports zero npm audit vulnerabilities.
 SQLite persistence passed 12 tests, including separate-process restart, transaction rollback and guild isolation.
-Mock flow, local TTS and command integration are in progress.
+Explicit mock/real Riot data and mock UI labels passed 20 provider/request/UI tests.
+Local TTS and command integration are in progress.
 The pre-implementation audit verified Discord credentials and the installed offline Qwen model.
 The pre-implementation Riot credential check returned HTTP 401.
 Live Discord playback and human listening have not passed.

@@ -25,3 +25,9 @@ The local speech model replaces the cloud synthesis step; the Node bot still own
 Bindings and voice styles are persisted locally in SQLite.
 Timers, voice channels and match baselines are session state and never survive restart.
 See [Storage](storage.md) for database ownership, durability, shutdown and test evidence.
+
+## Riot data
+
+The public account and match wrappers share an explicit mock/real provider.
+Mock data is labeled in profiles and errors; real failures never switch providers.
+See [Riot data](riot-data.md) for fixture names, rate limiting, endpoint policy and queue support.

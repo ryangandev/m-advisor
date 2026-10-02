@@ -1,44 +1,17 @@
-import { MatchDetail, ParticipantStats } from "../types";
+import type { MatchDetail, ParticipantStats } from "../types";
+import { getRiotMode, RiotApiError, riotFetch, riotNumber, riotObject } from "../services/riotData";
 
 const AMERICAS = "https://americas.api.riotgames.com";
-const SR_QUEUE_IDS = [400, 420, 430, 440];
-
-async function riotFetch<T>(url: string): Promise<T> {
-  const apiKey = process.env.RIOT_API_KEY;
-
-  if (!apiKey) {
-    throw new Error("Missing RIOT_API_KEY environment variable.");
-  }
-
-  const targetUrl = new URL(url);
-  targetUrl.searchParams.set("api_key", apiKey);
-
-  const response = await fetch(targetUrl.toString());
-
-  if (!response.ok) {
-    let details = `Riot API request failed (${response.status} ${response.statusText})`;
-
-    try {
-      const body = (await response.json()) as {
-        status?: { message?: string };
-      };
-      const message = body?.status?.message;
-      if (message) {
-        details = `Riot API error ${response.status}: ${message}`;
-      }
-    } catch {
-      // Keep fallback message when response body is not JSON.
-    }
-
-    throw new Error(details);
-  }
-
-  return (await response.json()) as T;
-}
+// Current Riot game constants include Swiftplay and Quickplay; keep Blind Pick for older history.
+const SR_QUEUE_IDS = [400, 420, 430, 440, 480, 490];
+const matchCache = new Map<string, MatchDetail>();
 
 export async function getLatestSRMatchId(puuid: string): Promise<string | null> {
-  const idsUrl = `${AMERICAS}/lol/match/v5/matches/by-puuid/${encodeURIComponent(puuid)}/ids?count=5`;
-  const matchIds = await riotFetch<string[]>(idsUrl);
+  const idsUrl = `${AMERICAS}/lol/match/v5/matches/by-puuid/${encodeURIComponent(puuid)}/ids?count=20`;
+  const matchIds = await riotFetch<unknown>(idsUrl);
+  if (!Array.isArray(matchIds) || matchIds.some((id) => typeof id !== "string")) {
+    throw new RiotApiError("Riot API returned invalid match history.", "invalid_response");
+  }
 
   for (const matchId of matchIds) {
     const detail = await getMatchDetail(matchId);
@@ -51,8 +24,36 @@ export async function getLatestSRMatchId(puuid: string): Promise<string | null> 
 }
 
 export async function getMatchDetail(matchId: string): Promise<MatchDetail> {
+  const cacheKey = `${getRiotMode()}:${matchId}`;
+  const cached = matchCache.get(cacheKey);
+  if (cached) return structuredClone(cached);
   const detailUrl = `${AMERICAS}/lol/match/v5/matches/${encodeURIComponent(matchId)}`;
-  return riotFetch<MatchDetail>(detailUrl);
+  const raw = riotObject(await riotFetch<unknown>(detailUrl));
+  const info = riotObject(raw.info);
+  const metadata = riotObject(raw.metadata);
+  if (!Array.isArray(info.participants) || info.participants.length === 0) {
+    throw new RiotApiError("Riot API returned a match without participants.", "invalid_response");
+  }
+  const participants = info.participants.map((value) => {
+    const player = riotObject(value);
+    if (typeof player.puuid !== "string" || !player.puuid || (player.win !== undefined && typeof player.win !== "boolean")) {
+      throw new RiotApiError("Riot API returned an invalid match participant.", "invalid_response");
+    }
+    return {
+      puuid: player.puuid,
+      riotIdGameName: typeof player.riotIdGameName === "string" ? player.riotIdGameName : "",
+      kills: riotNumber(player.kills), deaths: riotNumber(player.deaths), assists: riotNumber(player.assists),
+      win: player.win === true, teamId: riotNumber(player.teamId),
+    };
+  });
+  if (metadata.matchId !== matchId) throw new RiotApiError("Riot API returned a mismatched match ID.", "invalid_response");
+  const detail: MatchDetail = {
+    metadata: { matchId, participants: participants.map((player) => player.puuid) },
+    info: { queueId: riotNumber(info.queueId), gameDuration: riotNumber(info.gameDuration), participants },
+  };
+  matchCache.set(cacheKey, structuredClone(detail));
+  if (matchCache.size > 200) matchCache.delete(matchCache.keys().next().value!);
+  return detail;
 }
 
 export function getBestAndWorst(
