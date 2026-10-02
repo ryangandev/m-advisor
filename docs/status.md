@@ -29,9 +29,14 @@ The explicit single-server migration retired six known legacy global definitions
 The current handler acknowledges retired and unknown commands privately instead of allowing a timeout; seven regression tests cover this path and safe error replies.
 Both Serena and Uncle_Fu `/testvoice` invocations completed the actual Discord playback lifecycle and returned their completion reply in the client.
 The bot left General after each playback, while Ryan's client remained muted and listening.
+The isolated live Discord verifier then passed full win and loss announcements with real Qwen speech, actual voice transport and two actual mock report messages in 95.279 seconds.
+Gateway observations confirmed two joins, two leaves and no remaining voice connection; repeat polls produced no duplicate announcements.
+That verifier left the normal bot's stored bindings and voice preference untouched.
+After the Mac was unlocked and Discord reloaded, actual `/profile`, `/bind` and `/bindings` confirmed the labeled mock profile and intended saved account.
+Both native `/simulate` outcomes completed and returned their explicit simulated-data confirmations.
 The pre-implementation audit verified Discord credentials and the installed offline Qwen model.
 The pre-implementation Riot credential check returned HTTP 401.
-Live short voice playback has passed; simulated-match live playback and human listening remain pending.
+Live short voice playback and complete simulated-match Discord transport have passed; human listening remains pending.
 
 ## User-only blockers
 
@@ -40,7 +45,7 @@ Live short voice playback has passed; simulated-match live playback and human li
 | B1 | Resolved: Ryan authorized Ry的四合院 / General on 2026-10-02 | No longer blocks live operations |
 | B2 | Listen once inside that channel | Human audio acceptance only |
 | B3 | Supply a valid Riot API key in local configuration | Real Riot acceptance only |
-| B4 | Unlock the Mac after it locked during UI testing | Remaining actual Discord UI commands only |
+| B4 | Resolved: Mac unlocked and Discord UI testing resumed | No longer blocks live operations |
 
 Mock data allows implementation and voice integration to continue without B3.
 Discord Portal or server-permission changes become a blocker only if the actual test demonstrates they are required and unavailable to the agent.
@@ -48,6 +53,6 @@ Discord Portal or server-permission changes become a blocker only if the actual 
 ## Next
 
 The local bot is running with registered current commands.
-Resume the [live acceptance procedure](acceptance.md) after the Mac is unlocked, including binding, simulated outcomes and restart persistence.
+Finish the remaining native [live acceptance procedure](acceptance.md), including restart persistence and cancellation.
 Confirm audible playback for B2; finish real Riot acceptance only after B3 is supplied locally.
 Record each verified acceptance separately; never treat mock success as real Riot success.

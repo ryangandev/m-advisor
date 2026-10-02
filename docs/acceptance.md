@@ -65,8 +65,32 @@ The explicit single-server migration removed six known legacy global definitions
 The ignored `test-results/legacy-global-commands.json` preserves their earlier definitions for recovery.
 No other applications or servers were changed.
 
-The Mac subsequently locked, interrupting the remaining actual client commands.
-Binding, simulated win/loss playback, restart persistence and human listening will be recorded when those checks run.
+After the Mac was unlocked, reloading Discord cleared the retired definitions from the command picker.
+The actual `/profile riotid:MockWin#NA1` displayed the simulated-data title and footer.
+The actual `/bind` and `/bindings` commands confirmed the intended member and visibly identified the saved mock account.
+Both native `/simulate` outcomes returned their completion confirmations, and the General chat displayed the corresponding mock win and loss reports.
+
+## Repeatable actual Discord transport check
+
+Stop the normal bot first and have the authorized test member join the configured General channel.
+The verifier defaults to the server owner; set `TEST_MEMBER_ID` locally only when using another authorized member.
+
+```sh
+npm run verify:discord -- --confirm-live
+```
+
+The explicit flag is required because this check connects to Discord, joins voice and posts two visibly simulated reports.
+It forces mock Riot data and local Qwen speech within its own process, and uses an isolated temporary SQLite database.
+It establishes a silent historical baseline, announces a win with Serena and a loss with Uncle_Fu, and checks the exact completed match IDs.
+The next poll must remain silent after each outcome.
+Actual Gateway voice-state events must show two joins and two leaves, and real Discord message retrieval must return both correctly labeled reports.
+Cleanup stops polling, destroys the client, closes the speech worker and database, and removes the temporary data.
+The normal bot's saved binding and voice preference remain unchanged.
+
+On 2026-10-02 this run passed in 95.279 seconds with two joins, two leaves, two actual report messages and no remaining voice connections.
+The ignored `test-results/discord-e2e.json` records the evidence without credentials.
+The verifier invokes the production monitor directly; native slash-command acceptance is a separate observation.
+Human listening is still pending confirmation, even after successful transport.
 
 ## Live Discord test
 

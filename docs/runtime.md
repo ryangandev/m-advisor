@@ -13,6 +13,7 @@ Install the locked dependency graph with `npm ci`.
 `npm run doctor -- --voice` also prewarms the selected speech provider and closes it afterward.
 `npm run register` explicitly replaces this application's guild command definitions in `TEST_GUILD_ID`.
 `npm run verify:local` exercises isolated mock match monitoring with real local speech and Opus conversion; see [Acceptance](acceptance.md).
+`npm run verify:discord -- --confirm-live` exercises actual Discord voice and report messages with an isolated mock binding; stop the normal bot first and use only an authorized target.
 Bot startup never registers commands automatically.
 
 ## Configuration and launch
@@ -39,6 +40,7 @@ Migration verifies that the bot belongs only to the authorized server and that a
 It preserves unrelated commands and context-menu commands.
 For a bot in multiple servers, migration refuses global changes so an administrator can plan a wider rollout separately.
 Repeating migration after completion is a no-op for globals.
+Reload the Discord client after migration if its command picker still caches removed definitions.
 If a cached retired `/testvc` remains visible, the handler replies privately with migration guidance and never starts a second voice-test control.
 
 ```sh
