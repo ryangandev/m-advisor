@@ -12,6 +12,7 @@ Install the locked dependency graph with `npm ci`.
 `npm run doctor` checks the executable codec, SQLite, encryption and configuration without contacting Discord or loading the model.
 `npm run doctor -- --voice` also prewarms the selected speech provider and closes it afterward.
 `npm run register` explicitly replaces this application's guild command definitions in `TEST_GUILD_ID`.
+`npm run verify:local` exercises isolated mock match monitoring with real local speech and Opus conversion; see [Acceptance](acceptance.md).
 Bot startup never registers commands automatically.
 
 ## Configuration and launch

@@ -13,7 +13,8 @@
     "start": "node dist/index.js",
     "check": "npm run build && npm test",
     "register": "node dist/cli/register.js",
-    "doctor": "node dist/cli/doctor.js"
+    "doctor": "node dist/cli/doctor.js",
+    "verify:local": "node --import tsx scripts/verify-local.ts"
   },
   "keywords": [],
   "author": "",
