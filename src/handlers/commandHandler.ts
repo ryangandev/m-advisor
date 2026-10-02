@@ -20,7 +20,7 @@ export async function loadCommands(client: import("discord.js").Client): Promise
   }
 }
 
-export async function registerCommands(guildId = process.env.TEST_GUILD_ID?.trim()): Promise<void> {
+export async function registerCommands(guildId = process.env.TEST_GUILD_ID?.trim()): Promise<string[]> {
   const token = process.env.DISCORD_TOKEN;
   const clientId = process.env.CLIENT_ID;
 
@@ -47,4 +47,5 @@ export async function registerCommands(guildId = process.env.TEST_GUILD_ID?.trim
 
   const rest = new REST({ version: "10" }).setToken(token);
   await rest.put(Routes.applicationGuildCommands(clientId, guildId), { body: payload });
+  return payload.map(command => command.name);
 }

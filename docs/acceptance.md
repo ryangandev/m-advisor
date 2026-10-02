@@ -50,13 +50,31 @@ This result removes a permissions concern but does not prove voice transport or 
 The ignored `test-results/discord-preflight.json` records the inventory without credentials.
 At that check the server had no guild commands and the application retained older global command definitions, including `/testvc`.
 
+## Live observations
+
+Ryan authorized Ry的四合院 / General on 2026-10-02 and opened Discord for testing.
+The actual desktop client connected to General with its microphone muted and deafen off.
+The bot logged in and prewarmed the installed local speech model.
+Both the default Serena test and an Uncle_Fu test after `/announcer style:Old Man` returned the actual `/testvoice` completion reply.
+The bot left the voice channel after each playback.
+Human listening confirmation is still required.
+
+The Discord command picker also exposed older global definitions alongside guild replacements.
+The explicit single-server migration removed six known legacy global definitions after verifying the bot belonged only to the authorized server and all replacement commands were present.
+`test-results/command-migration.json` records the fresh REST inventory: zero globals and seven guild commands.
+The ignored `test-results/legacy-global-commands.json` preserves their earlier definitions for recovery.
+No other applications or servers were changed.
+
+The Mac subsequently locked, interrupting the remaining actual client commands.
+Binding, simulated win/loss playback, restart persistence and human listening will be recorded when those checks run.
+
 ## Live Discord test
 
 First confirm the server and ordinary voice channel that may be used for testing.
 Set their IDs locally as `TEST_GUILD_ID` and `TEST_VOICE_CHANNEL_ID`.
 Set `RIOT_MODE=mock` and `TTS_PROVIDER=local` for this procedure.
 The offline verifier sets these only in its own process and never changes `.env`.
-The bot currently belongs to `Ry的四合院`; its discovered `General` channel is only a proposed target until Ryan confirms it.
+The authorized target for this session is `Ry的四合院` / `General`.
 
 ```sh
 npm run build
