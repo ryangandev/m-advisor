@@ -34,6 +34,12 @@ Gateway observations confirmed two joins, two leaves and no remaining voice conn
 That verifier left the normal bot's stored bindings and voice preference untouched.
 After the Mac was unlocked and Discord reloaded, actual `/profile`, `/bind` and `/bindings` confirmed the labeled mock profile and intended saved account.
 Both native `/simulate` outcomes completed and returned their explicit simulated-data confirmations.
+An actual Ctrl+C shutdown exited cleanly, and relaunch restored the saved MockWin binding and Old Man voice preference.
+The subsequent native `/bindings` command confirmed the restored account; neither startup nor later polls replayed a historical report.
+Leaving General during a new simulation cancelled the pending announcement and returned a failure reply without claiming success.
+A fresh actual message inventory confirmed exactly four reports from the two completed win/loss runs, with no duplicate or cancelled-match report.
+Native `/unbind` and `/bindings` confirmed removal and an empty list, while the voice preference remained saved.
+The MockWin binding was then restored for continued testing, and Ryan rejoined General with the microphone muted.
 The pre-implementation audit verified Discord credentials and the installed offline Qwen model.
 The pre-implementation Riot credential check returned HTTP 401.
 Live short voice playback and complete simulated-match Discord transport have passed; human listening remains pending.
@@ -52,7 +58,8 @@ Discord Portal or server-permission changes become a blocker only if the actual 
 
 ## Next
 
-The local bot is running with registered current commands.
-Finish the remaining native [live acceptance procedure](acceptance.md), including restart persistence and cancellation.
+The approved engineering delivery and mock-to-real-Discord workflow are complete.
+The local bot is running with registered current commands, Ryan's `MockWin#NA1` test binding and the Old Man voice preference.
+For later on-demand use, run `npm start` or double-click `scripts/launch.command`; see [Runtime](runtime.md).
 Confirm audible playback for B2; finish real Riot acceptance only after B3 is supplied locally.
 Record each verified acceptance separately; never treat mock success as real Riot success.
