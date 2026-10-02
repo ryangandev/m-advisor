@@ -4,15 +4,20 @@ import path from "node:path";
 import { Client, Collection, GatewayIntentBits } from "discord.js";
 import { loadCommands } from "./handlers/commandHandler";
 import { BotCommand, BotEvent } from "./types";
+import { getRiotMode } from "./services/riotData";
+import { stopAllPolling } from "./services/gameMonitor";
+import { shutdownTTS } from "./utils/tts";
+import { closeDatabase } from "./store/database";
+import { getVoiceConnections } from "@discordjs/voice";
+import { beginShutdown, isStopping } from "./services/shutdownState";
 
-dotenv.config();
+dotenv.config({ quiet: true });
 
 const RUNTIME_MODULE_EXTENSION = path.extname(__filename);
 
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildVoiceStates,
   ],
 });
@@ -32,17 +37,26 @@ async function loadEvents(): Promise<void> {
       continue;
     }
 
-    if (event.once) {
-      client.once(event.name, (...args) => event.execute(...args));
-    } else {
-      client.on(event.name, (...args) => event.execute(...args));
-    }
+    const listener = (...args: unknown[]): void => {
+      void Promise.resolve().then(() => {
+        if (!isStopping()) return event.execute(...args);
+      }).catch(reportEventError);
+    };
+    if (event.once) client.once(event.name, listener);
+    else client.on(event.name, listener);
   }
 }
 
 async function bootstrap(): Promise<void> {
+  if (isStopping()) return;
+  const mode = getRiotMode();
+  if (mode === "real" && !process.env.RIOT_API_KEY?.trim()) {
+    throw new Error("RIOT_MODE=real requires RIOT_API_KEY. Use mock mode to test without a key.");
+  }
   await loadEvents();
+  if (isStopping()) return;
   await loadCommands(client);
+  if (isStopping()) return;
 
   const token = process.env.DISCORD_TOKEN;
   if (!token) {
@@ -50,6 +64,50 @@ async function bootstrap(): Promise<void> {
   }
 
   await client.login(token);
+  if (isStopping()) await client.destroy();
 }
 
-void bootstrap();
+function reportEventError(error: unknown): void {
+  console.error("Discord event failed:", error instanceof Error ? error.message : "unknown error");
+}
+
+let shutdownPromise: Promise<void> | undefined;
+function shutdown(): Promise<void> {
+  if (shutdownPromise) return shutdownPromise;
+  beginShutdown();
+  shutdownPromise = Promise.resolve().then(async () => {
+    let failed = false;
+    const cleanup = async (label: string, operation: () => unknown | Promise<unknown>): Promise<void> => {
+      try { await operation(); }
+      catch (error) {
+        failed = true;
+        process.exitCode = 1;
+        console.error(`Bot shutdown failed (${label}):`, error instanceof Error ? error.name : "unknown error");
+      }
+    };
+    await cleanup("match monitoring", stopAllPolling);
+    await cleanup("voice connections", async () => {
+      for (const connection of getVoiceConnections().values()) {
+        await cleanup("voice connection", () => connection.destroy());
+      }
+    });
+    await cleanup("Discord client", () => client.destroy());
+    await cleanup("speech provider", shutdownTTS);
+    await cleanup("database", closeDatabase);
+    console.log(failed ? "Bot stopped with cleanup errors; see the diagnostic logs." : "Bot stopped; speech process and database closed.");
+  });
+  return shutdownPromise;
+}
+
+for (const signal of ["SIGINT", "SIGTERM"] as const) {
+  process.once(signal, () => {
+    const deadline = setTimeout(() => process.exit(1), 15_000).unref();
+    void shutdown().then(() => { clearTimeout(deadline); }).catch(() => { process.exitCode = 1; });
+  });
+}
+
+void bootstrap().catch(async (error: unknown) => {
+  console.error("Bot startup failed:", error instanceof Error ? error.message : "unknown error");
+  process.exitCode = 1;
+  await shutdown();
+});

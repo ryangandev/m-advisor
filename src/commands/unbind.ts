@@ -1,4 +1,5 @@
 import {
+  MessageFlags,
   ChatInputCommandInteraction,
   EmbedBuilder,
   SlashCommandBuilder,
@@ -7,6 +8,7 @@ import {
 import { BotCommand } from "../types";
 import { buildErrorEmbed } from "../utils/embeds";
 import { isAdmin } from "../utils/permissions";
+import { stopPolling } from "../services/gameMonitor";
 import { clearBinding, getBinding } from "../store/bindingStore";
 
 const unbindCommand: BotCommand = {
@@ -24,12 +26,12 @@ const unbindCommand: BotCommand = {
     if (!isAdmin(interaction)) {
       await interaction.reply({
         content: "You need Administrator permission to use this command.",
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
       });
       return;
     }
 
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
     const guildId = interaction.guildId;
     if (!guildId) {
@@ -47,6 +49,7 @@ const unbindCommand: BotCommand = {
       return;
     }
 
+    stopPolling(guildId);
     clearBinding(guildId);
 
     const successEmbed = new EmbedBuilder()

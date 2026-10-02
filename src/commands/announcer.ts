@@ -1,4 +1,5 @@
 import {
+  MessageFlags,
   ChatInputCommandInteraction,
   EmbedBuilder,
   SlashCommandBuilder,
@@ -28,7 +29,7 @@ const announcerCommand: BotCommand = {
     if (!guildId) {
       await interaction.reply({
         embeds: [buildErrorEmbed("This command can only be used in a server.")],
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
       });
       return;
     }
@@ -42,7 +43,7 @@ const announcerCommand: BotCommand = {
       .setTitle("Announcer Updated")
       .setDescription(`Announcer voice set to ${label}`);
 
-    await interaction.reply({ embeds: [embed], ephemeral: true });
+    await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
   },
 };
 

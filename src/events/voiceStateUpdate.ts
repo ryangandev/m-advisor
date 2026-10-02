@@ -14,7 +14,7 @@ export default {
     }
 
     const isBoundMember =
-      newState.member?.id === binding.discordUserId || oldState.member?.id === binding.discordUserId;
+      newState.id === binding.discordUserId || oldState.id === binding.discordUserId;
 
     if (!isBoundMember) {
       return;

@@ -1,7 +1,7 @@
 {
   "name": "discord-bot-lol-stats-m-advisor",
   "version": "1.0.0",
-  "description": "Discord Bot - M Advisor (测马军师)",
+  "description": "Discord Bot - M Advisor (策马军师)",
   "main": "dist/index.js",
   "engines": {
     "node": ">=22.12.0"
@@ -11,7 +11,9 @@
     "dev": "node --import tsx src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
-    "check": "npm run build && npm test"
+    "check": "npm run build && npm test",
+    "register": "node dist/cli/register.js",
+    "doctor": "node dist/cli/doctor.js"
   },
   "keywords": [],
   "author": "",
