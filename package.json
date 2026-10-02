@@ -14,7 +14,8 @@
     "check": "npm run build && npm test",
     "register": "node dist/cli/register.js",
     "doctor": "node dist/cli/doctor.js",
-    "verify:local": "node --import tsx scripts/verify-local.ts"
+    "verify:local": "node --import tsx scripts/verify-local.ts",
+    "verify:discord": "node --import tsx scripts/verify-discord.ts"
   },
   "keywords": [],
   "author": "",
