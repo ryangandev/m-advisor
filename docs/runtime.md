@@ -28,6 +28,9 @@ Set `TEST_GUILD_ID` to the authorized server before registering or running test 
 Set `TEST_VOICE_CHANNEL_ID` to restrict tests and mock announcements to a particular voice channel.
 Changing command definitions requires running `npm run build` and `npm run register` again.
 Guild registration replaces this application's existing commands in that server; commands in other servers are untouched.
+Existing global command definitions are not removed by guild registration.
+The retired `/testvc` definition may remain visible in Discord, but this version acknowledges it privately and directs users to `/testvoice` after updating their server's commands.
+The retired command does not start speech or act as a second voice-test control.
 
 ```sh
 npm ci
