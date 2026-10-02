@@ -44,6 +44,12 @@ The ignored `test-results/gateway-lifecycle.json` records this observation.
 That run did not register commands, send messages or join a voice channel.
 It validates the actual startup path without substituting for live audio acceptance.
 
+A subsequent read-only REST preflight confirmed access to the proposed server and General voice channel.
+The bot's effective channel permissions include View Channel, Connect, Speak and Send Messages.
+This result removes a permissions concern but does not prove voice transport or audible playback.
+The ignored `test-results/discord-preflight.json` records the inventory without credentials.
+At that check the server had no guild commands and the application retained older global command definitions, including `/testvc`.
+
 ## Live Discord test
 
 First confirm the server and ordinary voice channel that may be used for testing.

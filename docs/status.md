@@ -16,11 +16,15 @@ Warm Node API validation generated a valid WAV and shutdown removed its temporar
 Monitoring and shared voice playback passed behavioral tests for historical baselines, correct tracked-account results, retries, duplicate prevention, cancellation and channel restrictions.
 An isolated mock-loss match passed real Qwen generation and FFmpeg Opus conversion through the shared pipeline in 19.58 seconds.
 That local pipeline verification used a simulated Discord transport, not a live channel.
-Command/lifecycle integration passed the complete 132-test suite and compilation.
-An independent temporary checkout without credentials or user data passed `npm ci` and the same 132 tests with no failures, skips or warnings.
+Command/lifecycle integration passed the complete 139-test suite and compilation.
+An independent temporary checkout without credentials or user data passed `npm ci` and the current 139 tests with no failures, skips or warnings.
 That clean installation also reported zero npm audit vulnerabilities.
 The actual Discord Gateway login, local speech prewarm and SIGTERM shutdown also passed with an isolated empty database and exit code 0.
 That Gateway check did not register commands, join voice or send messages.
+The read-only Discord preflight confirmed that the proposed General channel is accessible and that the bot has View Channel, Connect, Speak and Send Messages permissions there.
+The server currently has no guild-scoped command registrations; the application retains older global definitions, including retired `/testvc`.
+The current handler acknowledges retired and unknown commands privately instead of allowing a timeout; seven regression tests cover this path and safe error replies.
+Current registration and actual voice playback still await B1.
 The pre-implementation audit verified Discord credentials and the installed offline Qwen model.
 The pre-implementation Riot credential check returned HTTP 401.
 Live Discord playback and human listening have not passed.

@@ -11,6 +11,10 @@ export default {
 
     const command = interaction.client.commands.get(interaction.commandName);
     if (!command) {
+      const content = interaction.commandName === "testvc"
+        ? "旧的 /testvc 已停用。请让管理员更新此服务器的 Bot 命令，然后使用 /testvoice 测试语音。"
+        : "这个命令当前不可用。请让管理员更新此服务器的 Bot 命令后再试。";
+      await interaction.reply({ content, flags: MessageFlags.Ephemeral });
       return;
     }
 
