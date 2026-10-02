@@ -128,3 +128,10 @@ dist
 dist/
 .DS_Store
 .vscode
+.data/
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+__pycache__/
+*.pyc
+test-results/
