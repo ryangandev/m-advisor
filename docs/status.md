@@ -16,33 +16,38 @@ Warm Node API validation generated a valid WAV and shutdown removed its temporar
 Monitoring and shared voice playback passed behavioral tests for historical baselines, correct tracked-account results, retries, duplicate prevention, cancellation and channel restrictions.
 An isolated mock-loss match passed real Qwen generation and FFmpeg Opus conversion through the shared pipeline in 19.58 seconds.
 That local pipeline verification used a simulated Discord transport, not a live channel.
-Command/lifecycle integration passed the complete 139-test suite and compilation.
-An independent temporary checkout without credentials or user data passed `npm ci` and the current 139 tests with no failures, skips or warnings.
+Command/lifecycle integration and command migration passed the complete 148-test suite and compilation.
+An independent temporary checkout without credentials or user data passed `npm ci` and the earlier 139-test suite with no failures, skips or warnings.
 That clean installation also reported zero npm audit vulnerabilities.
 The actual Discord Gateway login, local speech prewarm and SIGTERM shutdown also passed with an isolated empty database and exit code 0.
 That Gateway check did not register commands, join voice or send messages.
 The read-only Discord preflight confirmed that the proposed General channel is accessible and that the bot has View Channel, Connect, Speak and Send Messages permissions there.
-The server currently has no guild-scoped command registrations; the application retains older global definitions, including retired `/testvc`.
+After Ryan authorized the proposed target on 2026-10-02, local configuration was set to Ry的四合院 / General with mock Riot data and local Qwen speech.
+The current seven commands were registered in that server.
+Actual Discord UI testing exposed duplicate global and guild command choices, including an obsolete announcer definition without the current parameter.
+The explicit single-server migration retired six known legacy global definitions; a fresh REST inventory confirmed zero globals and all seven guild commands.
 The current handler acknowledges retired and unknown commands privately instead of allowing a timeout; seven regression tests cover this path and safe error replies.
-Current registration and actual voice playback still await B1.
+Both Serena and Uncle_Fu `/testvoice` invocations completed the actual Discord playback lifecycle and returned their completion reply in the client.
+The bot left General after each playback, while Ryan's client remained muted and listening.
 The pre-implementation audit verified Discord credentials and the installed offline Qwen model.
 The pre-implementation Riot credential check returned HTTP 401.
-Live Discord playback and human listening have not passed.
+Live short voice playback has passed; simulated-match live playback and human listening remain pending.
 
 ## User-only blockers
 
 | ID | Needed | Blocks |
 | --- | --- | --- |
-| B1 | Confirm the test Discord server and voice channel | Live channel operations only |
+| B1 | Resolved: Ryan authorized Ry的四合院 / General on 2026-10-02 | No longer blocks live operations |
 | B2 | Listen once inside that channel | Human audio acceptance only |
 | B3 | Supply a valid Riot API key in local configuration | Real Riot acceptance only |
+| B4 | Unlock the Mac after it locked during UI testing | Remaining actual Discord UI commands only |
 
 Mock data allows implementation and voice integration to continue without B3.
 Discord Portal or server-permission changes become a blocker only if the actual test demonstrates they are required and unavailable to the agent.
 
 ## Next
 
-All independent implementation and automated acceptance work is complete.
-Confirm B1, register commands in that server and run the [live acceptance procedure](acceptance.md).
+The local bot is running with registered current commands.
+Resume the [live acceptance procedure](acceptance.md) after the Mac is unlocked, including binding, simulated outcomes and restart persistence.
 Confirm audible playback for B2; finish real Riot acceptance only after B3 is supplied locally.
 Record each verified acceptance separately; never treat mock success as real Riot success.
