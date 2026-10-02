@@ -8,6 +8,7 @@
 | How are bindings and voice preferences saved? | [Storage](storage.md) | Update with database and store behavior |
 | How do mock fixtures and real Riot requests work? | [Riot data](riot-data.md) | Update with provider, fixtures and request policy |
 | How does local Qwen speech run? | [Local voice](local-voice.md) | Update with worker, providers and speech evidence |
+| How are monitoring, retries and voice playback coordinated? | [Announcements](announcements.md) | Update with monitoring sessions and transport behavior |
 
 Subsystem implementation details belong in their routed document.
 Git history records completed tasks; status records current evidence and remaining blockers.

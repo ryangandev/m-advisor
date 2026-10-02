@@ -37,3 +37,9 @@ See [Riot data](riot-data.md) for fixture names, rate limiting, endpoint policy 
 The bot owns one bounded, persistent Python speech worker.
 It reads the installed Media model record without modifying the shared environment or downloading weights.
 See [Local voice](local-voice.md) for configuration, protocol, provider choice and measured performance.
+
+## Announcements
+
+Each monitoring session establishes a baseline and prevents concurrent polls.
+The shared voice queue generates audio before joining a channel and records success only after playback.
+See [Announcements](announcements.md) for retry, cancellation, channel authorization and safe mention behavior.
