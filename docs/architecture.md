@@ -19,3 +19,9 @@ The approved first delivery is local, on-demand hosting with NA profiles and gam
 Each server tracks one Discord member with multiple LoL accounts.
 Free conversation, STT, LLM commentary and cloud deployment are later extensions.
 The local speech model replaces the cloud synthesis step; the Node bot still owns Discord connections.
+
+## Storage
+
+Bindings and voice styles are persisted locally in SQLite.
+Timers, voice channels and match baselines are session state and never survive restart.
+See [Storage](storage.md) for database ownership, durability, shutdown and test evidence.
