@@ -4,6 +4,9 @@ import type { VoiceStyle } from "../store/announcerStore";
 import { generateTTS } from "../utils/tts";
 import { playAudioInVoiceChannel } from "../utils/voicePlayback";
 
+// Five-horse reports run 60-100 seconds; the speech model caps output near 170 seconds.
+export const PLAYBACK_TIMEOUT_MS = 240_000;
+
 export class AnnouncementCancelledError extends Error {
   constructor() {
     super("Announcement cancelled because its monitoring session or voice channel changed.");
@@ -63,7 +66,7 @@ export class VoiceAnnouncementService {
           }
         }, 100);
         channelWatch.unref();
-        await this.dependencies.play(channel, output, 120_000, playbackSignal);
+        await this.dependencies.play(channel, output, PLAYBACK_TIMEOUT_MS, playbackSignal);
         assertAllowed();
         if (playback.signal.aborted || resolveChannel()?.id !== channel.id) throw new AnnouncementCancelledError();
         return channel;

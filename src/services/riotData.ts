@@ -1,7 +1,6 @@
 import { setTimeout as delay } from "node:timers/promises";
 import { buildMockMatch, buildMockProfile } from "../fixtures/riotFixtures";
-import type { MockOutcome, MockProfile } from "../fixtures/riotFixtures";
-import type { MatchDetail } from "../types";
+import type { MockOutcome, MockProfile, RawMatch } from "../fixtures/riotFixtures";
 
 export type RiotMode = "mock" | "real";
 export type RiotErrorCode = "invalid_mode" | "missing_key" | "unauthorized" | "forbidden" | "not_found" | "rate_limited" | "unavailable" | "bad_request" | "network" | "timeout" | "invalid_response" | "mock_only";
@@ -66,7 +65,7 @@ function statusError(status: number, retryAfterMs?: number, simulated = false): 
 
 const mockProfiles = new Map<string, MockProfile>();
 const mockHistory = new Map<string, string[]>();
-const mockMatches = new Map<string, MatchDetail>();
+const mockMatches = new Map<string, RawMatch>();
 let mockSequence = 0;
 let mockEpoch = 0;
 

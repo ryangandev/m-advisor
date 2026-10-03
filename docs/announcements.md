@@ -35,13 +35,15 @@ Real automatic announcements continue following the tracked member's current cha
 
 ## Speech and text
 
-`src/services/announcementText.ts` builds deterministic Chinese speech from match participants.
+`src/services/announcementText.ts` builds deterministic Chinese speech and a channel report from one ranking.
 Victory or defeat comes from the tracked account's PUUID, even when an enemy has the highest KDA.
-Best and worst performance are compared across the whole match by KDA, retaining the existing comparison scope.
-Mock speech and its text transcript begin with `模拟战报`.
+The tracked player's five teammates are ranked from 特等马 to 没有马; enemies are never scored.
+See [Horse ranking](scoring.md) for the scoring model and commentary rules.
+Mock speech begins with `模拟战报`, and the mock report carries a mock title and footer.
 Participant names are shortened and sanitized before use in speech or Discord text.
+A five-horse report is typically 60 to 80 seconds of audio, so the transport allows 240 seconds of playback.
 
-After successful voice playback, the bot posts the same report in the voice channel's text chat.
+After successful voice playback, the bot posts the ranking as an embed in the voice channel's text chat.
 It can mention only the bound Discord member whose Riot participant is present in the match and whose member ID is still in that channel.
 Every send uses explicit `allowedMentions`, with automatic mentions and roles disabled.
 Riot names cannot trigger mentions of other Discord members or `@everyone`.

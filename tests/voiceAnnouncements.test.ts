@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { VoiceChannel } from "discord.js";
-import { AnnouncementCancelledError, VoiceAnnouncementService } from "../src/services/voiceAnnouncements";
+import { AnnouncementCancelledError, PLAYBACK_TIMEOUT_MS, VoiceAnnouncementService } from "../src/services/voiceAnnouncements";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -87,6 +87,19 @@ test("automatic announcements resolve the member's new channel after generation"
   speech.resolve("moved.wav");
   assert.equal((await result).id, "new");
   assert.equal(played, "new");
+});
+
+test("playback allows a full-length five-horse report", async () => {
+  let timeout = 0;
+  const service = new VoiceAnnouncementService({
+    generate: async () => "report.wav",
+    play: async (_target, _path, timeoutMs) => { timeout = timeoutMs; },
+    cleanup: async () => undefined,
+  });
+  await service.announce("guild", "report", "old", () => channel());
+  // The local model caps speech near 170 seconds; reports must never be cut off by the transport timeout.
+  assert.equal(timeout, PLAYBACK_TIMEOUT_MS);
+  assert.ok(timeout >= 180_000);
 });
 
 test("cancelled queued jobs skip generation entirely", async () => {

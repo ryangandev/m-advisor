@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, test } from "node:test";
 import { getAccountByRiotId, getRankedEntries, getSummonerByPuuid } from "../src/utils/riotApi";
-import { getLatestSRMatchId, getMatchDetail, getBestAndWorst, SR_QUEUE_IDS } from "../src/utils/riotMatchApi";
+import { getLatestSRMatchId, getMatchDetail, parseMatchDetail, SR_QUEUE_IDS } from "../src/utils/riotMatchApi";
 import { createRiotRequester, getRiotDataLabel, getRiotMode, isMockData, resetMockData, RiotApiError, simulateMockMatch } from "../src/services/riotData";
 
 const originalMode = process.env.RIOT_MODE;
@@ -48,8 +48,11 @@ test("simulation becomes latest match through normal polling APIs, separately pe
   assert.equal(await getLatestSRMatchId(alt.puuid), altOriginal);
   const match = await getMatchDetail(simulated.matchId);
   assert.equal(match.info.participants.find((player) => player.puuid === primary.puuid)?.win, false);
-  const players = match.info.participants.map((player) => ({ ...player, summonerName: player.riotIdGameName }));
-  assert.equal(getBestAndWorst(players).best.win, true, "fixture reproduces enemy best KDA on a tracked loss");
+  const kla = (player: typeof match.info.participants[number]) => (player.kills + player.assists) / Math.max(1, player.deaths);
+  const topKda = [...match.info.participants].sort((a, b) => kla(b) - kla(a))[0];
+  assert.equal(topKda.win, true, "fixture reproduces enemy best KDA on a tracked loss");
+  assert.equal(match.info.participants.filter((player) => player.position).length, 10);
+  assert.ok(match.info.participants.every((player) => player.stats.goldEarned! > 0 && player.championId > 0));
 });
 
 test("unranked and arbitrary mock profiles are deterministic and safe to mutate", async () => {
@@ -111,10 +114,48 @@ test("public real stats normalize omitted zero values and cache immutable match 
   assert.equal((await getSummonerByPuuid("real-puuid")).profileIconId, 0);
   assert.deepEqual((await getRankedEntries("real-puuid"))[0], { queueType: "RANKED_SOLO_5x5", tier: "IRON", rank: "IV", leaguePoints: 0, wins: 0, losses: 0 });
   const first = await getMatchDetail("NA1_OMITTED_STATS");
-  assert.deepEqual(first.info.participants[0], { puuid: "real-puuid", riotIdGameName: "", teamId: 100, kills: 0, deaths: 0, assists: 0, win: false });
+  assert.deepEqual(first.info.participants[0], {
+    puuid: "real-puuid", riotIdGameName: "", championId: 0, championName: "", position: null,
+    teamId: 100, kills: 0, deaths: 0, assists: 0, win: false, stats: {},
+  });
+  assert.deepEqual(first.info.teams, []);
+  assert.equal(first.info.earlySurrender, false);
   first.info.participants[0].kills = 99;
   assert.equal((await getMatchDetail("NA1_OMITTED_STATS")).info.participants[0].kills, 0);
   assert.equal(matchRequests, 1);
+});
+
+test("match parsing marks games stopped without a result as aborted", () => {
+  const participant = (puuid: string, teamId: number, win: boolean) => ({ puuid, teamId, win, championId: 1, championName: "Annie" });
+  const parse = (endOfGameResult: string | undefined, win: boolean) => parseMatchDetail({
+    metadata: { matchId: "NA1_END" },
+    info: { queueId: 420, gameDuration: 1500, endOfGameResult, participants: [participant("a", 100, win), participant("b", 200, false)] },
+  }, "NA1_END").info.aborted;
+  assert.equal(parse("GameComplete", true), false);
+  assert.equal(parse(undefined, true), false);
+  assert.equal(parse("Abort_AntiCheatExit", false), true);
+  assert.equal(parse(undefined, false), true, "older data without a result field and no winner");
+});
+
+test("match parsing keeps scoring statistics, positions, objectives and remakes", () => {
+  const detail = parseMatchDetail({
+    metadata: { matchId: "NA1_FULL" },
+    info: {
+      queueId: 420, gameDuration: 1500,
+      teams: [{ teamId: 100, objectives: { dragon: { kills: 2 }, baron: { kills: 1 }, tower: { kills: 7 } } }],
+      participants: [{
+        puuid: "p1", teamId: 100, win: true, championId: 412, championName: "Thresh", teamPosition: "", individualPosition: "UTILITY",
+        kills: 1, deaths: 2, assists: 20, goldEarned: 8000, visionScore: 80, totalDamageTaken: "not a number",
+        gameEndedInEarlySurrender: true,
+        challenges: { effectiveHealAndShielding: 5000, maxCsAdvantageOnLaneOpponent: 3, kda: 10.5 },
+      }],
+    },
+  }, "NA1_FULL");
+  const [player] = detail.info.participants;
+  assert.equal(player.position, "UTILITY", "falls back to the individual position");
+  assert.deepEqual(player.stats, { goldEarned: 8000, visionScore: 80, effectiveHealAndShielding: 5000, maxCsAdvantageOnLaneOpponent: 3 });
+  assert.deepEqual(detail.info.teams, [{ teamId: 100, dragon: 2, baron: 1, riftHerald: 0, tower: 7 }]);
+  assert.equal(detail.info.earlySurrender, true);
 });
 
 test("real auth uses header, removes query credentials and prevents redirects", async () => {

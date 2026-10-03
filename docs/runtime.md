@@ -14,6 +14,7 @@ Install the locked dependency graph with `npm ci`.
 `npm run register` explicitly replaces this application's guild command definitions in `TEST_GUILD_ID`.
 `npm run verify:local` exercises isolated mock match monitoring with real local speech and Opus conversion; see [Acceptance](acceptance.md).
 `npm run verify:discord -- --confirm-live` exercises actual Discord voice and report messages with an isolated mock binding; stop the normal bot first and use only an authorized target.
+`npm run benchmarks:sample`, `npm run benchmarks:build` and `npm run champions:update` refresh the ranking reference data; see [Horse ranking](scoring.md).
 Bot startup never registers commands automatically.
 
 ## Configuration and launch

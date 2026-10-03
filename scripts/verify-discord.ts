@@ -66,10 +66,11 @@ async function verify(): Promise<void> {
       outcomes.push({ outcome, voice, matchId: match.matchId });
     }
     const messages = await channel.messages.fetch({ limit: 10 });
-    const reports = [...messages.values()].filter(message => message.author.id === client.user!.id && message.createdTimestamp >= started && message.content.includes("模拟战报"));
+    const reports = [...messages.values()].filter(message => message.author.id === client.user!.id && message.createdTimestamp >= started && message.embeds[0]?.title?.includes("模拟战报"));
     assert.equal(reports.length, 2);
-    assert.ok(reports.some(message => message.content.includes("本局胜利")));
-    assert.ok(reports.some(message => message.content.includes("本局失利")));
+    assert.ok(reports.some(message => message.embeds[0].description?.includes("这局赢了")));
+    assert.ok(reports.some(message => message.embeds[0].description?.includes("这局输了")));
+    assert.ok(reports.every(message => message.embeds[0].fields.some(field => field.value.includes("没有马"))));
     assert.ok(reports.every(message => !message.mentions.everyone));
     assert.equal(moves.filter(move => move.to === channelId).length, 2);
     assert.equal(moves.filter(move => move.from === channelId && move.to === null).length, 2);
@@ -80,7 +81,7 @@ async function verify(): Promise<void> {
       isolatedDatabase: true, productionBindingsChanged: false,
       historicalBaselineNotSpoken: true, outcomes, duplicateNotSpoken: true,
       voiceJoins: 2, voiceLeaves: 2, remainingVoiceConnections: 0,
-      actualReportMessages: reports.map(message => ({ id: message.id, content: message.content })),
+      actualReportMessages: reports.map(message => ({ id: message.id, content: message.content, embed: message.embeds[0].toJSON() })),
       humanListening: "pending user confirmation", totalSeconds: (Date.now() - started) / 1000,
     };
     await mkdir("test-results", { recursive: true });

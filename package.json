@@ -15,7 +15,10 @@
     "register": "node dist/cli/register.js",
     "doctor": "node dist/cli/doctor.js",
     "verify:local": "node --import tsx scripts/verify-local.ts",
-    "verify:discord": "node --import tsx scripts/verify-discord.ts"
+    "verify:discord": "node --import tsx scripts/verify-discord.ts",
+    "benchmarks:sample": "node --import tsx scripts/sample-matches.ts",
+    "benchmarks:build": "node --import tsx scripts/build-benchmarks.ts",
+    "champions:update": "node --import tsx scripts/update-champion-names.ts"
   },
   "keywords": [],
   "author": "",

@@ -23,7 +23,10 @@ Implementation details and verification evidence belong in the routed [documenta
 - Polls run approximately every 45 seconds while the member remains in voice.
 - Supported Summoner's Rift queues are listed in [Riot data](docs/riot-data.md).
 - The result is the tracked account's win or loss.
-- Commentary identifies the highest and lowest KDA participants across the match.
+- Commentary ranks the tracked player's five teammates as 特等马, 上等马, 中等马, 下等马 and 没有马; enemies are not scored.
+- Ranking must not follow KDA alone: it compares each player with the same position across damage, teamfight, survival, economy, frontline, vision, objectives, utility and lane matchup, so supports and tanks are judged fairly.
+- After reading the ranking, the bot praises the 特等马 extravagantly and roasts the 没有马 in an abstract, in-game style.
+- Remakes, aborted games without a winner and games shorter than 10 minutes are not ranked.
 - The bot generates speech, joins the current permitted voice channel, finishes playback and leaves.
 - A failed announcement remains eligible for a later retry; successful playback prevents duplicate speech.
 - Overlapping polls and manual announcements must not create competing voice connections.
@@ -51,3 +54,4 @@ A valid Riot API key is required only for real Riot acceptance.
 Server/channel confirmation and a listener are required only for the corresponding live acceptance steps.
 Permission changes become user blockers only when a live check shows they are necessary and unavailable to the agent.
 Speech recognition, LLM APIs, free conversation, cloud deployment and multi-region support are later work.
+Each server tracks one member: when that member is in voice, the bot watches their account for a new game and ranks their whole team, so friends on the same team are covered without separate bindings.
