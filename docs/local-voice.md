@@ -4,6 +4,7 @@ The default TTS provider is the installed Qwen CustomVoice model running offline
 The bot launches one Python worker on first use or during `prewarmTTS()` and keeps its model loaded until shutdown.
 Announcements from all servers share a bounded queue and run one at a time.
 `sweet` selects Serena and `old` selects Uncle_Fu.
+A server without a saved `/announcer` choice uses `old`.
 Both voices speak Chinese.
 Their style instructions ask for an exaggerated, theatrical delivery: excited praise and scornful, sarcastic criticism.
 

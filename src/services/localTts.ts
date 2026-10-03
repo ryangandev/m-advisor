@@ -108,7 +108,7 @@ export class LocalTtsService {
     }
   }
 
-  async generate(text: string, style = "sweet"): Promise<string> {
+  async generate(text: string, style = "old"): Promise<string> {
     const normalized = text.trim();
     if (!normalized) throw new Error("TTS text cannot be empty.");
     if (normalized.length > 1_000) throw new Error("TTS text must be at most 1000 characters.");
@@ -123,7 +123,7 @@ export class LocalTtsService {
       const request: Request = {
         id,
         text: normalized,
-        speaker: style === "old" ? "Uncle_Fu" : "Serena",
+        speaker: style === "sweet" ? "Serena" : "Uncle_Fu",
         output: "",
         timer: setTimeout(() => this.expire(id), this.options.timeoutMs),
         resolve,

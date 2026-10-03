@@ -84,7 +84,7 @@ async function getAzureErrorMessage(response: Response): Promise<string> {
   }
 }
 
-export async function generateTTS(text: string, style = "sweet"): Promise<string> {
+export async function generateTTS(text: string, style = "old"): Promise<string> {
   assertRunning();
   const normalizedText = text.trim();
   if (!normalizedText) {
@@ -104,7 +104,7 @@ export async function generateTTS(text: string, style = "sweet"): Promise<string
 
   const { key, region } = azureConfiguration();
 
-  const voice = VOICES[style] ?? VOICES.sweet;
+  const voice = VOICES[style] ?? VOICES.old;
   const ssml = buildSsml(normalizedText, voice);
   const controller = new AbortController();
   let finish!: () => void;
