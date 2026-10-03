@@ -63,6 +63,8 @@ Its current commands do not require privileged Presence or Server Members gatewa
 The bot needs View Channel, Connect and Speak permissions in the voice channel.
 Optional match messages in the voice channel chat also need Send Messages.
 Invite the application with the `bot` and `applications.commands` scopes.
+The avatar is `assets/m-advisor-avatar.png` (1024 x 1024), rendered from `assets/m-advisor-avatar.svg`.
+Upload it as the bot icon on the Developer Portal's Bot page, and optionally as the app icon on General Information.
 
 ## Native dependencies
 
