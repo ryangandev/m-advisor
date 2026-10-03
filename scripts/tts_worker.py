@@ -13,8 +13,8 @@ MODEL = "mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-8bit"
 SPEAKERS = {"Serena", "Uncle_Fu"}
 MAX_TOKENS = 2048
 INSTRUCTIONS = {
-    "Serena": "像游戏里的军师给朋友播报战绩，语气亲切自然，轻松活泼，吐字清楚，不夸张。",
-    "Uncle_Fu": "像沉稳的老军师给朋友播报战绩，语气从容，有一点幽默，吐字清楚，不夸张。",
+    "Serena": "像戏精附体的电竞女解说给朋友播报战绩，语气夸张，抑扬顿挫，带点阴阳怪气，表扬时激动亢奋，批评时毒舌嫌弃，吐字清楚。",
+    "Uncle_Fu": "像说书先生一样的老军师给朋友播报战绩，抑扬顿挫，夸张幽默，表扬时拍案叫绝，批评时痛心疾首又阴阳怪气，吐字清楚。",
 }
 
 # Keep a private protocol descriptor. Python and native library progress output
