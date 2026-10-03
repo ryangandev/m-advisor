@@ -5,6 +5,7 @@ The bot launches one Python worker on first use or during `prewarmTTS()` and kee
 Announcements from all servers share a bounded queue and run one at a time.
 `sweet` selects Serena and `old` selects Uncle_Fu.
 Both voices speak Chinese.
+Their style instructions ask for an exaggerated, theatrical delivery: excited praise and scornful, sarcastic criticism.
 
 The existing speech installation is reused without changing the Media workspace or downloading model files.
 The worker validates the model record and recorded file sizes, uses its local snapshot, and enables Hugging Face and Transformers offline mode before importing speech libraries.
