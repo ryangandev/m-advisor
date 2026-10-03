@@ -12,6 +12,7 @@ import {
 import { getLatestSRMatchId, getMatchDetail } from "../utils/riotMatchApi";
 import { getRiotMode, RiotApiError } from "./riotData";
 import { buildMatchAnnouncement } from "./announcementText";
+import { buildHorseReportEmbed } from "../utils/embeds";
 import { AnnouncementCancelledError, announceTextToCurrentChannel } from "./voiceAnnouncements";
 
 const POLL_INTERVAL_MS = 45_000;
@@ -143,7 +144,7 @@ export class GameMonitor {
           attempted.add(matchId);
           const detail = await this.dependencies.detail(matchId);
           if (!this.current(guildId, session)) break;
-          const text = buildMatchAnnouncement(detail, account.puuid, this.dependencies.mock());
+          const { speech: text, report } = buildMatchAnnouncement(detail, account.puuid, this.dependencies.mock());
           const resolveTarget = () => {
             const currentChannel = this.dependencies.resolveChannel(client, guildId, binding.discordUserId);
             if (!currentChannel || [...requiredTargets].some((id) => currentChannel.id !== id)) return null;
@@ -168,7 +169,8 @@ export class GameMonitor {
           const mention = mappedParticipant && channel.members.has(binding.discordUserId) ? binding.discordUserId : undefined;
           try {
             await channel.send({
-              content: `${mention ? `<@${mention}> ` : ""}${text}`,
+              ...(mention ? { content: `<@${mention}>` } : {}),
+              embeds: [buildHorseReportEmbed(report)],
               allowedMentions: { parse: [], roles: [], users: mention ? [mention] : [], repliedUser: false },
             });
           } catch (error) {

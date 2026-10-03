@@ -1,4 +1,5 @@
-import type { MatchDetail, ParticipantStats } from "../types";
+import { CHALLENGE_STATS, PERFORMANCE_STATS, POSITIONS } from "../types";
+import type { MatchDetail, MatchParticipant, ParticipantPerformance, Position, TeamObjectives } from "../types";
 import { getRiotMode, RiotApiError, riotFetch, riotNumber, riotObject } from "../services/riotData";
 
 const AMERICAS = "https://americas.api.riotgames.com";
@@ -28,57 +29,83 @@ export async function getMatchDetail(matchId: string): Promise<MatchDetail> {
   const cached = matchCache.get(cacheKey);
   if (cached) return structuredClone(cached);
   const detailUrl = `${AMERICAS}/lol/match/v5/matches/${encodeURIComponent(matchId)}`;
-  const raw = riotObject(await riotFetch<unknown>(detailUrl));
-  const info = riotObject(raw.info);
-  const metadata = riotObject(raw.metadata);
-  if (!Array.isArray(info.participants) || info.participants.length === 0) {
-    throw new RiotApiError("Riot API returned a match without participants.", "invalid_response");
-  }
-  const participants = info.participants.map((value) => {
-    const player = riotObject(value);
-    if (typeof player.puuid !== "string" || !player.puuid || (player.win !== undefined && typeof player.win !== "boolean")) {
-      throw new RiotApiError("Riot API returned an invalid match participant.", "invalid_response");
-    }
-    return {
-      puuid: player.puuid,
-      riotIdGameName: typeof player.riotIdGameName === "string" ? player.riotIdGameName : "",
-      kills: riotNumber(player.kills), deaths: riotNumber(player.deaths), assists: riotNumber(player.assists),
-      win: player.win === true, teamId: riotNumber(player.teamId),
-    };
-  });
-  if (metadata.matchId !== matchId) throw new RiotApiError("Riot API returned a mismatched match ID.", "invalid_response");
-  const detail: MatchDetail = {
-    metadata: { matchId, participants: participants.map((player) => player.puuid) },
-    info: { queueId: riotNumber(info.queueId), gameDuration: riotNumber(info.gameDuration), participants },
-  };
+  const detail = parseMatchDetail(await riotFetch<unknown>(detailUrl), matchId);
   matchCache.set(cacheKey, structuredClone(detail));
   if (matchCache.size > 200) matchCache.delete(matchCache.keys().next().value!);
   return detail;
 }
 
-export function getBestAndWorst(
-  participants: ParticipantStats[],
-): { best: ParticipantStats; worst: ParticipantStats } {
-  if (participants.length === 0) {
-    throw new Error("Cannot evaluate best/worst players from an empty participant list.");
+/** Validates a match-v5 response body and keeps the fields used for announcements and scoring. */
+export function parseMatchDetail(body: unknown, matchId: string): MatchDetail {
+  const raw = riotObject(body);
+  const info = riotObject(raw.info);
+  const metadata = riotObject(raw.metadata);
+  if (!Array.isArray(info.participants) || info.participants.length === 0) {
+    throw new RiotApiError("Riot API returned a match without participants.", "invalid_response");
   }
+  const participants = info.participants.map(parseParticipant);
+  if (metadata.matchId !== matchId) throw new RiotApiError("Riot API returned a mismatched match ID.", "invalid_response");
+  return {
+    metadata: { matchId, participants: participants.map((player) => player.puuid) },
+    info: {
+      queueId: riotNumber(info.queueId),
+      gameDuration: riotNumber(info.gameDuration),
+      earlySurrender: info.participants.some((value) => riotObject(value).gameEndedInEarlySurrender === true),
+      // Older matches omit endOfGameResult, so a game in which nobody won also counts as aborted.
+      aborted: (typeof info.endOfGameResult === "string" && info.endOfGameResult !== "GameComplete")
+        || !participants.some((player) => player.win),
+      teams: Array.isArray(info.teams) ? info.teams.map(parseTeam) : [],
+      participants,
+    },
+  };
+}
 
-  const getKda = (participant: ParticipantStats): number =>
-    (participant.kills + participant.assists) / Math.max(participant.deaths, 1);
-
-  let best = participants[0];
-  let worst = participants[0];
-
-  for (const participant of participants.slice(1)) {
-    if (getKda(participant) > getKda(best)) {
-      best = participant;
-    }
-    if (getKda(participant) < getKda(worst)) {
-      worst = participant;
-    }
+function parsePosition(...values: unknown[]): Position | null {
+  for (const value of values) {
+    if (typeof value === "string" && (POSITIONS as readonly string[]).includes(value)) return value as Position;
   }
+  return null;
+}
 
-  return { best, worst };
+/** Keeps finite numbers only; scoring treats an omitted statistic as unavailable rather than zero. */
+function parsePerformance(player: Record<string, unknown>): ParticipantPerformance {
+  const challenges = player.challenges && typeof player.challenges === "object" && !Array.isArray(player.challenges)
+    ? player.challenges as Record<string, unknown> : {};
+  const stats: ParticipantPerformance = {};
+  for (const key of PERFORMANCE_STATS) {
+    if (typeof player[key] === "number" && Number.isFinite(player[key])) stats[key] = player[key];
+  }
+  for (const key of CHALLENGE_STATS) {
+    if (typeof challenges[key] === "number" && Number.isFinite(challenges[key])) stats[key] = challenges[key];
+  }
+  return stats;
+}
+
+function parseParticipant(value: unknown): MatchParticipant {
+  const player = riotObject(value);
+  if (typeof player.puuid !== "string" || !player.puuid || (player.win !== undefined && typeof player.win !== "boolean")) {
+    throw new RiotApiError("Riot API returned an invalid match participant.", "invalid_response");
+  }
+  return {
+    puuid: player.puuid,
+    riotIdGameName: typeof player.riotIdGameName === "string" ? player.riotIdGameName : "",
+    championId: riotNumber(player.championId),
+    championName: typeof player.championName === "string" ? player.championName : "",
+    position: parsePosition(player.teamPosition, player.individualPosition),
+    kills: riotNumber(player.kills), deaths: riotNumber(player.deaths), assists: riotNumber(player.assists),
+    win: player.win === true, teamId: riotNumber(player.teamId),
+    stats: parsePerformance(player),
+  };
+}
+
+function parseTeam(value: unknown): TeamObjectives {
+  const team = riotObject(value);
+  const objectives = team.objectives && typeof team.objectives === "object" ? team.objectives as Record<string, unknown> : {};
+  const kills = (name: string) => {
+    const objective = objectives[name];
+    return objective && typeof objective === "object" ? riotNumber((objective as Record<string, unknown>).kills) : 0;
+  };
+  return { teamId: riotNumber(team.teamId), dragon: kills("dragon"), baron: kills("baron"), riftHerald: kills("riftHerald"), tower: kills("tower") };
 }
 
 export { SR_QUEUE_IDS };

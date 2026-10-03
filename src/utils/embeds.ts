@@ -1,6 +1,8 @@
 import { EmbedBuilder } from "discord.js";
 import type { RankedEntry, Summoner } from "../types";
 import { getRiotDataLabel, isMockData } from "../services/riotData";
+import type { MatchReport } from "../services/announcementText";
+import type { HorseTier } from "../services/horseRanking";
 
 // Verified against the official versions endpoint on 2026-10-02; configurable without changing code.
 const DEFAULT_DDRAGON_VERSION = "16.19.1";
@@ -55,4 +57,24 @@ export function buildErrorEmbed(message: string): EmbedBuilder {
     .setColor(0xE74C3C)
     .setTitle(mockMode() ? "模拟数据 - Error" : "Error")
     .setDescription(message);
+}
+
+const TIER_ICONS: Record<HorseTier, string> = { 特等马: "👑", 上等马: "🐎", 中等马: "🐴", 下等马: "🫏", 没有马: "🪦" };
+
+/** Channel report matching the spoken ranking; names are sanitized by the report builder. */
+export function buildHorseReportEmbed(report: MatchReport): EmbedBuilder {
+  const embed = new EmbedBuilder()
+    .setTitle(report.title)
+    .setColor(report.mock ? 0x95A5A6 : 0x1C7A6F)
+    .setDescription(report.summary)
+    .setFooter({ text: report.mock ? "模拟数据 / Mock data • 策马军师" : "Riot 实时数据 • 策马军师" });
+  if (report.lines.length > 0) {
+    embed.addFields({
+      name: "马匹排行",
+      value: report.lines.map((line) => `${TIER_ICONS[line.tier]} **${line.tier}** ${line.champion} · ${line.name}${line.tracked ? " (召唤者)" : ""} · ${line.score.toFixed(1)} 分 · ${line.kda}`).join("\n"),
+    });
+  }
+  if (report.praise) embed.addFields({ name: "👑 军师表扬", value: report.praise.slice(0, 1024) });
+  if (report.roast) embed.addFields({ name: "🪦 军师批评", value: report.roast.slice(0, 1024) });
+  return embed;
 }

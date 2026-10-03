@@ -17,7 +17,8 @@ import { generateTTS, shutdownTTS } from "../src/utils/tts";
 
 const exec = promisify(execFile);
 async function verify(): Promise<void> {
-  if (!ffmpeg) throw new Error("FFmpeg is unavailable.");
+  const codec = ffmpeg;
+  if (!codec) throw new Error("FFmpeg is unavailable.");
   // This verifier deliberately uses isolated mock data and no Discord connection.
   process.env.RIOT_MODE = "mock";
   process.env.TTS_PROVIDER = "local";
@@ -29,11 +30,13 @@ async function verify(): Promise<void> {
   let opusBytes = 0;
   let speechSeconds = 0;
   let monitor: GameMonitor | undefined;
-  const messages: Array<{content:string}> = [];
-  const channel = { id: "local-test-channel", guild: { id: "local-test-guild" }, members: new Map([["local-test-member", {}]]), send: async (message: {content:string}) => { messages.push(message); } } as unknown as VoiceChannel;
+  const messages: Array<{ embeds: Array<{ toJSON: () => { title?: string; description?: string; fields?: Array<{ value: string }> } }> }> = [];
+  const channel = { id: "local-test-channel", guild: { id: "local-test-guild" }, members: new Map([["local-test-member", {}]]), send: async (message: typeof messages[number]) => { messages.push(message); } } as unknown as VoiceChannel;
+  let spokenText = "";
   const voice = new VoiceAnnouncementService({
     generate: async (text, style) => {
       console.log("Generating the simulated match announcement with the installed Qwen model...");
+      spokenText = text;
       const startedSpeech = performance.now();
       const file = await generateTTS(text, style);
       speechSeconds = (performance.now() - startedSpeech) / 1000;
@@ -41,7 +44,7 @@ async function verify(): Promise<void> {
       return file;
     },
     play: async (_channel, file) => {
-      const { stdout } = await exec(ffmpeg, ["-hide_banner", "-loglevel", "error", "-i", file, "-ar", "48000", "-ac", "2", "-c:a", "libopus", "-f", "ogg", "pipe:1"], { encoding: "buffer", maxBuffer: 16 * 1024 * 1024 });
+      const { stdout } = await exec(codec, ["-hide_banner", "-loglevel", "error", "-i", file, "-ar", "48000", "-ac", "2", "-c:a", "libopus", "-f", "ogg", "pipe:1"], { encoding: "buffer", maxBuffer: 16 * 1024 * 1024 });
       assert.equal(stdout.subarray(0, 4).toString(), "OggS");
       opusBytes = stdout.length;
       assert.ok(opusBytes > 100);
@@ -61,9 +64,11 @@ async function verify(): Promise<void> {
     assert.deepEqual(await monitor.poll(client, channel.guild.id), { announced: 1, errors: 0 });
     assert.deepEqual(await monitor.poll(client, channel.guild.id), { announced: 0, errors: 0 });
     assert.equal(messages.length, 1);
-    assert.match(messages[0].content, /模拟战报/);
-    assert.match(messages[0].content, /本局失利/);
-    const report = { checkedAt: new Date().toISOString(), data: "mock", speech: "real offline Qwen", codec: "real FFmpeg Opus", discordTransport: "simulated, not live", baselineNotSpoken: true, trackedDefeatCorrect: true, duplicateNotSpoken: true, opusBytes, speechSeconds, totalSeconds: (performance.now() - started) / 1000 };
+    const embed = messages[0].embeds[0].toJSON();
+    assert.match(embed.title ?? "", /模拟战报/);
+    assert.match(embed.description ?? "", /这局输了/);
+    for (const tier of ["特等马", "上等马", "中等马", "下等马", "没有马"]) assert.ok(spokenText.includes(`${tier}，`), `speech ranks ${tier}`);
+    const report = { checkedAt: new Date().toISOString(), data: "mock", speech: "real offline Qwen", spokenText, spokenCharacters: spokenText.length, codec: "real FFmpeg Opus", discordTransport: "simulated, not live", baselineNotSpoken: true, trackedDefeatCorrect: true, duplicateNotSpoken: true, opusBytes, speechSeconds, totalSeconds: (performance.now() - started) / 1000 };
     await writeFile(path.join(evidenceDirectory, "local-e2e.json"), JSON.stringify(report, null, 2) + "\n");
     console.log(JSON.stringify(report, null, 2));
   } finally {

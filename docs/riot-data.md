@@ -19,6 +19,10 @@ An invalid mode, missing key, or failed real request produces an error instead o
 | `MockAuth#NA1` | Explicit simulated 401 authentication error |
 | `MockMissing#NA1` | Explicit simulated 404 account error |
 
+Mock matches are complete match-v5 response bodies with positions, champions, team objectives and the statistics used by [Horse ranking](scoring.md).
+They pass through the same parser as real matches.
+Their allied support has no kills but strong vision and protection, and their allied ADC feeds, so the ranking visibly differs from a KDA order.
+
 Other Riot IDs receive deterministic synthetic profiles, and previously persisted bindings can be tested in mock mode.
 This does not validate that a real player exists.
 Mock histories live in memory and reset when the bot restarts; user bindings and voice settings have a separate persistence layer.
@@ -42,6 +46,8 @@ A delay longer than 10 seconds is returned as `RiotApiError.retryAfterMs` and bl
 Authentication and not-found errors are returned immediately.
 Errors carry a stable `code`, optional HTTP `status`, optional `retryAfterMs`, and a `simulated` flag without exposing request keys or raw upstream diagnostic bodies.
 Response parsers normalize omitted zero statistics and reject malformed profile, rank, or match shapes.
+`parseMatchDetail()` keeps each participant's position (team position, falling back to individual position), champion, K/D/A, result and the scoring statistics, plus team objective counts, whether the game was a remake, and whether it was aborted without a winner (`endOfGameResult` other than `GameComplete`).
+Optional scoring statistics that are missing or non-numeric are omitted rather than treated as zero.
 
 The latest match lookup checks up to 20 matches for supported Summoner's Rift queues and caches at most 200 immutable match details.
 Supported queues are 400, 420, 430, 440, 480, and 490; this includes Swiftplay and Quickplay and preserves Blind Pick for older history.

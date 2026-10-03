@@ -7,13 +7,16 @@
 | `src/commands/` | Slash commands and permission checks |
 | `src/events/` | Discord lifecycle and voice membership |
 | `src/services/gameMonitor.ts` | Match monitoring and announcement orchestration |
+| `src/services/horseRanking.ts` | Position-aware teammate scoring from 特等马 to 没有马 |
+| `src/services/announcementText.ts` | Chinese speech and channel report for a ranked match |
+| `src/data/` | Generated reference quantiles and Chinese champion names |
 | `src/utils/riotApi.ts`, `riotMatchApi.ts` | Public Riot account and match operations |
 | `src/store/` | Guild bindings, preferences and monitor state |
 | `src/utils/tts.ts` | Speech generation provider boundary |
 | `src/utils/voicePlayback.ts` | Discord connection and audio playback |
 | `tests/` | Reproducible behavioral and integration checks |
 | `src/cli/` | Explicit guild command registration and local runtime diagnosis |
-| `scripts/` | Local launcher, persistent Python speech worker and acceptance verifier |
+| `scripts/` | Local launcher, persistent Python speech worker, acceptance verifiers and reference data generators |
 
 ## Scope
 

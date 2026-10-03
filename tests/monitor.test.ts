@@ -7,6 +7,7 @@ import { VoiceAnnouncementService } from "../src/services/voiceAnnouncements";
 import { RiotApiError } from "../src/services/riotData";
 import { getAnnouncerState, getLastMatchId } from "../src/store/announcerStore";
 import { closeDatabase } from "../src/store/database";
+import { testMatch } from "./helpers/matches";
 
 const monitors: GameMonitor[] = [];
 let originalDatabasePath: string | undefined;
@@ -61,17 +62,7 @@ function harness(guildId: string, puuids = ["tracked"]) {
   });
   const dependencies: MonitorDependencies = {
     latest: async (puuid) => { lookups.push(puuid); return latestIds.get(puuid) ?? null; },
-    detail: async (matchId): Promise<MatchDetail> => ({
-      metadata: { matchId, participants: [...new Set(puuids), "enemy"] },
-      info: {
-        queueId: 420,
-        gameDuration: 1800,
-        participants: [
-          ...[...new Set(puuids)].map((puuid) => ({ puuid, riotIdGameName: "Tracked", kills: 1, deaths: 9, assists: 2, win: false, teamId: 100 })),
-          { puuid: "enemy", riotIdGameName: "Enemy", kills: 20, deaths: 1, assists: 15, win: true, teamId: 200 },
-        ],
-      },
-    }),
+    detail: async (matchId): Promise<MatchDetail> => testMatch(matchId, [...new Set(puuids)]),
     binding: () => binding,
     resolveChannel: () => currentChannel,
     announce: (...args) => service.announce(...args),
@@ -113,10 +104,14 @@ test("tracked defeat remains defeat even when the enemy has the highest KDA", as
   await bot.start();
   bot.latestIds.set("tracked", "loss-match");
   await bot.poll();
-  assert.match(bot.generated[0], /^模拟战报。Tracked，本局失利。/);
-  assert.match(bot.generated[0], /全场表现最佳的是Enemy/);
-  assert.doesNotMatch(bot.generated[0], /本局胜利/);
-  assert.equal(bot.messages[0].content, `<@member-1> ${bot.generated[0]}`);
+  assert.match(bot.generated[0], /^模拟战报。Tracked这局输了/);
+  assert.doesNotMatch(bot.generated[0], /这局赢了/);
+  // Only the tracked player's team is ranked, so the enemy with the best KDA is never mentioned.
+  assert.doesNotMatch(bot.generated[0], /Enemy/);
+  assert.equal(bot.messages[0].content, "<@member-1>");
+  const embed = JSON.stringify(bot.messages[0].embeds);
+  assert.match(embed, /模拟战报/);
+  assert.match(embed, /没有马/);
   assert.deepEqual(bot.messages[0].allowedMentions, { parse: [], roles: [], users: ["member-1"], repliedUser: false });
 });
 
@@ -404,5 +399,7 @@ test("participants without a mapped present Discord member cannot trigger mentio
   };
   assert.equal((await bot.poll()).announced, 1);
   assert.deepEqual(bot.messages[0].allowedMentions, { parse: [], roles: [], users: [], repliedUser: false });
-  assert.doesNotMatch(bot.messages[0].content!, /@everyone|<@/);
+  assert.equal(bot.messages[0].content, undefined);
+  assert.doesNotMatch(JSON.stringify(bot.messages[0].embeds), /@everyone|<@/);
+  assert.doesNotMatch(bot.generated[0], /@everyone|<@/);
 });
