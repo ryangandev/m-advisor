@@ -44,13 +44,25 @@ The pre-implementation audit verified Discord credentials and the installed offl
 The pre-implementation Riot credential check returned HTTP 401.
 Live short voice playback and complete simulated-match Discord transport have passed; human listening remains pending.
 
+## Horse ranking delivery
+
+On 2026-10-03 the local Riot key returned HTTP 200.
+Real league-v4 entry, match-v5 history and match-v5 detail requests then collected the reference sample described in [Horse ranking](scoring.md).
+That proves real API access; real-mode bot acceptance with Ryan's own bound account and a finished game is still pending.
+The position-aware ranking replaced KDA commentary, and the fairness report is recorded in [Horse ranking](scoring.md#validation).
+`npm run check` passed the build and the complete suite, including ranking, commentary, parsing and transport-timeout tests.
+`npm run verify:local` generated the full mock report with real offline Qwen speech and FFmpeg Opus conversion; Discord transport was simulated.
+A separate Uncle_Fu rendering of the mock win report produced 74.8 seconds of audio in 55.3 seconds.
+Both voices now use exaggerated, sarcastic style instructions; human listening of the new style is pending.
+The new embed report has not yet been checked in the live Discord channel.
+
 ## User-only blockers
 
 | ID | Needed | Blocks |
 | --- | --- | --- |
 | B1 | Resolved: Ryan authorized Ry的四合院 / General on 2026-10-02 | No longer blocks live operations |
 | B2 | Listen once inside that channel | Human audio acceptance only |
-| B3 | Supply a valid Riot API key in local configuration | Real Riot acceptance only |
+| B3 | Resolved for API access on 2026-10-03; play a real game with Ryan's account bound in real mode | Real Riot acceptance only |
 | B4 | Resolved: Mac unlocked and Discord UI testing resumed | No longer blocks live operations |
 
 Mock data allows implementation and voice integration to continue without B3.
@@ -59,7 +71,8 @@ Discord Portal or server-permission changes become a blocker only if the actual 
 ## Next
 
 The approved engineering delivery and mock-to-real-Discord workflow are complete.
-The local bot is running with registered current commands, Ryan's `MockWin#NA1` test binding and the Old Man voice preference.
+The local bot is configured with registered current commands, Ryan's `MockWin#NA1` test binding and the Old Man voice preference; it is started on demand.
 For later on-demand use, run `npm start` or double-click `scripts/launch.command`; see [Runtime](runtime.md).
-Confirm audible playback for B2; finish real Riot acceptance only after B3 is supplied locally.
+Listen to the new five-horse report style for B2, then run `npm run verify:discord -- --confirm-live` to check the embed report in the authorized channel.
+Finish real Riot acceptance by binding Ryan's real account with `RIOT_MODE=real` and completing one game.
 Record each verified acceptance separately; never treat mock success as real Riot success.
