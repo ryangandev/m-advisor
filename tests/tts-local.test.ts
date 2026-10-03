@@ -83,6 +83,10 @@ test("local worker reuses one process, serializes concurrent requests and maps b
     assert.equal((await readFile(sweet)).toString("ascii", 0, 4), "RIFF");
     const requests = (await readFile(f.log, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
     assert.deepEqual(requests.map((r) => r.speaker), ["Serena", "Uncle_Fu"]);
+    await f.service.generate("默认军师");
+    const afterDefault = (await readFile(f.log, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(afterDefault.length, 3);
+    assert.equal(afterDefault[2].speaker, "Uncle_Fu", "an omitted style uses the default old voice");
     assert.equal(requests[0].pid, requests[1].pid);
     await f.service.shutdown();
     await assert.rejects(access(sweet));

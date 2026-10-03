@@ -97,7 +97,7 @@ test("a failed account replacement rolls back both member and account changes", 
 
 test("binding replacement and removal cascade account rows without removing other settings", () => {
   setBinding("remove-guild", { discordUserId: "old-user", accounts: [accountA, accountB] });
-  setVoiceStyle("remove-guild", "old");
+  setVoiceStyle("remove-guild", "sweet");
   setBinding("remove-guild", { discordUserId: "new-user", accounts: [accountB] });
   assert.deepEqual(getBinding("remove-guild"), { discordUserId: "new-user", accounts: [accountB] });
   clearBinding("remove-guild");
@@ -105,7 +105,7 @@ test("binding replacement and removal cascade account rows without removing othe
   assert.equal(getBinding("remove-guild"), undefined);
   const remainingAccounts = getDatabase().prepare("SELECT count(*) AS count FROM bound_accounts WHERE guild_id = ?").get("remove-guild") as { count: number };
   assert.equal(remainingAccounts.count, 0);
-  assert.equal(getAnnouncerState("remove-guild").voiceStyle, "old");
+  assert.equal(getAnnouncerState("remove-guild").voiceStyle, "sweet");
 });
 
 test("fresh processes restore bindings and voice styles with empty monitoring state", () => {
@@ -113,7 +113,7 @@ test("fresh processes restore bindings and voice styles with empty monitoring st
     const binding = require('./src/store/bindingStore.ts');
     const announcer = require('./src/store/announcerStore.ts');
     binding.setBinding('restart-guild', { discordUserId: 'member-1', accounts: ${JSON.stringify([accountA, accountB])} });
-    announcer.setVoiceStyle('restart-guild', 'old');
+    announcer.setVoiceStyle('restart-guild', 'sweet');
     announcer.setLastMatchId('restart-guild', 'account-a', 'NA1_historical');
     announcer.setActiveVoiceChannel('restart-guild', 'voice-channel-1');
     require('./src/store/database.ts').closeDatabase();
@@ -134,17 +134,17 @@ test("fresh processes restore bindings and voice styles with empty monitoring st
   `));
   assert.deepEqual(restored, {
     binding: { discordUserId: "member-1", accounts: [accountA, accountB] },
-    style: "old",
+    style: "sweet",
     matchIds: [],
     voiceChannel: null,
     pollingInterval: null,
-    otherStyle: "sweet",
+    otherStyle: "old",
   });
 });
 
 test("runtime reset clears timers and match baseline while retaining voice preference", async () => {
   const guildId = "runtime-reset-guild";
-  setVoiceStyle(guildId, "old");
+  setVoiceStyle(guildId, "sweet");
   setLastMatchId(guildId, "puuid", "NA1_match");
   setActiveVoiceChannel(guildId, "voice-channel");
   let pollingCalls = 0;
@@ -152,7 +152,7 @@ test("runtime reset clears timers and match baseline while retaining voice prefe
   setPollingInterval(guildId, interval);
   resetAnnouncerRuntime(guildId);
   const state = getAnnouncerState(guildId);
-  assert.equal(state.voiceStyle, "old");
+  assert.equal(state.voiceStyle, "sweet");
   assert.equal(getLastMatchId(guildId, "puuid"), undefined);
   assert.equal(state.activeVoiceChannelId, null);
   assert.equal(state.pollingInterval, null);

@@ -2,6 +2,9 @@ import { getDatabase } from "./database";
 
 type VoiceStyle = "sweet" | "old";
 
+/** Servers without a saved choice hear the old strategist voice that suits 策马军师. */
+export const DEFAULT_VOICE_STYLE: VoiceStyle = "old";
+
 interface AnnouncerState {
   voiceStyle: VoiceStyle;
   lastMatchIds: Map<string, string>;
@@ -14,7 +17,7 @@ const store = new Map<string, AnnouncerState>();
 function createDefaultState(guildId: string): AnnouncerState {
   const savedPreference = getDatabase().prepare("SELECT voice_style FROM guild_preferences WHERE guild_id = ?").get(guildId) as { voice_style: VoiceStyle } | undefined;
   return {
-    voiceStyle: savedPreference?.voice_style ?? "sweet",
+    voiceStyle: savedPreference?.voice_style ?? DEFAULT_VOICE_STYLE,
     lastMatchIds: new Map<string, string>(),
     pollingInterval: null,
     activeVoiceChannelId: null,

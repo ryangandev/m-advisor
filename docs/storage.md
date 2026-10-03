@@ -23,7 +23,7 @@ The database contains Discord member IDs and Riot account IDs, so keep it outsid
 | --- | --- | --- |
 | One tracked Discord member per guild | `src/store/bindingStore.ts` | SQLite |
 | Ordered list of that member's Riot accounts | `src/store/bindingStore.ts` | SQLite |
-| Announcer style, `sweet` or `old` | `src/store/announcerStore.ts` | SQLite |
+| Announcer style, `sweet` or `old` (default `old`) | `src/store/announcerStore.ts` | SQLite |
 | Polling timer | `src/store/announcerStore.ts` | Memory only |
 | Current voice channel | `src/store/announcerStore.ts` | Memory only |
 | Session match baseline | `src/store/announcerStore.ts` | Memory only |
