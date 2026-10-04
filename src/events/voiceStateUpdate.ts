@@ -37,7 +37,7 @@ export default {
 
     if (oldState.channelId && !newState.channelId) {
       setActiveVoiceChannel(guildId, null);
-      stopPolling(guildId);
+      stopPolling(guildId, "the tracked member left voice");
     }
   },
 };

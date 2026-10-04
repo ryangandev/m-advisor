@@ -7,16 +7,25 @@ const AMERICAS = "https://americas.api.riotgames.com";
 const SR_QUEUE_IDS = [400, 420, 430, 440, 480, 490];
 const matchCache = new Map<string, MatchDetail>();
 
-export async function getLatestSRMatchId(puuid: string): Promise<string | null> {
-  const idsUrl = `${AMERICAS}/lol/match/v5/matches/by-puuid/${encodeURIComponent(puuid)}/ids?count=20`;
+/** Summoner's Rift normal, ranked, Swiftplay and Quickplay games are announced; other modes are not. */
+export function isAnnouncedQueue(queueId: number): boolean {
+  return SR_QUEUE_IDS.includes(queueId);
+}
+
+/** The account's most recent match IDs in every queue, newest first. */
+export async function getRecentMatchIds(puuid: string, count = 20): Promise<string[]> {
+  const idsUrl = `${AMERICAS}/lol/match/v5/matches/by-puuid/${encodeURIComponent(puuid)}/ids?count=${count}`;
   const matchIds = await riotFetch<unknown>(idsUrl);
   if (!Array.isArray(matchIds) || matchIds.some((id) => typeof id !== "string")) {
     throw new RiotApiError("Riot API returned invalid match history.", "invalid_response");
   }
+  return (matchIds as string[]).slice(0, count);
+}
 
-  for (const matchId of matchIds) {
+export async function getLatestSRMatchId(puuid: string): Promise<string | null> {
+  for (const matchId of await getRecentMatchIds(puuid)) {
     const detail = await getMatchDetail(matchId);
-    if (SR_QUEUE_IDS.includes(detail.info.queueId)) {
+    if (isAnnouncedQueue(detail.info.queueId)) {
       return matchId;
     }
   }

@@ -46,6 +46,8 @@ stubModule("../src/services/voiceAnnouncements.ts", {
   },
 });
 stubModule("../src/services/gameMonitor.ts", {
+  POLL_INTERVAL_MS: 45_000,
+  getMonitorStatus: () => ({ active: calls.starts.length > 0, startedAt: 1, lastPollAt: 2, announced: new Set() }),
   startPolling: (_client: unknown, guildId: string, channelId: string) => calls.starts.push({ guildId, channelId }),
   stopPolling: (guildId: string) => calls.stops.push(guildId),
   pollGuildNow: async (_client: unknown, guildId: string, expectedChannelId?: string) => {
@@ -67,7 +69,7 @@ stubModule("../src/services/gameMonitor.ts", {
   },
 });
 
-const commands = Object.fromEntries(["testvoice", "simulate", "bind", "unbind", "bindings", "announcer"].map(name =>
+const commands = Object.fromEntries(["testvoice", "simulate", "bind", "unbind", "bindings", "announcer", "recent"].map(name =>
   [name, loader(`../src/commands/${name}.ts`).default as BotCommand])) as Record<string, BotCommand>;
 after(() => {
   for (const [file, original] of savedModules) {
@@ -124,7 +126,7 @@ interface FakeMember {
   voice: { channelId: string | null; channel: VoiceChannel | null };
 }
 
-function interactionFixture(options: { admin?: boolean; voice?: boolean; permissions?: boolean; channelId?: string; riotId?: string; outcome?: string; style?: string; targetId?: string } = {}) {
+function interactionFixture(options: { admin?: boolean; voice?: boolean; permissions?: boolean; channelId?: string; riotId?: string; outcome?: string; style?: string; targetId?: string; count?: number } = {}) {
   const channelId = options.channelId ?? "test-channel";
   const members = new Map<string, FakeMember>();
   const guild = {
@@ -159,6 +161,7 @@ function interactionFixture(options: { admin?: boolean; voice?: boolean; permiss
     options: {
       getUser: () => ({ id: options.targetId ?? tracked.id }),
       getString: (name: string) => ({ riotid: options.riotId ?? "MockWin#NA1", outcome: options.outcome ?? "win", style: options.style ?? "old" })[name],
+      getInteger: () => options.count ?? null,
     },
     deferReply: async (payload: unknown) => { deferred.push(payload); },
     reply: async (payload: unknown) => { replies.push(payload); },
@@ -429,4 +432,36 @@ test("/bindings labels even an empty mock server and restricts non-admins", asyn
   const unauthorized = interactionFixture({ admin: false });
   await commands.bindings.execute(unauthorized.interaction);
   assert.match(replyText(unauthorized.replies[0]), /Administrator/);
+});
+
+test("/recent asks for a binding first and replies privately", async () => {
+  const f = interactionFixture();
+  await commands.recent.execute(f.interaction);
+  assert.deepEqual(f.deferred, [{ flags: MessageFlags.Ephemeral }]);
+  assert.match(replyText(f.replies[0]), /还没有绑定玩家/);
+});
+
+test("/recent lists the bound account's recent matches with the monitor's baseline", async () => {
+  const puuid = await seedBinding();
+  const baseline = (await getLatestSRMatchId(puuid))!;
+  setLastMatchId(guildId, puuid, baseline);
+  calls.starts.push({ guildId, channelId: "test-channel" });
+  const f = interactionFixture({ count: 3 });
+  await commands.recent.execute(f.interaction);
+  const reply = replyText(f.replies[0]);
+  assert.match(reply, /模拟数据 · 最近对局/);
+  assert.match(reply, /🟢 正在监听 <@tracked-user> · <#test-channel>/);
+  assert.match(reply, /"name":"MockWin#NA1"/);
+  assert.match(reply, /📍 监听起点/);
+});
+
+test("/recent flags a mock account in real mode without calling Riot", async () => {
+  await seedBinding();
+  process.env.RIOT_MODE = "real";
+  process.env.RIOT_API_KEY = "RGAPI-test-key";
+  const f = interactionFixture();
+  await commands.recent.execute(f.interaction);
+  const reply = replyText(f.replies[0]);
+  assert.match(reply, /最近对局 · 策马军师/);
+  assert.match(reply, /这是模拟账号，真实模式下监听会跳过它。请先 \/unbind，再用 \/bind 绑定真实 Riot ID。/);
 });

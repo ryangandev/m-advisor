@@ -9,7 +9,8 @@ The default setup uses mock Riot data and the installed offline Qwen3-TTS model,
 | `/bind user riotid` | Administrator | Add or refresh an account for the server's tracked member |
 | `/unbind user` | Administrator | Remove that member's accounts and stop monitoring |
 | `/bindings` | Administrator | Show saved accounts and identify simulated accounts |
-| `/announcer style` | Everyone | Choose Serena (`sweet`) or Uncle_Fu (`old`) |
+| `/recent count` | Everyone, private reply | Show the bound accounts' recent matches and whether monitoring will announce them |
+| `/announcer style` | Everyone | Choose Serena (`sweet`) or Uncle_Fu (`old`, the default) |
 | `/testvoice` | Administrator, configured test server | Play a short announcement in the caller's voice channel |
 | `/simulate outcome` | Administrator, configured test server, mock mode | Run a simulated win or loss through the match announcement pipeline |
 

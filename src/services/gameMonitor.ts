@@ -15,8 +15,17 @@ import { buildMatchAnnouncement } from "./announcementText";
 import { buildHorseReportEmbed } from "../utils/embeds";
 import { AnnouncementCancelledError, announceTextToCurrentChannel } from "./voiceAnnouncements";
 
-const POLL_INTERVAL_MS = 45_000;
+export const POLL_INTERVAL_MS = 45_000;
 export interface PollResult { announced: number; errors: number }
+
+/** What /recent shows about a guild's monitoring; the last error survives the session that raised it. */
+export interface MonitorStatus {
+  active: boolean;
+  startedAt?: number;
+  lastPollAt?: number;
+  lastError?: { message: string; at: number };
+  announced: ReadonlySet<string>;
+}
 
 export interface MonitorDependencies {
   latest: (puuid: string) => Promise<string | null>;
@@ -32,6 +41,8 @@ export interface MonitorDependencies {
 
 interface MonitorSession {
   signature: string;
+  startedAt: number;
+  lastPollAt?: number;
   controller: AbortController;
   initialized: Set<string>;
   announced: Set<string>;
@@ -44,9 +55,18 @@ function bindingSignature(binding: ServerBinding): string {
   return JSON.stringify([binding.discordUserId, ...binding.accounts.map((account) => account.puuid).sort()]);
 }
 
+function riotIds(binding: ServerBinding): string {
+  return binding.accounts.map((account) => `${account.gameName}#${account.tagLine}`).join(", ");
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : "Unknown error";
+}
+
 /** Public lifecycle with injectable I/O so tests exercise complete polling sessions. */
 export class GameMonitor {
   private readonly sessions = new Map<string, MonitorSession>();
+  private readonly lastErrors = new Map<string, { message: string; at: number }>();
 
   constructor(private readonly dependencies: MonitorDependencies) {}
 
@@ -57,11 +77,15 @@ export class GameMonitor {
     const existing = this.sessions.get(guildId);
     setActiveVoiceChannel(guildId, channelId);
     if (existing?.signature === signature) return;
-    if (existing) this.stop(guildId);
+    if (existing) this.stop(guildId, "the binding changed");
     resetAnnouncerRuntime(guildId);
     setActiveVoiceChannel(guildId, channelId);
+    const channelName = (client.channels?.cache.get(channelId) as { name?: string } | undefined)?.name;
+    this.dependencies.info(`Monitoring started for ${riotIds(binding)} in voice channel ${channelName ?? channelId}; `
+      + `checking every ${POLL_INTERVAL_MS / 1000} s.`);
     this.sessions.set(guildId, {
       signature,
+      startedAt: Date.now(),
       controller: new AbortController(),
       initialized: new Set(),
       announced: new Set(),
@@ -73,14 +97,32 @@ export class GameMonitor {
     void this.poll(client, guildId);
   }
 
-  stop(guildId: string): void {
-    this.sessions.get(guildId)?.controller.abort(new AnnouncementCancelledError());
+  stop(guildId: string, reason = "monitoring was stopped"): void {
+    const session = this.sessions.get(guildId);
+    session?.controller.abort(new AnnouncementCancelledError());
     this.sessions.delete(guildId);
     resetAnnouncerRuntime(guildId);
+    if (session) this.dependencies.info(`Monitoring stopped: ${reason}.`);
   }
 
   stopAll(): void {
-    for (const guildId of this.sessions.keys()) this.stop(guildId);
+    for (const guildId of this.sessions.keys()) this.stop(guildId, "the bot is shutting down");
+  }
+
+  status(guildId: string): MonitorStatus {
+    const session = this.sessions.get(guildId);
+    return {
+      active: Boolean(session),
+      startedAt: session?.startedAt,
+      lastPollAt: session?.lastPollAt,
+      lastError: this.lastErrors.get(guildId),
+      announced: new Set(session?.announced),
+    };
+  }
+
+  private report(guildId: string, error: unknown): void {
+    this.lastErrors.set(guildId, { message: errorMessage(error), at: Date.now() });
+    this.dependencies.log(error);
   }
 
   poll(client: Client, guildId: string, requiredVoiceChannelId?: string): Promise<PollResult> {
@@ -113,7 +155,7 @@ export class GameMonitor {
     try {
       const binding = this.dependencies.binding(guildId);
       if (!binding || !this.current(guildId, session)) {
-        this.stop(guildId);
+        if (this.sessions.get(guildId) === session) this.stop(guildId, "the binding was removed or changed");
         return result;
       }
       const attempted = new Set<string>();
@@ -124,7 +166,8 @@ export class GameMonitor {
           if (!session.skippedMockAccounts.has(account.puuid)) {
             session.skippedMockAccounts.add(account.puuid);
             result.errors++;
-            this.dependencies.log(new Error("A saved mock Riot account was skipped in real mode. Use /bind with the same Riot ID to replace it with a real account."));
+            this.report(guildId, new Error(`The mock account ${account.gameName}#${account.tagLine} was skipped in real mode. `
+              + "Use /unbind, then /bind a real Riot ID."));
           }
           continue;
         }
@@ -135,6 +178,8 @@ export class GameMonitor {
             // null is a valid baseline for an account with no SR match history.
             session.initialized.add(account.puuid);
             if (matchId) setLastMatchId(guildId, account.puuid, matchId);
+            this.dependencies.info(`Baseline for ${account.gameName}#${account.tagLine}: ${matchId ?? "no Summoner's Rift history"}; `
+              + "only matches that finish after this are announced.");
             continue;
           }
           if (!matchId || matchId === getLastMatchId(guildId, account.puuid)) continue;
@@ -184,22 +229,25 @@ export class GameMonitor {
           } catch (error) {
             // Audio has already succeeded; retrying the match would repeat the voice announcement.
             result.errors++;
-            this.dependencies.log(error);
+            this.report(guildId, error);
           }
         } catch (error) {
           if (error instanceof AnnouncementCancelledError || session.controller.signal.aborted || !this.current(guildId, session)) continue;
           result.errors++;
-          this.dependencies.log(error);
+          this.report(guildId, error);
           if (error instanceof RiotApiError && ["missing_key", "unauthorized", "forbidden", "invalid_mode"].includes(error.code)) {
             // Credential/configuration failures need a deliberate restart, not a timer retry loop.
-            this.stop(guildId);
+            this.stop(guildId, "Riot rejected the credentials or configuration; fix .env and restart the bot");
             break;
           }
         }
       }
     } catch (error) {
       result.errors++;
-      this.dependencies.log(error);
+      this.report(guildId, error);
+    } finally {
+      session.lastPollAt = Date.now();
+      if (result.errors === 0) this.lastErrors.delete(guildId);
     }
     return result;
   }
@@ -231,8 +279,12 @@ export function startPolling(client: Client, guildId: string, voiceChannelId: st
   monitor.start(client, guildId, voiceChannelId);
 }
 
-export function stopPolling(guildId: string): void {
-  monitor.stop(guildId);
+export function stopPolling(guildId: string, reason?: string): void {
+  monitor.stop(guildId, reason);
+}
+
+export function getMonitorStatus(guildId: string): MonitorStatus {
+  return monitor.status(guildId);
 }
 
 export function pollGuildNow(client: Client, guildId: string, requiredVoiceChannelId?: string): Promise<PollResult> {

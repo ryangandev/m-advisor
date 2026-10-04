@@ -49,7 +49,7 @@ const unbindCommand: BotCommand = {
       return;
     }
 
-    stopPolling(guildId);
+    stopPolling(guildId, "the binding was removed");
     clearBinding(guildId);
 
     const successEmbed = new EmbedBuilder()
