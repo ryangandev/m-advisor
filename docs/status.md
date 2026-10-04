@@ -56,6 +56,18 @@ A separate Uncle_Fu rendering of the mock win report produced 74.8 seconds of au
 Both voices now use exaggerated, sarcastic style instructions; human listening of the new style is pending.
 The new embed report has not yet been checked in the live Discord channel.
 
+## Diagnostics delivery
+
+On 2026-10-04 a real game finished while the bot was running and was not announced.
+The cause was configuration, not detection: local `.env` had switched to `RIOT_MODE=real`, but the server was still bound to the mock `MockWin#NA1`, which real mode skips.
+The running process also predated the detection log.
+Monitoring now logs its start, each account's baseline, each detected match with the seconds since the game ended, completed playback and its stop reason.
+`/recent` shows the bound accounts' recent matches, the monitoring state and the last error; see [Announcements](announcements.md#diagnostics).
+The unused Azure speech provider and its configuration were removed; speech is local only.
+`npm run check` passed the build, the full type check including `scripts/` and `tests/`, and 181 tests.
+In real mode `npm run doctor` passed, eight commands were registered, and the live bot logged the start of monitoring and the skipped mock account.
+`/recent` has not yet been run in the live Discord channel.
+
 ## User-only blockers
 
 | ID | Needed | Blocks |
@@ -71,8 +83,8 @@ Discord Portal or server-permission changes become a blocker only if the actual 
 ## Next
 
 The approved engineering delivery and mock-to-real-Discord workflow are complete.
-The local bot is configured with registered current commands, Ryan's `MockWin#NA1` test binding and the Old Man voice preference; it is started on demand.
+The local bot is configured with `RIOT_MODE=real`, the eight registered commands, Ryan's `MockWin#NA1` test binding and the Old Man voice preference; it is started on demand.
 For later on-demand use, run `npm start` or double-click `scripts/launch.command`; see [Runtime](runtime.md).
 Listen to the new five-horse report style for B2, then run `npm run verify:discord -- --confirm-live` to check the embed report in the authorized channel.
-Finish real Riot acceptance by binding Ryan's real account with `RIOT_MODE=real` and completing one game.
+Finish real Riot acceptance by replacing that binding with Ryan's real account through `/unbind` and `/bind`, checking `/recent`, and completing one game while in voice.
 Record each verified acceptance separately; never treat mock success as real Riot success.
