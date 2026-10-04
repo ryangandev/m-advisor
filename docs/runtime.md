@@ -65,7 +65,9 @@ The bot needs View Channel, Connect and Speak permissions in the voice channel.
 Optional match messages in the voice channel chat also need Send Messages.
 Invite the application with the `bot` and `applications.commands` scopes.
 The avatar is `assets/m-advisor-avatar.png` (1024 x 1024), rendered from `assets/m-advisor-avatar.svg`.
-Upload it as the bot icon on the Developer Portal's Bot page, and optionally as the app icon on General Information.
+The Bot page icon and the General Information app icon are separate settings; both use this image since 2026-10-04.
+Either can be changed on the Developer Portal or with the bot token through `PATCH /users/@me` (`avatar`) and `PATCH /applications/@me` (`icon`).
+Discord rate-limits avatar changes, and clients may show the old image until they refresh.
 
 ## Native dependencies
 
