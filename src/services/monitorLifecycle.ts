@@ -7,10 +7,10 @@ export async function reconcileGuildMonitoring(client: Client, guildId: string):
   if (isStopping()) return;
   const binding = getBinding(guildId);
   const guild = client.guilds.cache.get(guildId);
-  if (!binding || !guild) { stopPolling(guildId); return; }
+  if (!binding || !guild) { stopPolling(guildId, "there is no binding in this server"); return; }
   const member = await guild.members.fetch(binding.discordUserId).catch(() => null);
   if (isStopping()) return;
-  if (!member?.voice.channelId) { stopPolling(guildId); return; }
+  if (!member?.voice.channelId) { stopPolling(guildId, "the tracked member is not in voice"); return; }
   startPolling(client, guildId, member.voice.channelId);
 }
 

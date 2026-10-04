@@ -101,10 +101,13 @@ test("starting a monitoring session establishes a baseline without speaking hist
   assert.deepEqual(await bot.poll(), { announced: 0, errors: 0 });
 });
 
-test("detection and completion are logged with the delay since the game ended", async () => {
+test("monitoring logs its start, baseline, detections, completions and stop", async () => {
   const bot = harness("log-guild");
   await bot.start();
-  assert.deepEqual(bot.infos, [], "the baseline is silent");
+  assert.deepEqual(bot.infos.splice(0), [
+    "Monitoring started for tracked#NA1 in voice channel first-channel; checking every 45 s.",
+    "Baseline for tracked#NA1: historical-match; only matches that finish after this are announced.",
+  ]);
   const detail = bot.dependencies.detail;
   bot.dependencies.detail = async (matchId) => {
     const match = await detail(matchId);
@@ -119,6 +122,34 @@ test("detection and completion are logged with the delay since the game ended", 
   await bot.poll();
   assert.match(bot.infos[2], /^Detected finished match unknown-end for tracked#NA1: end time unknown,/);
   assert.equal(bot.infos.length, 4);
+  bot.monitor.stop(bot.guildId, "the tracked member left voice");
+  assert.equal(bot.infos.at(-1), "Monitoring stopped: the tracked member left voice.");
+  bot.monitor.stop(bot.guildId, "again");
+  assert.equal(bot.infos.length, 5, "stopping an inactive guild logs nothing");
+});
+
+test("status reports the active session, its last check and the last error after it stops", async () => {
+  const bot = harness("status-guild");
+  assert.deepEqual({ ...bot.monitor.status(bot.guildId), announced: [] }, {
+    active: false, startedAt: undefined, lastPollAt: undefined, lastError: undefined, announced: [] });
+  const before = Date.now();
+  await bot.start();
+  const started = bot.monitor.status(bot.guildId);
+  assert.equal(started.active, true);
+  assert.ok(started.startedAt! >= before && started.lastPollAt! >= started.startedAt!);
+  bot.latestIds.set("tracked", "announced-match");
+  await bot.poll();
+  assert.deepEqual([...bot.monitor.status(bot.guildId).announced], ["announced-match"]);
+  bot.dependencies.latest = async () => { throw new RiotApiError("Update RIOT_API_KEY", "unauthorized", 401); };
+  await bot.poll();
+  const stopped = bot.monitor.status(bot.guildId);
+  assert.equal(stopped.active, false);
+  assert.equal(stopped.lastError?.message, "Update RIOT_API_KEY");
+  assert.match(bot.infos.at(-1)!, /^Monitoring stopped: Riot rejected the credentials/);
+  // A later clean session clears the old error.
+  bot.dependencies.latest = async () => "announced-match";
+  await bot.start();
+  assert.equal(bot.monitor.status(bot.guildId).lastError, undefined);
 });
 
 test("tracked defeat remains defeat even when the enemy has the highest KDA", async () => {
@@ -402,7 +433,7 @@ test("real monitoring skips saved mock accounts while allowing real accounts", a
   bot.dependencies.mock = () => false;
   assert.deepEqual(await bot.start(), { announced: 0, errors: 1 });
   assert.deepEqual(bot.lookups, ["real-account"]);
-  assert.match(String(bot.errors[0]), /Use \/bind/);
+  assert.match(String(bot.errors[0]), /MOCK-fixture#NA1 was skipped in real mode\. Use \/unbind, then \/bind a real Riot ID/);
   bot.latestIds.set("real-account", "real-match");
   assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
   assert.deepEqual(bot.lookups, ["real-account", "real-account"]);

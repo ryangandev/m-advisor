@@ -48,10 +48,20 @@ It can mention only the bound Discord member whose Riot participant is present i
 Every send uses explicit `allowedMentions`, with automatic mentions and roles disabled.
 Riot names cannot trigger mentions of other Discord members or `@everyone`.
 
-The terminal logs each newly detected match with the tracked Riot ID, how many seconds have passed since the game ended, the queue and the length.
+## Diagnostics
+
+The terminal logs when monitoring starts, with the bound Riot IDs and voice channel, and when it stops, with the reason.
+It logs each account's baseline match, after which finished matches are announced.
+It logs each newly detected match with the tracked Riot ID, how many seconds have passed since the game ended, the queue and the length.
 After playback it logs how many seconds speech generation and playback took after detection.
 Together they show whether a slow announcement waited on Riot's match data, the poll interval or speech.
-The silent baseline is not logged.
+A saved mock account skipped in real mode is logged as a monitoring failure that names the account.
+
+`/recent` replies privately with the monitoring state and the bound accounts' recent matches in every queue.
+The state shows whether monitoring is active, the tracked member's voice channel, the last check and the last error, which survives a stop caused by rejected credentials.
+Each match shows the result, champion, K/D/A, queue, length and end time.
+It is marked as the baseline, already announced, due at the next check, or in a mode that is never announced.
+In real mode a saved mock account is flagged without a Riot request.
 
 `announced` counts completed voice announcements.
 `errors` counts observed Riot, speech, transport, or text-send failures.
