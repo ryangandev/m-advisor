@@ -25,7 +25,7 @@ function transport() {
   let connectionDestroyed = 0;
   let playerStopped = 0;
   let joins = 0;
-  let onRead = () => undefined;
+  let onRead: () => void = () => undefined;
   const source = new PassThrough();
   const decoded = new PassThrough();
   const player = new FakeStateMachine(AudioPlayerStatus.Idle) as FakeStateMachine & {

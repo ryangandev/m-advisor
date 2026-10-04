@@ -8,7 +8,8 @@ Install the locked dependency graph with `npm ci`.
 `npm start` runs that compiled entry point.
 `npm run dev` runs TypeScript through tsx.
 `npm test` runs deterministic node:test suites through tsx.
-`npm run check` builds the bot and runs those suites.
+`npm run typecheck` also type-checks the scripts and tests, which the build does not compile.
+`npm run check` builds the bot, runs that type check and runs those suites.
 `npm run doctor` checks the executable codec, SQLite, encryption and configuration without contacting Discord or loading the model.
 `npm run doctor -- --voice` also prewarms the selected speech provider and closes it afterward.
 `npm run register` explicitly replaces this application's guild command definitions in `TEST_GUILD_ID`.
