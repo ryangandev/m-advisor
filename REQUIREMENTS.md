@@ -40,7 +40,7 @@ Implementation details and verification evidence belong in the routed [documenta
 - The worker stays loaded for reuse and serializes speech requests through a bounded queue.
 - Mock Riot data is the default development mode and never appears as actual match history.
 - Real Riot failures must report their cause without silently substituting mock data.
-- Azure is an explicit optional provider and never a fallback for local speech errors.
+- Speech uses only the local model; there is no cloud speech provider or fallback.
 - `/testvoice` and `/simulate` require administrator permissions and a configured test server.
 - A configured test voice channel must be respected before, during and after speech generation.
 - `/simulate` is available only in mock mode and exercises the shared match-to-voice pipeline.

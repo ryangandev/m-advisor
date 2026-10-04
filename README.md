@@ -51,4 +51,3 @@ Current implementation and verified acceptance are recorded in [Status](docs/sta
 The [documentation index](docs/README.md) routes subsystem details.
 
 Speech recognition, open-ended conversation, LLM commentary and cloud hosting remain outside this delivery.
-Azure speech is available only when explicitly configured as an alternative provider.

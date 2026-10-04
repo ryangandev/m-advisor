@@ -10,7 +10,7 @@ const fs = require("node:fs");
 const readline = require("node:readline");
 const emit = (value) => process.stdout.write(JSON.stringify(value) + "\n");
 const mode = process.env.FAKE_TTS_MODE || "success";
-if (process.env.DISCORD_TOKEN || process.env.RIOT_API_KEY || process.env.AZURE_TTS_KEY) {
+if (process.env.DISCORD_TOKEN || process.env.RIOT_API_KEY) {
   emit({event: "fatal"});
   process.exit(1);
 }

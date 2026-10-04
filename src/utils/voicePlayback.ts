@@ -113,5 +113,3 @@ export const playAudioInVoiceChannel = createVoicePlayback({
   read: createReadStream,
 });
 
-/** Compatibility name; the decoder accepts both the local WAV and Azure MP3 formats. */
-export const playMp3InVoiceChannel = playAudioInVoiceChannel;

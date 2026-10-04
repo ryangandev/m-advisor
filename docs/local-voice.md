@@ -20,7 +20,6 @@ The defaults below are derived from the current user's home directory, so anothe
 
 | Setting | Default | Purpose |
 | --- | --- | --- |
-| `TTS_PROVIDER` | `local` | Choose `local` or explicitly opt into `azure` |
 | `LOCAL_TTS_MEDIA_ROOT` | `~/Documents/media` | Shared runtime and model workspace |
 | `LOCAL_TTS_PYTHON` | `<media>/voice-engine/.venv/bin/python` | Interpreter with MLX-Audio already installed |
 | `LOCAL_TTS_MODEL_RECORD` | `<media>/voice-engine/model.json` | Snapshot revision and expected file sizes |
@@ -29,7 +28,7 @@ The defaults below are derived from the current user's home directory, so anothe
 | `LOCAL_TTS_QUEUE_LIMIT` | `8` | Maximum active and queued requests combined |
 
 The bot passes arguments directly to the interpreter without a shell.
-The worker does not inherit Discord, Riot or Azure credentials.
+The worker does not inherit Discord or Riot credentials.
 Speech text is delivered over stdin and generated audio stays in a unique temporary directory.
 Normal announcements are limited to 1000 characters and 2048 model tokens to bound inference.
 Long passages should be split into shorter announcements.
@@ -41,29 +40,27 @@ The playback caller removes that file after playback, including when playback fa
 `shutdownTTS()` stops the Python worker, rejects pending requests and removes remaining temporary files.
 Shutdown is idempotent.
 The bot must call it when stopping so model memory is released.
-Once application shutdown begins, the public speech boundary rejects new requests and late completions.
-Azure shutdown aborts pending fetch and response-body work and waits for its temporary-file cleanup.
+Once application shutdown begins, the public speech boundary rejects new requests and deletes late completions.
 
-`prewarmTTS()` starts and loads the selected provider before the first announcement.
-For local speech, `checkTTS()` also loads the worker and returns the provider, model and installed revision.
-For Azure, `checkTTS()` validates local configuration only; it does not prove credentials or connectivity are valid.
+`prewarmTTS()` loads the model before the first announcement.
+`checkTTS()` also loads the worker and returns the provider, model and installed revision.
 
 A full queue rejects new announcements with a clear error.
 A generation failure leaves the worker available for the next request.
 A crash, malformed protocol response or active request deadline stops the worker and rejects its current queue.
 The next request starts a fresh worker.
 The transport does not replay failed announcements automatically, allowing the match monitor to control retry and duplicate prevention.
-There is no automatic change from local speech to a paid provider, or from Azure to local speech.
-Worker diagnostics and Azure error response bodies are not printed to bot logs.
+There is no cloud speech fallback.
+Worker diagnostics are not printed to bot logs.
 
 ## Verification
 
 ```sh
-node --import tsx --test tests/tts-local.test.ts tests/tts-provider.test.ts
+node --import tsx --test tests/tts-local.test.ts tests/tts.test.ts
 ```
 
 The fake worker tests cover process reuse, serialized requests, both voices, queue limits, generation errors, crash recovery, deadline recovery, immediate startup retries, configuration repair, startup and shutdown, malformed responses, invalid audio, canonical paths, partial-file cleanup and credential isolation.
-Azure tests cover SSML escaping, explicit provider selection, configuration errors, sanitized failures and in-flight shutdown.
+`tests/lifecycle.test.ts` verifies that speech finishing after shutdown begins is deleted and never played.
 These tests do not load model weights or call any external speech service.
 
 Actual offline inference acceptance uses the installed Python runtime and model on Apple Silicon.
@@ -97,6 +94,3 @@ Increase `LOCAL_TTS_TIMEOUT_MS` if the existing model is valid but startup excee
 After an active timeout, the next call loads a new worker; repeated retries do not improve cold loading time.
 Use prewarming before a gaming session to resolve loading errors early.
 
-To use the original Azure provider, explicitly set `TTS_PROVIDER=azure`, `AZURE_TTS_KEY`, and `AZURE_TTS_REGION`.
-Azure requests have a 30-second deadline and produce temporary MP3 audio.
-Changing voice providers should be followed by a bot restart.

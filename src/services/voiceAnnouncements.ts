@@ -98,7 +98,7 @@ const announcements = new VoiceAnnouncementService({
   generate: generateTTS,
   play: playAudioInVoiceChannel,
   cleanup: async (path: string) => {
-    await Promise.all([path, `${path}.json`, path.replace(/\.(wav|mp3)$/i, ".json")].map((file) => rm(file, { force: true })));
+    await Promise.all([path, `${path}.json`, path.replace(/\.wav$/i, ".json")].map((file) => rm(file, { force: true })));
   },
 });
 
