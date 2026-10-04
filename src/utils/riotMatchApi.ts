@@ -50,6 +50,7 @@ export function parseMatchDetail(body: unknown, matchId: string): MatchDetail {
     info: {
       queueId: riotNumber(info.queueId),
       gameDuration: riotNumber(info.gameDuration),
+      gameEndTimestamp: typeof info.gameEndTimestamp === "number" && info.gameEndTimestamp > 0 ? info.gameEndTimestamp : null,
       earlySurrender: info.participants.some((value) => riotObject(value).gameEndedInEarlySurrender === true),
       // Older matches omit endOfGameResult, so a game in which nobody won also counts as aborted.
       aborted: (typeof info.endOfGameResult === "string" && info.endOfGameResult !== "GameComplete")

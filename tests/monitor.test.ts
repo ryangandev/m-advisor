@@ -54,6 +54,7 @@ function harness(guildId: string, puuids = ["tracked"]) {
   const played: string[] = [];
   const cleaned: string[] = [];
   const errors: unknown[] = [];
+  const infos: string[] = [];
   let generate = async (text: string): Promise<string> => { generated.push(text); return "mock-audio.wav"; };
   const service = new VoiceAnnouncementService({
     generate: (text) => generate(text),
@@ -68,12 +69,13 @@ function harness(guildId: string, puuids = ["tracked"]) {
     announce: (...args) => service.announce(...args),
     mock: () => true,
     log: (error) => { errors.push(error); },
+    info: (message) => { infos.push(message); },
   };
   const monitor = new GameMonitor(dependencies);
   monitors.push(monitor);
   const client = {} as Client;
   return {
-    guildId, monitor, client, dependencies, latestIds, lookups, generated, played, cleaned, errors, messages, channel,
+    guildId, monitor, client, dependencies, latestIds, lookups, generated, played, cleaned, errors, infos, messages, channel,
     get binding() { return binding; },
     set binding(value: ServerBinding | undefined) { binding = value; },
     get currentChannel() { return currentChannel; },
@@ -97,6 +99,26 @@ test("starting a monitoring session establishes a baseline without speaking hist
   assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
   assert.equal(bot.played.length, 1);
   assert.deepEqual(await bot.poll(), { announced: 0, errors: 0 });
+});
+
+test("detection and completion are logged with the delay since the game ended", async () => {
+  const bot = harness("log-guild");
+  await bot.start();
+  assert.deepEqual(bot.infos, [], "the baseline is silent");
+  const detail = bot.dependencies.detail;
+  bot.dependencies.detail = async (matchId) => {
+    const match = await detail(matchId);
+    match.info.gameEndTimestamp = matchId === "ended-match" ? Date.now() - 95_000 : null;
+    return match;
+  };
+  bot.latestIds.set("tracked", "ended-match");
+  await bot.poll();
+  assert.match(bot.infos[0], /^Detected finished match ended-match for tracked#NA1: ended 9[56] s ago, queue 420, 30 min\.$/);
+  assert.match(bot.infos[1], /^Announced match ended-match in voice \d+ s after detection\.$/);
+  bot.latestIds.set("tracked", "unknown-end");
+  await bot.poll();
+  assert.match(bot.infos[2], /^Detected finished match unknown-end for tracked#NA1: end time unknown,/);
+  assert.equal(bot.infos.length, 4);
 });
 
 test("tracked defeat remains defeat even when the enemy has the highest KDA", async () => {
@@ -142,6 +164,7 @@ test("failed TTS leaves a pending match eligible for retry", async () => {
   };
   assert.deepEqual(await bot.poll(), { announced: 0, errors: 1 });
   assert.equal(getLastMatchId(bot.guildId, "tracked"), "historical-match");
+  assert.equal(bot.infos.filter((message) => message.startsWith("Announced")).length, 0, "a failed announcement is not reported as done");
   assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
   assert.equal(attempts, 2);
   assert.deepEqual(bot.cleaned, ["retry-audio.wav"]);

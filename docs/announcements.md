@@ -48,6 +48,11 @@ It can mention only the bound Discord member whose Riot participant is present i
 Every send uses explicit `allowedMentions`, with automatic mentions and roles disabled.
 Riot names cannot trigger mentions of other Discord members or `@everyone`.
 
+The terminal logs each newly detected match with the tracked Riot ID, how many seconds have passed since the game ended, the queue and the length.
+After playback it logs how many seconds speech generation and playback took after detection.
+Together they show whether a slow announcement waited on Riot's match data, the poll interval or speech.
+The silent baseline is not logged.
+
 `announced` counts completed voice announcements.
 `errors` counts observed Riot, speech, transport, or text-send failures.
 A text-send failure after completed audio returns `{ announced: 1, errors: 1 }` and logs the failure without repeating audio next time.

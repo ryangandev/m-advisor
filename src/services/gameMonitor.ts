@@ -26,6 +26,8 @@ export interface MonitorDependencies {
   announce: typeof announceTextToCurrentChannel;
   mock: () => boolean;
   log: (error: unknown) => void;
+  /** Progress messages for the operator, such as a newly detected match. */
+  info: (message: string) => void;
 }
 
 interface MonitorSession {
@@ -144,6 +146,11 @@ export class GameMonitor {
           attempted.add(matchId);
           const detail = await this.dependencies.detail(matchId);
           if (!this.current(guildId, session)) break;
+          const detectedAt = Date.now();
+          const ended = detail.info.gameEndTimestamp === null
+            ? "end time unknown" : `ended ${Math.round((detectedAt - detail.info.gameEndTimestamp) / 1000)} s ago`;
+          this.dependencies.info(`Detected finished match ${matchId} for ${account.gameName}#${account.tagLine}: ${ended}, `
+            + `queue ${detail.info.queueId}, ${Math.round(detail.info.gameDuration / 60)} min.`);
           const { speech: text, report } = buildMatchAnnouncement(detail, account.puuid, this.dependencies.mock());
           const resolveTarget = () => {
             const currentChannel = this.dependencies.resolveChannel(client, guildId, binding.discordUserId);
@@ -164,6 +171,7 @@ export class GameMonitor {
           if (session.announced.size > 200) session.announced.delete(session.announced.values().next().value!);
           setLastMatchId(guildId, account.puuid, matchId);
           result.announced++;
+          this.dependencies.info(`Announced match ${matchId} in voice ${Math.round((Date.now() - detectedAt) / 1000)} s after detection.`);
           const mappedParticipant = detail.info.participants.some((participant) =>
             binding.accounts.some((boundAccount) => boundAccount.puuid === participant.puuid));
           const mention = mappedParticipant && channel.members.has(binding.discordUserId) ? binding.discordUserId : undefined;
@@ -216,6 +224,7 @@ const monitor = new GameMonitor({
   announce: announceTextToCurrentChannel,
   mock: () => getRiotMode() === "mock",
   log: (error) => console.error("Match monitoring failed:", error instanceof Error ? error.message : "Unknown error"),
+  info: (message) => console.log(message),
 });
 
 export function startPolling(client: Client, guildId: string, voiceChannelId: string): void {
