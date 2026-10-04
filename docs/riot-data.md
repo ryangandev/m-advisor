@@ -46,7 +46,7 @@ A delay longer than 10 seconds is returned as `RiotApiError.retryAfterMs` and bl
 Authentication and not-found errors are returned immediately.
 Errors carry a stable `code`, optional HTTP `status`, optional `retryAfterMs`, and a `simulated` flag without exposing request keys or raw upstream diagnostic bodies.
 Response parsers normalize omitted zero statistics and reject malformed profile, rank, or match shapes.
-`parseMatchDetail()` keeps each participant's position (team position, falling back to individual position), champion, K/D/A, result and the scoring statistics, plus team objective counts, whether the game was a remake, and whether it was aborted without a winner (`endOfGameResult` other than `GameComplete`).
+`parseMatchDetail()` keeps each participant's position (team position, falling back to individual position), champion, K/D/A, result and the scoring statistics, plus team objective counts, the game end time when present, whether the game was a remake, and whether it was aborted without a winner (`endOfGameResult` other than `GameComplete`).
 Optional scoring statistics that are missing or non-numeric are omitted rather than treated as zero.
 
 The latest match lookup checks up to 20 matches for supported Summoner's Rift queues and caches at most 200 immutable match details.

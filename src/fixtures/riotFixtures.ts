@@ -78,7 +78,7 @@ function rawParticipant(player: FixturePlayer, teamId: number, win: boolean): Re
   };
 }
 
-export function buildMockMatch(profile: MockProfile, matchId: string, outcome: MockOutcome): RawMatch {
+export function buildMockMatch(profile: MockProfile, matchId: string, outcome: MockOutcome, endedAt = Date.now()): RawMatch {
   const won = outcome === "win";
   // Each player's takedowns stay within their team's kills, and each team's kills equal the other team's deaths.
   const allies: FixturePlayer[] = [
@@ -116,6 +116,9 @@ export function buildMockMatch(profile: MockProfile, matchId: string, outcome: M
   });
   return {
     metadata: { matchId, participants: participants.map((participant) => participant.puuid as string) },
-    info: { queueId: 420, gameDuration: 1800, endOfGameResult: "GameComplete", teams: [team(100, won), team(200, !won)], participants },
+    info: {
+      queueId: 420, gameDuration: 1800, gameCreation: endedAt - 1_800_000, gameEndTimestamp: endedAt, endOfGameResult: "GameComplete",
+      teams: [team(100, won), team(200, !won)], participants,
+    },
   };
 }

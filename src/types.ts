@@ -92,6 +92,8 @@ export interface MatchDetail {
   info: {
     queueId: number;
     gameDuration: number;
+    /** Unix milliseconds when the game ended, or null when the match data omits it. */
+    gameEndTimestamp: number | null;
     /** A remake: the game ended through the early-surrender vote. */
     earlySurrender: boolean;
     /** The game was stopped without a result, for example by an anti-cheat exit, so neither team won. */

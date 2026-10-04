@@ -56,7 +56,7 @@ async function verify(): Promise<void> {
     setBinding(channel.guild.id, { discordUserId: "local-test-member", accounts: [account] });
     monitor = new GameMonitor({ latest: getLatestSRMatchId, detail: getMatchDetail, binding: getBinding, resolveChannel: () => channel,
       announce: (guild, text, style, resolve, allowed, signal) => voice.announce(guild, text, style, resolve, allowed, signal),
-      mock: () => getRiotMode() === "mock", log: error => { throw error; } });
+      mock: () => getRiotMode() === "mock", log: error => { throw error; }, info: message => console.log(message) });
     const client = {} as Client;
     monitor.start(client, channel.guild.id, channel.id);
     assert.equal((await monitor.poll(client, channel.guild.id)).announced, 0);

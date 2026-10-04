@@ -137,6 +137,17 @@ test("match parsing marks games stopped without a result as aborted", () => {
   assert.equal(parse(undefined, false), true, "older data without a result field and no winner");
 });
 
+test("match parsing keeps the game end time only when it is a valid timestamp", () => {
+  const parse = (gameEndTimestamp: unknown) => parseMatchDetail({
+    metadata: { matchId: "NA1_TIME" },
+    info: { queueId: 420, gameDuration: 1500, gameEndTimestamp, participants: [{ puuid: "a", teamId: 100, win: true }] },
+  }, "NA1_TIME").info.gameEndTimestamp;
+  assert.equal(parse(1_759_500_000_000), 1_759_500_000_000);
+  assert.equal(parse(undefined), null);
+  assert.equal(parse("1759500000000"), null);
+  assert.equal(parse(0), null);
+});
+
 test("match parsing keeps scoring statistics, positions, objectives and remakes", () => {
   const detail = parseMatchDetail({
     metadata: { matchId: "NA1_FULL" },
