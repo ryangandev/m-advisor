@@ -109,7 +109,7 @@ Human listening is still pending confirmation, even after successful transport.
 
 First confirm the server and ordinary voice channel that may be used for testing.
 Set their IDs locally as `TEST_GUILD_ID` and `TEST_VOICE_CHANNEL_ID`.
-Set `RIOT_MODE=mock` and `TTS_PROVIDER=local` for this procedure.
+Set `RIOT_MODE=mock` for this procedure.
 The offline verifier sets these only in its own process and never changes `.env`.
 The authorized target for this session is `Ry的四合院` / `General`.
 

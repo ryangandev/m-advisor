@@ -25,7 +25,6 @@ async function verify(): Promise<void> {
   if (memberId && !/^\d{17,20}$/.test(memberId)) throw new Error("TEST_MEMBER_ID must be a Discord member ID if configured.");
   if (!process.env.DISCORD_TOKEN) throw new Error("Configure DISCORD_TOKEN locally first.");
   process.env.RIOT_MODE = "mock";
-  process.env.TTS_PROVIDER = "local";
   const directory = await mkdtemp(path.join(os.tmpdir(), "m-advisor-live-"));
   process.env.DATABASE_PATH = path.join(directory, "bot.sqlite3");
   const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates] });

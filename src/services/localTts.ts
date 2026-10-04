@@ -154,7 +154,7 @@ export class LocalTtsService {
     if (this.closed) throw new Error("Local TTS has been shut down.");
     const directory = await this.directory();
     if (this.closed) throw new Error("Local TTS has been shut down.");
-    // The speech process receives no Discord, Riot or Azure credentials.
+    // The speech process receives no Discord or Riot credentials.
     const env: NodeJS.ProcessEnv = {};
     for (const name of ["PATH", "HOME", "TMPDIR", "TMP", "TEMP", "LANG", "LC_ALL", "SYSTEMROOT"]) {
       if (process.env[name] !== undefined) env[name] = process.env[name];

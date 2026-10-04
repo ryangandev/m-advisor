@@ -70,23 +70,17 @@ export function getTtsUserErrorMessage(error: unknown): string {
     return "Unable to generate speech right now.";
   }
 
-  if (message.includes("authentication failed")) {
-    return "TTS authentication failed. The bot configuration needs attention.";
+  if (message.includes("queue is full")) {
+    return "Speech is busy with other announcements. Please try again shortly.";
   }
-  if (message.includes("region is invalid")) {
-    return "The configured Azure TTS region is invalid or unavailable.";
+  if (message.includes("timed out")) {
+    return "Speech generation timed out. Please try again.";
   }
-  if (message.includes("rate limit")) {
-    return "The TTS service is rate-limiting requests. Please try again shortly.";
+  if (message.includes("shut down")) {
+    return "The bot is shutting down.";
   }
-  if (message.includes("could not be reached")) {
-    return "The TTS service could not be reached. Please try again later.";
-  }
-  if (message.includes("empty audio")) {
-    return "The TTS service returned empty audio.";
-  }
-  if (message.includes("not configured")) {
-    return "TTS is not configured correctly.";
+  if (message.includes("model or Python dependencies are unavailable")) {
+    return "The local speech model is not configured correctly.";
   }
   if (message.includes("text cannot be empty")) {
     return "TTS text cannot be empty.";

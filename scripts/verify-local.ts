@@ -21,7 +21,6 @@ async function verify(): Promise<void> {
   if (!codec) throw new Error("FFmpeg is unavailable.");
   // This verifier deliberately uses isolated mock data and no Discord connection.
   process.env.RIOT_MODE = "mock";
-  process.env.TTS_PROVIDER = "local";
   const directory = await mkdtemp(path.join(os.tmpdir(), "m-advisor-e2e-"));
   process.env.DATABASE_PATH = path.join(directory, "bot.sqlite3");
   const evidenceDirectory = path.resolve("test-results");

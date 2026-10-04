@@ -85,12 +85,12 @@ A session abort, departure, or rebind cancels the handoff before joining.
 During playback, channel eligibility is checked every 100 milliseconds and a change aborts the transport.
 The TTS request itself may finish before cancellation cleanup; a cancelled request never joins a channel afterward.
 
-Generated WAV or MP3 files and optional JSON sidecars are removed on success, playback failure, or cancellation after generation.
+Generated WAV files and optional JSON sidecars are removed on success, playback failure, or cancellation after generation.
 Cleanup errors are logged without turning completed playback into a retry and duplicate speech.
 
 ## Discord transport
 
-`src/utils/voicePlayback.ts` accepts both local WAV files and Azure MP3 files through the same FFmpeg decoder.
+`src/utils/voicePlayback.ts` decodes the local WAV files through FFmpeg.
 It attaches connection, player, source-stream, and decoder error handlers before starting playback.
 It waits for the connection to become Ready, observes the player become Playing, then waits for Idle.
 The player's initial Idle state cannot count as successful playback.

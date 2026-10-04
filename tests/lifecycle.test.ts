@@ -149,38 +149,58 @@ require(root + "/src/events/ready.ts").default.execute({ user: { tag: "offline-t
   assert.deepEqual(result.trace, ["restore-monitoring"]);
 });
 
-test("beginShutdown prevents playback when an in-flight manual Azure announcement completes", () => {
+test("beginShutdown prevents playback when in-flight local speech completes", () => {
   const root = path.resolve(__dirname, "..");
   const code = String.raw`
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 const root = ${JSON.stringify(root)};
-process.env.TTS_PROVIDER = "azure";
-process.env.AZURE_TTS_KEY = "offline-test-key";
-process.env.AZURE_TTS_REGION = "westus";
+const { LOCAL_TTS_MODEL } = require(root + "/src/services/localTts.ts");
+const dir = fs.mkdtempSync(path.join(os.tmpdir(), "m-advisor-shutdown-"));
+// The fake worker answers only after the test releases it, so shutdown begins while speech is in flight.
+fs.writeFileSync(path.join(dir, "worker.cjs"), [
+  "const fs = require('node:fs');",
+  "const dir = " + JSON.stringify(dir) + ";",
+  "const emit = (value) => process.stdout.write(JSON.stringify(value) + '\\n');",
+  "emit({ event: 'ready', model: " + JSON.stringify(LOCAL_TTS_MODEL) + ", revision: 'test' });",
+  "require('node:readline').createInterface({ input: process.stdin }).on('line', (line) => {",
+  "  const request = JSON.parse(line);",
+  "  fs.appendFileSync(dir + '/requests', request.output + '\\n');",
+  "  const timer = setInterval(() => {",
+  "    if (!fs.existsSync(dir + '/release')) return;",
+  "    clearInterval(timer);",
+  "    const wav = Buffer.alloc(244); wav.write('RIFF', 0); wav.writeUInt32LE(236, 4); wav.write('WAVE', 8);",
+  "    wav.write('fmt ', 12); wav.writeUInt32LE(16, 16); wav.writeUInt16LE(1, 20); wav.writeUInt16LE(1, 22);",
+  "    wav.writeUInt32LE(24000, 24); wav.writeUInt32LE(48000, 28); wav.writeUInt16LE(2, 32); wav.writeUInt16LE(16, 34);",
+  "    wav.write('data', 36); wav.writeUInt32LE(200, 40); wav.fill(10, 44);",
+  "    fs.writeFileSync(request.output, wav);",
+  "    emit({ id: request.id, ok: true, output: fs.realpathSync(request.output) });",
+  "  }, 10);",
+  "});",
+].join("\n"));
+fs.writeFileSync(path.join(dir, "model.json"), "{}");
+Object.assign(process.env, { LOCAL_TTS_PYTHON: process.execPath, LOCAL_TTS_WORKER: path.join(dir, "worker.cjs"),
+  LOCAL_TTS_MODEL_RECORD: path.join(dir, "model.json"), LOCAL_TTS_MEDIA_ROOT: dir });
 const { beginShutdown } = require(root + "/src/services/shutdownState.ts");
 const { generateTTS, shutdownTTS } = require(root + "/src/utils/tts.ts");
 const { VoiceAnnouncementService } = require(root + "/src/services/voiceAnnouncements.ts");
-let started;
-let release;
-let calls = 0;
 let played = 0;
-const fetching = new Promise(resolve => started = resolve);
-global.fetch = async () => {
-  calls++;
-  started();
-  return new Promise(resolve => release = resolve);
-};
+const requests = () => fs.existsSync(dir + "/requests") ? fs.readFileSync(dir + "/requests", "utf8").trim().split("\n") : [];
 const service = new VoiceAnnouncementService({ generate: generateTTS,
   play: async () => { played++; }, cleanup: async () => {} });
 (async () => {
-  const pending = service.announce("guild", "等待关闭的语音测试", "sweet", () => ({ id: "voice", guild: { id: "guild" } }));
+  const pending = service.announce("guild", "等待关闭的语音测试", "old", () => ({ id: "voice", guild: { id: "guild" } }));
   const completed = pending.catch(error => error.message);
-  await fetching;
+  while (requests().length === 0) await new Promise(resolve => setTimeout(resolve, 10));
   beginShutdown();
-  release(new Response(Buffer.from("late-audio")));
+  fs.writeFileSync(dir + "/release", "1");
   const error = await completed;
   const future = await generateTTS("已经停止").catch(error => error.message);
   await shutdownTTS();
-  console.log(JSON.stringify({ played, calls, error, future }));
+  const outputs = requests();
+  console.log(JSON.stringify({ played, calls: outputs.length, error, future, outputLeft: outputs.some(file => fs.existsSync(file)) }));
+  fs.rmSync(dir, { recursive: true, force: true });
 })().catch(error => { console.error(error.message); process.exitCode = 1; });
 `;
   const output = execFileSync(process.execPath, ["--import", "tsx", "-e", code], { cwd: root, encoding: "utf8", timeout: 10_000 });
@@ -189,4 +209,5 @@ const service = new VoiceAnnouncementService({ generate: generateTTS,
   assert.equal(result.calls, 1);
   assert.match(result.error, /shut down/);
   assert.match(result.future, /shut down/);
+  assert.equal(result.outputLeft, false, "late audio is deleted");
 });

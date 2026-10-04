@@ -23,7 +23,7 @@ Bot startup never registers commands automatically.
 Preserve an existing `.env`.
 For a new installation, copy `.env.example` and set `DISCORD_TOKEN` and `CLIENT_ID` locally.
 Do not commit credentials or put them in chat.
-`RIOT_MODE=mock` and `TTS_PROVIDER=local` are the defaults.
+`RIOT_MODE=mock` is the default; speech always uses the local Qwen model.
 Real Riot mode requires `RIOT_API_KEY`; see [Riot data](riot-data.md).
 The installed speech paths and provider settings are described in [Local voice](local-voice.md).
 
