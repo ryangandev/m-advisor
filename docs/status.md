@@ -68,6 +68,12 @@ The unused Azure speech provider and its configuration were removed; speech is l
 In real mode `npm run doctor` passed, eight commands were registered, and the live bot logged the start of monitoring and the skipped mock account.
 `/recent` has not yet been run in the live Discord channel.
 
+On 2026-10-05 the bot gained daily log files and a guard against saved mock accounts in real mode; see [Runtime](runtime.md#logs).
+`npm run check` passed with 197 tests, and mutation checks confirmed that the new tests fail when each guarded behavior is removed.
+In real mode `npm run doctor` and the restarted live bot both warned that the saved `MockWin#NA1` is skipped.
+The live bot wrote its startup messages and that warning to `.data/logs/bot-2026-10-05.log` with mode `0600`.
+The real-mode `/bind` cleanup is covered by tests but has not yet been run in Discord.
+
 ## User-only blockers
 
 | ID | Needed | Blocks |
@@ -86,5 +92,5 @@ The approved engineering delivery and mock-to-real-Discord workflow are complete
 The local bot is configured with `RIOT_MODE=real`, the eight registered commands, Ryan's `MockWin#NA1` test binding and the Old Man voice preference; it is started on demand.
 For later on-demand use, run `npm start` or double-click `scripts/launch.command`; see [Runtime](runtime.md).
 Listen to the new five-horse report style for B2, then run `npm run verify:discord -- --confirm-live` to check the embed report in the authorized channel.
-Finish real Riot acceptance by replacing that binding with Ryan's real account through `/unbind` and `/bind`, checking `/recent`, and completing one game while in voice.
+Finish real Riot acceptance by binding Ryan's real account with `/bind`, which removes the mock account, checking `/recent`, and completing one game while in voice.
 Record each verified acceptance separately; never treat mock success as real Riot success.
