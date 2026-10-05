@@ -168,7 +168,7 @@ export class GameMonitor {
             session.skippedMockAccounts.add(account.puuid);
             result.errors++;
             this.report(guildId, new Error(`The mock account ${account.gameName}#${account.tagLine} was skipped in real mode. `
-              + "Use /unbind, then /bind a real Riot ID."));
+              + "Use /bind with a real Riot ID to replace it."));
           }
           continue;
         }

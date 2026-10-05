@@ -11,6 +11,7 @@ Install the locked dependency graph with `npm ci`.
 `npm run typecheck` also type-checks the scripts and tests, which the build does not compile.
 `npm run check` builds the bot, runs that type check and runs those suites.
 `npm run doctor` checks the executable codec, SQLite, encryption and configuration without contacting Discord or loading the model.
+It also counts the saved bindings and, in real mode, warns about each saved mock account that monitoring would skip; it never creates a missing database.
 `npm run doctor -- --voice` also prewarms the selected speech provider and closes it afterward.
 `npm run register` explicitly replaces this application's guild command definitions in `TEST_GUILD_ID`.
 `npm run verify:local` exercises isolated mock match monitoring with real local speech and Opus conversion; see [Acceptance](acceptance.md).
@@ -58,6 +59,7 @@ The launcher enters the repository, locates Node through PATH or an existing nvm
 Wait for `Speech provider ready.` before testing audio.
 Ctrl+C or SIGTERM stops monitoring and closes voice connections, the Discord client, the speech worker and SQLite.
 Starting again restores saved bindings and checks whether the tracked members are already in voice.
+In real mode, startup warns about each saved mock account; `/bind` with a real Riot ID removes them.
 
 ## Logs
 

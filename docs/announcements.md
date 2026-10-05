@@ -57,6 +57,8 @@ It logs each newly detected match with the tracked Riot ID, how many seconds hav
 After playback it logs how many seconds speech generation and playback took after detection.
 Together they show whether a slow announcement waited on Riot's match data, the poll interval or speech.
 A saved mock account skipped in real mode is logged as a monitoring failure that names the account.
+Startup in real mode and `npm run doctor` also warn about each saved mock account before anyone joins voice.
+In real mode `/bind` removes the member's saved mock accounts, names them in its reply and logs the change, as does `/unbind`.
 
 `/recent` replies privately with the monitoring state and the bound accounts' recent matches in every queue.
 The state shows whether monitoring is active, the tracked member's voice channel, the last check and the last error, which survives a stop caused by rejected credentials.

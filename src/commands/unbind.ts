@@ -10,6 +10,7 @@ import { buildErrorEmbed } from "../utils/embeds";
 import { isAdmin } from "../utils/permissions";
 import { stopPolling } from "../services/gameMonitor";
 import { clearBinding, getBinding } from "../store/bindingStore";
+import { logInfo } from "../utils/log";
 
 const unbindCommand: BotCommand = {
   data: (new SlashCommandBuilder()
@@ -51,6 +52,8 @@ const unbindCommand: BotCommand = {
 
     stopPolling(guildId, "the binding was removed");
     clearBinding(guildId);
+    logInfo(`Removed the binding of ${binding.accounts.map((account) => `${account.gameName}#${account.tagLine}`).join(", ")} `
+      + `from Discord member ${user.username}.`);
 
     const successEmbed = new EmbedBuilder()
       .setColor(0x2ECC71)

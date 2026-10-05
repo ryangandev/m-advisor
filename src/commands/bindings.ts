@@ -4,7 +4,7 @@ import {
   EmbedBuilder,
   SlashCommandBuilder,
 } from "discord.js";
-import { getRiotDataLabel } from "../services/riotData";
+import { getRiotDataLabel, isMockData } from "../services/riotData";
 import { isSyntheticAccount } from "../utils/bindingAccounts";
 import { BotCommand } from "../types";
 import { isAdmin } from "../utils/permissions";
@@ -54,7 +54,7 @@ const bindingsCommand: BotCommand = {
     }
 
     const accountList = binding.accounts
-      .map((account) => `• ${account.gameName}#${account.tagLine}${isSyntheticAccount(account) ? "（模拟账号；切换真实模式后请重新绑定）" : ""}`)
+      .map((account) => `• ${account.gameName}#${account.tagLine}${isSyntheticAccount(account) ? (isMockData() ? "（模拟账号）" : "（模拟账号，真实模式下不监听；用 /bind 绑定真实 Riot ID 后会自动移除）") : ""}`)
       .join("\n");
 
     const embed = new EmbedBuilder()

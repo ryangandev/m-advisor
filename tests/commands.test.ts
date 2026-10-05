@@ -84,7 +84,9 @@ let counter = 0;
 let savedEnv: Record<string, string | undefined>;
 let savedFetch: typeof fetch;
 let savedConsoleError: typeof console.error;
+let savedConsoleLog: typeof console.log;
 const errorLogs: unknown[][] = [];
+const infoLogs: string[] = [];
 const envKeys = ["DATABASE_PATH", "TEST_GUILD_ID", "TEST_VOICE_CHANNEL_ID", "RIOT_MODE", "RIOT_API_KEY"];
 
 beforeEach(() => {
@@ -109,6 +111,9 @@ beforeEach(() => {
   savedConsoleError = console.error;
   errorLogs.length = 0;
   console.error = (...args: unknown[]) => { errorLogs.push(args); };
+  savedConsoleLog = console.log;
+  infoLogs.length = 0;
+  console.log = (line: string) => { infoLogs.push(line); };
 });
 afterEach(() => {
   closeDatabase();
@@ -119,6 +124,7 @@ afterEach(() => {
   }
   globalThis.fetch = savedFetch;
   console.error = savedConsoleError;
+  console.log = savedConsoleLog;
 });
 
 interface FakeMember {
@@ -159,7 +165,7 @@ function interactionFixture(options: { admin?: boolean; voice?: boolean; permiss
     inGuild: () => true,
     memberPermissions: { has: () => options.admin !== false },
     options: {
-      getUser: () => ({ id: options.targetId ?? tracked.id }),
+      getUser: () => ({ id: options.targetId ?? tracked.id, username: options.targetId ?? "tracked-name" }),
       getString: (name: string) => ({ riotid: options.riotId ?? "MockWin#NA1", outcome: options.outcome ?? "win", style: options.style ?? "old" })[name],
       getInteger: () => options.count ?? null,
     },
@@ -330,7 +336,10 @@ test("/bind starts monitoring when the tracked member is already in voice and la
   assert.match(replyText(f.replies.at(-1)), /模拟数据/);
   await commands.bindings.execute(f.interaction);
   assert.match(replyText(f.replies.at(-1)), /模拟数据/);
-  assert.match(replyText(f.replies.at(-1)), /MockWin#NA1/);
+  assert.match(replyText(f.replies.at(-1)), /MockWin#NA1（模拟账号）/);
+  process.env.RIOT_MODE = "real";
+  await commands.bindings.execute(f.interaction);
+  assert.match(replyText(f.replies.at(-1)), /MockWin#NA1（模拟账号，真实模式下不监听；用 \/bind 绑定真实 Riot ID 后会自动移除）/);
 });
 
 test("/bind rejects non-admins, malformed IDs, and a different tracked member without starting monitoring", async () => {
@@ -365,8 +374,46 @@ test("/bind replaces a persisted synthetic identity with a real fetched PUUID fo
   assert.deepEqual(getBinding(guildId)?.accounts, [{ puuid: "real-puuid", gameName: "MockWin", tagLine: "NA1" }]);
   closeDatabase();
   assert.equal(getBinding(guildId)?.accounts[0].puuid, "real-puuid");
+  assert.doesNotMatch(replyText(f.replies.at(-1)), /Removed/, "a refreshed identity is not reported as removed");
   await commands.bindings.execute(f.interaction);
   assert.doesNotMatch(replyText(f.replies.at(-1)), /模拟账号|模拟数据/);
+});
+
+test("/bind in real mode removes saved mock accounts, says so and logs the change", async () => {
+  await seedBinding();
+  process.env.RIOT_MODE = "real";
+  process.env.RIOT_API_KEY = "test-key";
+  globalThis.fetch = async () => Response.json({ puuid: "real-puuid", gameName: "RealName", tagLine: "NA1" });
+  const f = interactionFixture({ riotId: "RealName#NA1" });
+  await commands.bind.execute(f.interaction);
+  assert.deepEqual(getBinding(guildId)?.accounts, [{ puuid: "real-puuid", gameName: "RealName", tagLine: "NA1" }]);
+  assert.match(replyText(f.replies.at(-1)), /Bound RealName#NA1 to <@tracked-user>\\nRemoved the simulated account MockWin#NA1, which real mode does not monitor\./);
+  assert.match(infoLogs.join("\n"), /\] Bound RealName#NA1 to Discord member tracked-name; removed the mock account MockWin#NA1, which real mode does not monitor\.$/m);
+  assert.deepEqual(calls.starts, [{ guildId, channelId: "test-channel" }], "monitoring restarts with the cleaned binding");
+});
+
+test("/bind in real mode cleans mock accounts even when the real account is already bound", async () => {
+  const mock = await getAccountByRiotId("MockWin", "NA1");
+  const real = { puuid: "real-puuid", gameName: "RealName", tagLine: "NA1" };
+  setBinding(guildId, { discordUserId: "tracked-user", accounts: [real, mock] });
+  process.env.RIOT_MODE = "real";
+  process.env.RIOT_API_KEY = "test-key";
+  globalThis.fetch = async () => Response.json(real);
+  const f = interactionFixture({ riotId: "RealName#NA1" });
+  await commands.bind.execute(f.interaction);
+  assert.deepEqual(getBinding(guildId)?.accounts, [real]);
+  assert.match(replyText(f.replies.at(-1)), /Removed the simulated account MockWin#NA1/);
+  await commands.bind.execute(f.interaction);
+  assert.equal(f.replies.at(-1), "This account is already bound.");
+});
+
+test("/bind in mock mode keeps the other mock accounts", async () => {
+  await seedBinding();
+  const f = interactionFixture({ riotId: "MockLoss#NA1" });
+  await commands.bind.execute(f.interaction);
+  assert.deepEqual(getBinding(guildId)?.accounts.map((account) => account.gameName), ["MockWin", "MockLoss"]);
+  assert.doesNotMatch(replyText(f.replies.at(-1)), /Removed/);
+  assert.match(infoLogs.join("\n"), /\] Bound MockLoss#NA1 to Discord member tracked-name\.$/m);
 });
 
 test("account merge refreshes identity in place and deduplicates old mock entries without mutating input", () => {
@@ -413,6 +460,7 @@ test("/unbind stops monitoring and deletes accounts while preserving the voice p
   assert.deepEqual(calls.stops, [guildId]);
   assert.deepEqual(getDatabase().prepare("SELECT voice_style FROM guild_preferences WHERE guild_id = ?").get(guildId), { voice_style: "old" });
   assert.match(replyText(f.replies.at(-1)), /Binding Removed/);
+  assert.match(infoLogs.join("\n"), /\] Removed the binding of MockWin#NA1 from Discord member tracked-name\.$/m);
 });
 
 test("/announcer writes selected style to SQLite and rejects DMs", async () => {
@@ -463,5 +511,5 @@ test("/recent flags a mock account in real mode without calling Riot", async () 
   await commands.recent.execute(f.interaction);
   const reply = replyText(f.replies[0]);
   assert.match(reply, /最近对局 · 策马军师/);
-  assert.match(reply, /这是模拟账号，真实模式下监听会跳过它。请先 \/unbind，再用 \/bind 绑定真实 Riot ID。/);
+  assert.match(reply, /这是模拟账号，真实模式下监听会跳过它。用 \/bind 绑定真实 Riot ID 后会自动移除它。/);
 });
