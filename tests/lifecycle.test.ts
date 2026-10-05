@@ -184,7 +184,7 @@ Module._load = function(request, parent, ...args) {
         stopping.beginShutdown();
         await Promise.resolve();
       } },
-      "../services/riotData": { getRiotDataLabel: () => "mock" },
+      "../services/riotData": { getRiotDataLabel: () => "mock", getRiotMode: () => "mock" },
       "../utils/tts": { prewarmTTS: async () => trace.push("prewarm") },
     };
     if (overrides[request]) return overrides[request];
@@ -197,6 +197,43 @@ require(root + "/src/events/ready.ts").default.execute({ user: { tag: "offline-t
   const output = execFileSync(process.execPath, ["--import", "tsx", "-e", code], { cwd: root, encoding: "utf8", timeout: 10_000 });
   const result = JSON.parse(output.trim().split("\n").at(-1)!);
   assert.deepEqual(result.trace, ["restore-monitoring"]);
+});
+
+test("ready event in real mode warns about each saved mock account with its server name", () => {
+  const root = path.resolve(__dirname, "..");
+  const code = String.raw`
+const root = ${JSON.stringify(root)};
+const Module = require("node:module");
+const originalLoad = Module._load;
+const stopping = require(root + "/src/services/shutdownState.ts");
+Module._load = function(request, parent, ...args) {
+  if (parent?.filename === root + "/src/events/ready.ts") {
+    const overrides = {
+      "discord.js": { Events: { ClientReady: "ready" } },
+      "../services/monitorLifecycle": { restoreMonitoring: async () => { stopping.beginShutdown(); } },
+      "../services/riotData": { getRiotDataLabel: () => "Riot 实时数据", getRiotMode: () => "real" },
+      "../store/bindingStore": { listBindings: () => [
+        { guildId: "known-guild", binding: { discordUserId: "tracked", accounts: [
+          { puuid: "MOCK-a", gameName: "MockWin", tagLine: "NA1" },
+          { puuid: "real-b", gameName: "RealName", tagLine: "NA1" },
+        ] } },
+        { guildId: "unknown-guild", binding: { discordUserId: "tracked", accounts: [{ puuid: "MOCK-c", gameName: "MockLoss", tagLine: "NA1" }] } },
+      ] },
+      "../utils/tts": { prewarmTTS: async () => {} },
+    };
+    if (overrides[request]) return overrides[request];
+  }
+  return originalLoad.call(this, request, parent, ...args);
+};
+const client = { user: { tag: "offline-test" }, guilds: { cache: new Map([["known-guild", { name: "Ry的四合院" }]]) } };
+require(root + "/src/events/ready.ts").default.execute(client);
+`;
+  const child = spawnSync(process.execPath, ["--import", "tsx", "-e", code], { cwd: root, encoding: "utf8", timeout: 10_000 });
+  assert.equal(child.status, 0, child.stderr);
+  assert.deepEqual(child.stderr.trim().split("\n").map((line) => line.replace(/^\[[\d:]+\] /, "")), [
+    "Real mode skips the saved mock account MockWin#NA1 in server Ry的四合院; use /bind with a real Riot ID to replace it.",
+    "Real mode skips the saved mock account MockLoss#NA1 in server unknown-guild; use /bind with a real Riot ID to replace it.",
+  ]);
 });
 
 test("beginShutdown prevents playback when in-flight local speech completes", () => {

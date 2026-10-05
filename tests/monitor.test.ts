@@ -433,7 +433,7 @@ test("real monitoring skips saved mock accounts while allowing real accounts", a
   bot.dependencies.mock = () => false;
   assert.deepEqual(await bot.start(), { announced: 0, errors: 1 });
   assert.deepEqual(bot.lookups, ["real-account"]);
-  assert.match(String(bot.errors[0]), /MOCK-fixture#NA1 was skipped in real mode\. Use \/unbind, then \/bind a real Riot ID/);
+  assert.match(String(bot.errors[0]), /MOCK-fixture#NA1 was skipped in real mode\. Use \/bind with a real Riot ID to replace it/);
   bot.latestIds.set("real-account", "real-match");
   assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
   assert.deepEqual(bot.lookups, ["real-account", "real-account"]);

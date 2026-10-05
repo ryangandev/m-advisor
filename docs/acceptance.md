@@ -149,7 +149,7 @@ Never put the replacement key in chat, source history or diagnostic output.
 
 Run `/profile` with a real NA Riot ID, then bind the intended member using that Riot ID.
 If that member differs from the existing tracked member, first `/unbind` the existing member.
-Rebinding the same ID replaces a saved simulated account; other simulated bindings remain visibly identified and are skipped in real monitoring.
+In real mode, `/bind` removes that member's saved simulated accounts and names them in its reply.
 Enter voice before completing a new supported match and confirm its actual result is announced once.
 An expired key or rate-limit error must stay an explicit real-provider error, with no automatic mock substitution.
 `/simulate` must reject real mode.

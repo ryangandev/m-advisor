@@ -37,7 +37,7 @@ const recentCommand: BotCommand = {
     const views = await Promise.all(accounts.map(async (account): Promise<RecentAccountView> => {
       const view: RecentAccountView = { riotId: `${account.gameName}#${account.tagLine}`, puuid: account.puuid, matches: [] };
       if (!mock && account.puuid.startsWith("MOCK-")) {
-        return { ...view, notice: "⚠️ 这是模拟账号，真实模式下监听会跳过它。请先 /unbind，再用 /bind 绑定真实 Riot ID。" };
+        return { ...view, notice: "⚠️ 这是模拟账号，真实模式下监听会跳过它。用 /bind 绑定真实 Riot ID 后会自动移除它。" };
       }
       try {
         // Details are fetched one at a time to stay well inside the Riot rate limit; repeated lookups hit the cache.
