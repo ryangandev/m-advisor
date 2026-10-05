@@ -1,15 +1,19 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
 // Exercise the source entry point while every Discord/model/database boundary
 // is stubbed before it loads. No tokens, network calls or GPU imports are used.
-function runStartupScenario(
-  scenario: "before-commands" | "during-commands" | "during-login",
+// Log files go to a temporary data directory and are returned as one string.
+function spawnEntryPoint(
+  scenario: "before-commands" | "during-commands" | "during-login" | "crash",
   failures: { client?: boolean; connection?: boolean } = {},
-): string[] {
+) {
   const root = path.resolve(__dirname, "..");
+  const dataDirectory = mkdtempSync(path.join(tmpdir(), "m-advisor-entry-"));
   const code = String.raw`
 const root = ${JSON.stringify(root)};
 const scenario = ${JSON.stringify(scenario)};
@@ -70,9 +74,28 @@ Module._load = function(request, parent, ...args) {
 };
 require(root + "/src/index.ts");
 if (scenario === "before-commands") process.emit("SIGTERM");
+if (scenario === "crash") {
+  process.emitWarning("offline test warning");
+  setTimeout(() => { throw new Error("offline crash quoting offline-test-token"); }, 50);
+}
 setTimeout(() => console.log(JSON.stringify({ trace })), 150);
 `;
-  const child = spawnSync(process.execPath, ["--import", "tsx", "-e", code], { cwd: root, encoding: "utf8", timeout: 10_000 });
+  try {
+    const child = spawnSync(process.execPath, ["--import", "tsx", "-e", code],
+      { cwd: root, encoding: "utf8", timeout: 10_000, env: { ...process.env, BOT_DATA_DIR: dataDirectory } });
+    const logDirectory = path.join(dataDirectory, "logs");
+    const log = readdirSync(logDirectory).map((name) => readFileSync(path.join(logDirectory, name), "utf8")).join("");
+    return { child, log };
+  } finally {
+    rmSync(dataDirectory, { recursive: true, force: true });
+  }
+}
+
+function runStartupScenario(
+  scenario: "before-commands" | "during-commands" | "during-login",
+  failures: { client?: boolean; connection?: boolean } = {},
+): string[] {
+  const { child } = spawnEntryPoint(scenario, failures);
   assert.equal(child.error, undefined);
   assert.equal(child.status, failures.client || failures.connection ? 1 : 0, child.stderr);
   const output = child.stdout;
@@ -115,6 +138,33 @@ test("one voice connection destruction failure does not skip other connections o
   assert.ok(trace.includes("destroy-end"));
   assert.ok(trace.includes("stop-speech"));
   assert.ok(trace.includes("close-database"));
+});
+
+test("the entry point saves its startup and shutdown messages in the daily log file", () => {
+  const { child, log } = spawnEntryPoint("before-commands");
+  assert.equal(child.status, 0, child.stderr);
+  assert.match(child.stdout, /^\[\d{2}:\d{2}:\d{2}\] Bot starting; logs are also saved in .*m-advisor-entry-.*\/logs\.$/m);
+  const lines = log.trimEnd().split("\n");
+  assert.match(lines[0], /^\d{4}-\d{2}-\d{2}T[\d:.]+[+-]\d{2}:\d{2} INFO Bot starting; logs are also saved in /);
+  assert.match(lines.at(-1)!, / INFO Bot stopped; speech process and database closed\.$/);
+});
+
+test("a cleanup failure is logged as an error in the log file", () => {
+  const { child, log } = spawnEntryPoint("before-commands", { client: true });
+  assert.equal(child.status, 1);
+  assert.match(log, / ERROR Bot shutdown failed \(Discord client\): Error\n/);
+  assert.match(log, / ERROR Bot stopped with cleanup errors; see the messages above\.\n$/);
+});
+
+test("a crash and a process warning keep Node's own output and are copied to the log file without secrets", () => {
+  const { child, log } = spawnEntryPoint("crash");
+  assert.equal(child.status, 1);
+  assert.match(child.stderr, /offline test warning/);
+  assert.match(child.stderr, /Error: offline crash quoting offline-test-token/, "Node still prints the fatal error itself");
+  assert.equal(child.stderr.match(/offline test warning/g)?.length, 1, "the warning is printed once");
+  assert.match(log, / WARN Warning: offline test warning\n/);
+  assert.match(log, / ERROR Bot crashed \(uncaughtException\): Error: offline crash quoting \[DISCORD_TOKEN\]\n\s+at /);
+  assert.doesNotMatch(log, /offline-test-token/);
 });
 
 test("ready event does not prewarm speech after restoration races with shutdown", () => {

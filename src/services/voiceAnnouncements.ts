@@ -3,6 +3,7 @@ import type { VoiceChannel } from "discord.js";
 import type { VoiceStyle } from "../store/announcerStore";
 import { generateTTS } from "../utils/tts";
 import { playAudioInVoiceChannel } from "../utils/voicePlayback";
+import { logError } from "../utils/log";
 
 // Five-horse reports run 60-100 seconds; the speech model caps output near 170 seconds.
 export const PLAYBACK_TIMEOUT_MS = 240_000;
@@ -77,7 +78,7 @@ export class VoiceAnnouncementService {
           catch (error) {
             // Cleanup cannot turn completed playback into a retry and duplicate spoken audio.
             if (this.dependencies.logCleanupError) this.dependencies.logCleanupError(error);
-            else console.error("Announcement audio cleanup failed:", error instanceof Error ? error.message : "Unknown error");
+            else logError(`Announcement audio cleanup failed: ${error instanceof Error ? error.message : "Unknown error"}`);
           }
         }
       }

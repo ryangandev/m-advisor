@@ -50,7 +50,8 @@ Riot names cannot trigger mentions of other Discord members or `@everyone`.
 
 ## Diagnostics
 
-The terminal logs when monitoring starts, with the bound Riot IDs and voice channel, and when it stops, with the reason.
+The bot logs to the terminal and its daily log file, described in [Runtime](runtime.md#logs).
+It logs when monitoring starts, with the bound Riot IDs and voice channel, and when it stops, with the reason.
 It logs each account's baseline match, after which finished matches are announced.
 It logs each newly detected match with the tracked Riot ID, how many seconds have passed since the game ended, the queue and the length.
 After playback it logs how many seconds speech generation and playback took after detection.

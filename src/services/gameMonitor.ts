@@ -14,6 +14,7 @@ import { getRiotMode, RiotApiError } from "./riotData";
 import { buildMatchAnnouncement } from "./announcementText";
 import { buildHorseReportEmbed } from "../utils/embeds";
 import { AnnouncementCancelledError, announceTextToCurrentChannel } from "./voiceAnnouncements";
+import { logError, logInfo } from "../utils/log";
 
 export const POLL_INTERVAL_MS = 45_000;
 export interface PollResult { announced: number; errors: number }
@@ -271,8 +272,8 @@ const monitor = new GameMonitor({
   resolveChannel: resolveMonitoredVoiceChannel,
   announce: announceTextToCurrentChannel,
   mock: () => getRiotMode() === "mock",
-  log: (error) => console.error("Match monitoring failed:", error instanceof Error ? error.message : "Unknown error"),
-  info: (message) => console.log(message),
+  log: (error) => logError(`Match monitoring failed: ${errorMessage(error)}`),
+  info: logInfo,
 });
 
 export function startPolling(client: Client, guildId: string, voiceChannelId: string): void {

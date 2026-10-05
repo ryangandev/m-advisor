@@ -6,6 +6,7 @@ import { generateDependencyReport } from "@discordjs/voice";
 import ffmpeg from "ffmpeg-static";
 import { getRiotMode } from "../services/riotData";
 import { getDatabasePath } from "../store/database";
+import { getLogDirectory } from "../utils/log";
 import { checkTTS, shutdownTTS } from "../utils/tts";
 
 dotenv.config({ quiet: true });
@@ -14,7 +15,7 @@ async function doctor(): Promise<void> {
   execFileSync(ffmpeg, ["-version"], { stdio: "ignore" });
   const db = new Database(":memory:");
   try { db.prepare("SELECT 1").get(); } finally { db.close(); }
-  console.log(JSON.stringify({ node: process.version, riotMode: getRiotMode(), ttsProvider: "local", discordConfigured: Boolean(process.env.DISCORD_TOKEN && process.env.CLIENT_ID), riotKeyPresent: Boolean(process.env.RIOT_API_KEY), testGuildConfigured: Boolean(process.env.TEST_GUILD_ID), testChannelConfigured: Boolean(process.env.TEST_VOICE_CHANNEL_ID), database: getDatabasePath(), ffmpegExecutable: true, sqliteReady: true, aes256gcm: getCiphers().includes("aes-256-gcm") }, null, 2));
+  console.log(JSON.stringify({ node: process.version, riotMode: getRiotMode(), ttsProvider: "local", discordConfigured: Boolean(process.env.DISCORD_TOKEN && process.env.CLIENT_ID), riotKeyPresent: Boolean(process.env.RIOT_API_KEY), testGuildConfigured: Boolean(process.env.TEST_GUILD_ID), testChannelConfigured: Boolean(process.env.TEST_VOICE_CHANNEL_ID), database: getDatabasePath(), logDirectory: getLogDirectory(), ffmpegExecutable: true, sqliteReady: true, aes256gcm: getCiphers().includes("aes-256-gcm") }, null, 2));
   console.log(generateDependencyReport());
   if (process.argv.includes("--voice")) console.log(JSON.stringify(await checkTTS(), null, 2));
 }
