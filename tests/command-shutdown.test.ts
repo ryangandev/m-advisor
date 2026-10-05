@@ -30,7 +30,7 @@ const stopping = require(root + "/src/services/shutdownState.ts");
 const originalLoad = Module._load;
 const originalConsoleError = console.error;
 console.error = (message, ...args) => {
-  if (message !== "Voice test failed:" && message !== "Simulation test failed:") originalConsoleError(message, ...args);
+  if (!/^\[[\d:]+\] (Voice|Simulation) test failed: /.test(message)) originalConsoleError(message, ...args);
 };
 const account = { puuid: "MOCK-shutdown-account", gameName: "MockWin", tagLine: "NA1" };
 if (scenario.startsWith("simulate")) bindingStore.setBinding("guild", { discordUserId: "tracked", accounts: [account] });

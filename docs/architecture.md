@@ -51,7 +51,8 @@ See [Announcements](announcements.md) for retry, cancellation, channel authoriza
 
 ## Lifecycle and test commands
 
-The entry point loads commands and events, validates the selected data mode and logs into Discord.
+The entry point enables the daily log file, loads commands and events, validates the selected data mode and logs into Discord.
+`src/utils/log.ts` timestamps every bot message for the terminal and, once the entry point enables it, appends it to that file.
 The ready event restores eligible monitoring and prewarms speech.
 A shared stopping flag prevents new work during asynchronous teardown.
 SIGINT and SIGTERM close monitoring, voice connections, the client, speech and SQLite.

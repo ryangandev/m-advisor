@@ -10,8 +10,15 @@ import { shutdownTTS } from "./utils/tts";
 import { closeDatabase } from "./store/database";
 import { getVoiceConnections } from "@discordjs/voice";
 import { beginShutdown, isStopping } from "./services/shutdownState";
+import { logError, logInfo, logToFileOnly, startFileLog } from "./utils/log";
 
 dotenv.config({ quiet: true });
+logInfo(`Bot starting; logs are also saved in ${startFileLog()}.`);
+// Node prints these itself; the hooks only keep a copy in the log file and never change crash behavior.
+process.on("uncaughtExceptionMonitor", (error: unknown, origin) => {
+  logToFileOnly("ERROR", `Bot crashed (${origin}): ${error instanceof Error ? error.stack ?? error.message : String(error)}`);
+});
+process.on("warning", (warning) => { logToFileOnly("WARN", `${warning.name}: ${warning.message}`); });
 
 const RUNTIME_MODULE_EXTENSION = path.extname(__filename);
 
@@ -68,7 +75,7 @@ async function bootstrap(): Promise<void> {
 }
 
 function reportEventError(error: unknown): void {
-  console.error("Discord event failed:", error instanceof Error ? error.message : "unknown error");
+  logError(`Discord event failed: ${error instanceof Error ? error.message : "unknown error"}`);
 }
 
 let shutdownPromise: Promise<void> | undefined;
@@ -82,7 +89,7 @@ function shutdown(): Promise<void> {
       catch (error) {
         failed = true;
         process.exitCode = 1;
-        console.error(`Bot shutdown failed (${label}):`, error instanceof Error ? error.name : "unknown error");
+        logError(`Bot shutdown failed (${label}): ${error instanceof Error ? error.name : "unknown error"}`);
       }
     };
     await cleanup("match monitoring", stopAllPolling);
@@ -94,7 +101,8 @@ function shutdown(): Promise<void> {
     await cleanup("Discord client", () => client.destroy());
     await cleanup("speech provider", shutdownTTS);
     await cleanup("database", closeDatabase);
-    console.log(failed ? "Bot stopped with cleanup errors; see the diagnostic logs." : "Bot stopped; speech process and database closed.");
+    if (failed) logError("Bot stopped with cleanup errors; see the messages above.");
+    else logInfo("Bot stopped; speech process and database closed.");
   });
   return shutdownPromise;
 }
@@ -107,7 +115,7 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
 }
 
 void bootstrap().catch(async (error: unknown) => {
-  console.error("Bot startup failed:", error instanceof Error ? error.message : "unknown error");
+  logError(`Bot startup failed: ${error instanceof Error ? error.message : "unknown error"}`);
   process.exitCode = 1;
   await shutdown();
 });

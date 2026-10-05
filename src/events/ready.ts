@@ -3,6 +3,7 @@ import { restoreMonitoring } from "../services/monitorLifecycle";
 import { getRiotDataLabel } from "../services/riotData";
 import { prewarmTTS } from "../utils/tts";
 import { isStopping } from "../services/shutdownState";
+import { logError, logInfo } from "../utils/log";
 
 export default {
   name: Events.ClientReady,
@@ -10,12 +11,12 @@ export default {
   async execute(client: import("discord.js").Client): Promise<void> {
     if (isStopping()) return;
     const tag = client.user?.tag ?? "unknown-user";
-    console.log(`Logged in as ${tag}; data: ${getRiotDataLabel()}`);
+    logInfo(`Logged in as ${tag}; data: ${getRiotDataLabel()}`);
     await restoreMonitoring(client);
     if (isStopping()) return;
-    console.log("Preparing speech provider; first local model load can take several minutes.");
-    void prewarmTTS().then(() => console.log("Speech provider ready.")).catch((error: unknown) => {
-      console.error("Speech preparation failed:", error instanceof Error ? error.message : "unknown error");
+    logInfo("Preparing speech provider; first local model load can take several minutes.");
+    void prewarmTTS().then(() => logInfo("Speech provider ready.")).catch((error: unknown) => {
+      logError(`Speech preparation failed: ${error instanceof Error ? error.message : "unknown error"}`);
     });
   },
 };

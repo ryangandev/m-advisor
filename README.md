@@ -39,6 +39,7 @@ npm start
 On this Mac, `scripts/launch.command` also builds and starts the bot.
 Wait for `Speech provider ready.` before the first voice test.
 Stop with Ctrl+C to close the Discord client, speech worker and database.
+Logs are also saved per day in `.data/logs/`; see [Runtime](docs/runtime.md#logs).
 
 ```sh
 # Actual offline speech and Opus conversion with isolated mock data.

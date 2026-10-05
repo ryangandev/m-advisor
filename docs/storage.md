@@ -9,6 +9,7 @@ The store API is synchronous, and importing the store modules alone does not cre
 `DATABASE_PATH` selects the database file directly and takes precedence over `BOT_DATA_DIR`.
 Without `DATABASE_PATH`, the file is `bot.sqlite3` inside `BOT_DATA_DIR`.
 Without either setting, the location is `.data/bot.sqlite3` under the process working directory.
+`BOT_DATA_DIR` also holds the daily log files; see [Runtime](runtime.md#logs).
 Relative paths resolve from the working directory, so launch the bot consistently from the repository or configure an absolute path.
 Configure these variables before the first store operation; one connection is owned by each process until shutdown.
 `:memory:` is also accepted as `DATABASE_PATH` for isolated tests, and its contents disappear when the connection closes.

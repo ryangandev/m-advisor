@@ -7,6 +7,7 @@ import { getAuthorizedTestChannel, safeTestError } from "../utils/testChannel";
 import { withSimulationLock } from "../services/simulationLock";
 import { getLastMatchId } from "../store/announcerStore";
 import { assertRunning } from "../services/shutdownState";
+import { logError } from "../utils/log";
 
 const command: BotCommand = {
   data: new SlashCommandBuilder().setName("simulate").setDescription("用模拟比赛验证完整赛后播报流程")
@@ -39,7 +40,7 @@ const command: BotCommand = {
         await interaction.editReply(`模拟数据：${outcome === "win" ? "胜利" : "失败"}比赛播报完成。此结果不是实际战绩。`);
       });
     } catch (error) {
-      console.error("Simulation test failed:", error instanceof Error ? error.name : "unknown error");
+      logError(`Simulation test failed: ${error instanceof Error ? error.name : "unknown error"}`);
       await interaction.editReply(safeTestError(error));
     }
   },

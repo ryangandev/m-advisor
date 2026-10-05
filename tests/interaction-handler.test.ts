@@ -100,7 +100,8 @@ for (const state of ["fresh", "deferred", "replied"] as const) {
     if (state !== "deferred") assert.equal((output[0] as { flags: MessageFlags }).flags, MessageFlags.Ephemeral);
     const payload = output[0] as { embeds: Array<{ toJSON: () => unknown }> };
     assert.doesNotMatch(JSON.stringify(payload.embeds.map(embed => embed.toJSON())), /private-interaction-token|private-request-body/);
-    assert.deepEqual(logs, [["Command execution failed for /existing:", "DiscordAPIError"]]);
+    assert.equal(logs.length, 1);
+    assert.match(String(logs[0][0]), /^\[\d{2}:\d{2}:\d{2}\] Command execution failed for \/existing: DiscordAPIError$/);
     assert.doesNotMatch(JSON.stringify(logs), /private-interaction-token|private-request-body/);
   });
 }
