@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { VoiceChannel } from "discord.js";
-import { AnnouncementCancelledError, PLAYBACK_TIMEOUT_MS, VoiceAnnouncementService } from "../src/services/voiceAnnouncements";
+import { AnnouncementCancelledError, AnnouncementQueueFullError, PLAYBACK_TIMEOUT_MS, VoiceAnnouncementService } from "../src/services/voiceAnnouncements";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -353,7 +353,7 @@ test("queue capacity is bounded and rejects excess jobs", async () => {
     cleanup: async () => undefined,
   }, 1);
   const first = service.announce("guild", "first", "sweet", () => channel());
-  await assert.rejects(service.announce("guild", "excess", "sweet", () => channel()), /queue is full/);
+  await assert.rejects(service.announce("guild", "excess", "sweet", () => channel()), (error) => error instanceof AnnouncementQueueFullError && /queue is full/.test(error.message));
   speech.resolve("first.wav");
   await first;
   await service.announce("guild", "next", "sweet", () => channel());
