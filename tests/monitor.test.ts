@@ -57,6 +57,8 @@ function harness(guildId: string, puuids = ["tracked"]) {
   const infos: string[] = [];
   let generate = async (text: string): Promise<string> => { generated.push(text); return "mock-audio.wav"; };
   const service = new VoiceAnnouncementService({
+    // Monitor tests inspect the whole report as one request; sentence chunking is covered in voiceAnnouncements tests.
+    split: (text) => [text],
     generate: (text) => generate(text),
     play: async (target) => { played.push(target.id); },
     cleanup: async (path) => { cleaned.push(path); },
