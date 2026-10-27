@@ -8,7 +8,7 @@ import type { Client, VoiceChannel } from "discord.js";
 import ffmpeg from "ffmpeg-static";
 import { getAccountByRiotId } from "../src/utils/riotApi";
 import { getLatestSRMatchId, getMatchDetail } from "../src/utils/riotMatchApi";
-import { getBinding, setBinding } from "../src/store/bindingStore";
+import { listTrackedMembers, setMemberAccounts } from "../src/store/bindingStore";
 import { closeDatabase } from "../src/store/database";
 import { getRiotMode, simulateMockMatch } from "../src/services/riotData";
 import { GameMonitor } from "../src/services/gameMonitor";
@@ -52,8 +52,8 @@ async function verify(): Promise<void> {
   });
   try {
     const account = await getAccountByRiotId("MockLoss", "NA1");
-    setBinding(channel.guild.id, { discordUserId: "local-test-member", accounts: [account] });
-    monitor = new GameMonitor({ latest: getLatestSRMatchId, detail: getMatchDetail, binding: getBinding, resolveChannel: () => channel,
+    setMemberAccounts(channel.guild.id, "local-test-member", [account]);
+    monitor = new GameMonitor({ latest: getLatestSRMatchId, detail: getMatchDetail, binding: (guildId) => listTrackedMembers(guildId)[0], resolveChannel: () => channel,
       announce: (guild, text, style, resolve, allowed, signal) => voice.announce(guild, text, style, resolve, allowed, signal),
       mock: () => getRiotMode() === "mock", log: error => { throw error; }, info: message => console.log(message) });
     const client = {} as Client;

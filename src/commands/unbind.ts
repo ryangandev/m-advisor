@@ -9,7 +9,7 @@ import { BotCommand } from "../types";
 import { buildErrorEmbed } from "../utils/embeds";
 import { isAdmin } from "../utils/permissions";
 import { stopPolling } from "../services/gameMonitor";
-import { clearBinding, getBinding } from "../store/bindingStore";
+import { getTrackedMember, removeTrackedMember } from "../store/bindingStore";
 import { logInfo } from "../utils/log";
 
 const unbindCommand: BotCommand = {
@@ -43,15 +43,15 @@ const unbindCommand: BotCommand = {
     }
 
     const user = interaction.options.getUser("user", true);
-    const binding = getBinding(guildId);
+    const binding = getTrackedMember(guildId, user.id);
 
-    if (!binding || binding.discordUserId !== user.id) {
+    if (!binding) {
       await interaction.editReply("No binding found for that member.");
       return;
     }
 
     stopPolling(guildId, "the binding was removed");
-    clearBinding(guildId);
+    removeTrackedMember(guildId, user.id);
     logInfo(`Removed the binding of ${binding.accounts.map((account) => `${account.gameName}#${account.tagLine}`).join(", ")} `
       + `from Discord member ${user.username}.`);
 

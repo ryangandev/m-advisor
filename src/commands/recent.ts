@@ -1,6 +1,6 @@
 import { ChatInputCommandInteraction, MessageFlags, SlashCommandBuilder } from "discord.js";
 import { BotCommand } from "../types";
-import { getBinding } from "../store/bindingStore";
+import { listTrackedMembers } from "../store/bindingStore";
 import { getLastMatchId } from "../store/announcerStore";
 import { getMonitorStatus, POLL_INTERVAL_MS } from "../services/gameMonitor";
 import { isMockData } from "../services/riotData";
@@ -25,7 +25,7 @@ const recentCommand: BotCommand = {
       return;
     }
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-    const binding = getBinding(guildId);
+    const binding = listTrackedMembers(guildId)[0];
     if (!binding) {
       await interaction.editReply({ embeds: [buildErrorEmbed("这个服务器还没有绑定玩家，先用 /bind 绑定。")] });
       return;

@@ -6,13 +6,16 @@ import { dirname, join } from "node:path";
 import { after, afterEach, beforeEach, test } from "node:test";
 import { MessageFlags, PermissionFlagsBits, VoiceChannel } from "discord.js";
 import type { BotCommand } from "../src/types";
-import { getBinding, setBinding } from "../src/store/bindingStore";
+import { listTrackedMembers, setMemberAccounts } from "../src/store/bindingStore";
 import { closeDatabase, getDatabase } from "../src/store/database";
 import { setLastMatchId } from "../src/store/announcerStore";
 import { getAccountByRiotId } from "../src/utils/riotApi";
 import { getLatestSRMatchId, getMatchDetail } from "../src/utils/riotMatchApi";
 import { resetMockData } from "../src/services/riotData";
 import { isSyntheticAccount, mergeBoundAccount } from "../src/utils/bindingAccounts";
+
+// PR 1 keeps one effective member per server, so commands act on the first tracked member.
+const firstMember = (guildId: string) => listTrackedMembers(guildId)[0];
 
 const loader = createRequire(__filename);
 const calls = {
@@ -51,7 +54,7 @@ stubModule("../src/services/gameMonitor.ts", {
   startPolling: (_client: unknown, guildId: string, channelId: string) => calls.starts.push({ guildId, channelId }),
   stopPolling: (guildId: string) => calls.stops.push(guildId),
   pollGuildNow: async (_client: unknown, guildId: string, expectedChannelId?: string) => {
-    const binding = getBinding(guildId)!;
+    const binding = firstMember(guildId)!;
     const matchId = (await getLatestSRMatchId(binding.accounts[0].puuid))!;
     calls.polls.push(matchId);
     calls.pollChannels.push(expectedChannelId);
@@ -185,7 +188,7 @@ function replyText(reply: unknown): string {
 
 async function seedBinding(): Promise<string> {
   const account = await getAccountByRiotId("MockWin", "NA1");
-  setBinding(guildId, { discordUserId: "tracked-user", accounts: [account] });
+  setMemberAccounts(guildId, "tracked-user", [account]);
   return account.puuid;
 }
 
@@ -279,7 +282,7 @@ test("/simulate rejects real mode, missing binding, and absent tracked member be
   assert.match(replyText(f.replies.at(-1)), /被追踪成员/);
   assert.equal(await getLatestSRMatchId(puuid), baseline);
   assert.equal(calls.polls.length, 0);
-  loader("../src/store/bindingStore.ts").clearBinding(guildId);
+  loader("../src/store/bindingStore.ts").removeTrackedMember(guildId, "tracked-user");
   await commands.simulate.execute(f.interaction);
   assert.match(replyText(f.replies.at(-1)), /\/bind/);
   assert.equal(calls.played.length, 0);
@@ -330,8 +333,8 @@ test("concurrent /simulate requests cannot mix outcomes or mutate a second match
 test("/bind starts monitoring when the tracked member is already in voice and labels mock data", async () => {
   const f = interactionFixture();
   await commands.bind.execute(f.interaction);
-  assert.equal(getBinding(guildId)?.discordUserId, f.tracked.id);
-  assert.match(getBinding(guildId)!.accounts[0].puuid, /^MOCK-/);
+  assert.equal(firstMember(guildId)?.discordUserId, f.tracked.id);
+  assert.match(firstMember(guildId)!.accounts[0].puuid, /^MOCK-/);
   assert.deepEqual(calls.starts, [{ guildId, channelId: f.channel.id }]);
   assert.match(replyText(f.replies.at(-1)), /模拟数据/);
   await commands.bindings.execute(f.interaction);
@@ -346,16 +349,16 @@ test("/bind rejects non-admins, malformed IDs, and a different tracked member wi
   const unauthorized = interactionFixture({ admin: false });
   await commands.bind.execute(unauthorized.interaction);
   assert.match(replyText(unauthorized.replies[0]), /Administrator/);
-  assert.equal(getBinding(guildId), undefined);
+  assert.equal(firstMember(guildId), undefined);
   const malformed = interactionFixture({ riotId: "invalid-id" });
   await commands.bind.execute(malformed.interaction);
   assert.match(replyText(malformed.replies[0]), /Invalid Riot ID/);
-  assert.equal(getBinding(guildId), undefined);
+  assert.equal(firstMember(guildId), undefined);
   await seedBinding();
   const otherMember = interactionFixture({ targetId: "other-member" });
   await commands.bind.execute(otherMember.interaction);
   assert.match(replyText(otherMember.replies[0]), /\/unbind first/);
-  assert.equal(getBinding(guildId)?.discordUserId, "tracked-user");
+  assert.equal(firstMember(guildId)?.discordUserId, "tracked-user");
   assert.equal(calls.starts.length, 0);
 });
 
@@ -371,9 +374,9 @@ test("/bind replaces a persisted synthetic identity with a real fetched PUUID fo
   };
   const f = interactionFixture();
   await commands.bind.execute(f.interaction);
-  assert.deepEqual(getBinding(guildId)?.accounts, [{ puuid: "real-puuid", gameName: "MockWin", tagLine: "NA1" }]);
+  assert.deepEqual(firstMember(guildId)?.accounts, [{ puuid: "real-puuid", gameName: "MockWin", tagLine: "NA1" }]);
   closeDatabase();
-  assert.equal(getBinding(guildId)?.accounts[0].puuid, "real-puuid");
+  assert.equal(firstMember(guildId)?.accounts[0].puuid, "real-puuid");
   assert.doesNotMatch(replyText(f.replies.at(-1)), /Removed/, "a refreshed identity is not reported as removed");
   await commands.bindings.execute(f.interaction);
   assert.doesNotMatch(replyText(f.replies.at(-1)), /模拟账号|模拟数据/);
@@ -386,7 +389,7 @@ test("/bind in real mode removes saved mock accounts, says so and logs the chang
   globalThis.fetch = async () => Response.json({ puuid: "real-puuid", gameName: "RealName", tagLine: "NA1" });
   const f = interactionFixture({ riotId: "RealName#NA1" });
   await commands.bind.execute(f.interaction);
-  assert.deepEqual(getBinding(guildId)?.accounts, [{ puuid: "real-puuid", gameName: "RealName", tagLine: "NA1" }]);
+  assert.deepEqual(firstMember(guildId)?.accounts, [{ puuid: "real-puuid", gameName: "RealName", tagLine: "NA1" }]);
   assert.match(replyText(f.replies.at(-1)), /Bound RealName#NA1 to <@tracked-user>\\nRemoved the simulated account MockWin#NA1, which real mode does not monitor\./);
   assert.match(infoLogs.join("\n"), /\] Bound RealName#NA1 to Discord member tracked-name; removed the mock account MockWin#NA1, which real mode does not monitor\.$/m);
   assert.deepEqual(calls.starts, [{ guildId, channelId: "test-channel" }], "monitoring restarts with the cleaned binding");
@@ -395,13 +398,13 @@ test("/bind in real mode removes saved mock accounts, says so and logs the chang
 test("/bind in real mode cleans mock accounts even when the real account is already bound", async () => {
   const mock = await getAccountByRiotId("MockWin", "NA1");
   const real = { puuid: "real-puuid", gameName: "RealName", tagLine: "NA1" };
-  setBinding(guildId, { discordUserId: "tracked-user", accounts: [real, mock] });
+  setMemberAccounts(guildId, "tracked-user", [real, mock]);
   process.env.RIOT_MODE = "real";
   process.env.RIOT_API_KEY = "test-key";
   globalThis.fetch = async () => Response.json(real);
   const f = interactionFixture({ riotId: "RealName#NA1" });
   await commands.bind.execute(f.interaction);
-  assert.deepEqual(getBinding(guildId)?.accounts, [real]);
+  assert.deepEqual(firstMember(guildId)?.accounts, [real]);
   assert.match(replyText(f.replies.at(-1)), /Removed the simulated account MockWin#NA1/);
   await commands.bind.execute(f.interaction);
   assert.equal(f.replies.at(-1), "This account is already bound.");
@@ -411,7 +414,7 @@ test("/bind in mock mode keeps the other mock accounts", async () => {
   await seedBinding();
   const f = interactionFixture({ riotId: "MockLoss#NA1" });
   await commands.bind.execute(f.interaction);
-  assert.deepEqual(getBinding(guildId)?.accounts.map((account) => account.gameName), ["MockWin", "MockLoss"]);
+  assert.deepEqual(firstMember(guildId)?.accounts.map((account) => account.gameName), ["MockWin", "MockLoss"]);
   assert.doesNotMatch(replyText(f.replies.at(-1)), /Removed/);
   assert.match(infoLogs.join("\n"), /\] Bound MockLoss#NA1 to Discord member tracked-name\.$/m);
 });
@@ -429,13 +432,13 @@ test("account merge refreshes identity in place and deduplicates old mock entrie
 });
 
 test("/bind refreshes a renamed Riot ID with the same real PUUID", async () => {
-  setBinding(guildId, { discordUserId: "tracked-user", accounts: [{ puuid: "real-renamed", gameName: "OldName", tagLine: "NA1" }] });
+  setMemberAccounts(guildId, "tracked-user", [{ puuid: "real-renamed", gameName: "OldName", tagLine: "NA1" }]);
   process.env.RIOT_MODE = "real";
   process.env.RIOT_API_KEY = "test-key";
   globalThis.fetch = async () => Response.json({ puuid: "real-renamed", gameName: "NewName", tagLine: "NA1" });
   const f = interactionFixture({ riotId: "NewName#NA1" });
   await commands.bind.execute(f.interaction);
-  assert.deepEqual(getBinding(guildId)?.accounts, [{ puuid: "real-renamed", gameName: "NewName", tagLine: "NA1" }]);
+  assert.deepEqual(firstMember(guildId)?.accounts, [{ puuid: "real-renamed", gameName: "NewName", tagLine: "NA1" }]);
   assert.match(replyText(f.replies.at(-1)), /Binding Updated.*NewName#NA1/);
 });
 
@@ -447,7 +450,7 @@ test("/unbind rejects non-admins and the wrong member without deleting an active
   const wrong = interactionFixture({ targetId: "other-member" });
   await commands.unbind.execute(wrong.interaction);
   assert.match(replyText(wrong.replies.at(-1)), /No binding found/);
-  assert.equal(getBinding(guildId)?.discordUserId, "tracked-user");
+  assert.equal(firstMember(guildId)?.discordUserId, "tracked-user");
   assert.equal(calls.stops.length, 0);
 });
 
@@ -456,7 +459,7 @@ test("/unbind stops monitoring and deletes accounts while preserving the voice p
   const f = interactionFixture();
   await commands.announcer.execute(f.interaction);
   await commands.unbind.execute(f.interaction);
-  assert.equal(getBinding(guildId), undefined);
+  assert.equal(firstMember(guildId), undefined);
   assert.deepEqual(calls.stops, [guildId]);
   assert.deepEqual(getDatabase().prepare("SELECT voice_style FROM guild_preferences WHERE guild_id = ?").get(guildId), { voice_style: "old" });
   assert.match(replyText(f.replies.at(-1)), /Binding Removed/);

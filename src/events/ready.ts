@@ -1,7 +1,7 @@
 import { Events } from "discord.js";
 import { restoreMonitoring } from "../services/monitorLifecycle";
 import { getRiotDataLabel, getRiotMode } from "../services/riotData";
-import { listBindings } from "../store/bindingStore";
+import { listAllTracking } from "../store/bindingStore";
 import { skippedMockAccountWarnings } from "../utils/bindingAccounts";
 import { prewarmTTS } from "../utils/tts";
 import { isStopping } from "../services/shutdownState";
@@ -16,7 +16,7 @@ export default {
     logInfo(`Logged in as ${tag}; data: ${getRiotDataLabel()}`);
     if (getRiotMode() === "real") {
       const serverName = (guildId: string) => client.guilds.cache.get(guildId)?.name ?? guildId;
-      for (const warning of skippedMockAccountWarnings(listBindings(), serverName)) logWarn(warning);
+      for (const warning of skippedMockAccountWarnings(listAllTracking(), serverName)) logWarn(warning);
     }
     await restoreMonitoring(client);
     if (isStopping()) return;

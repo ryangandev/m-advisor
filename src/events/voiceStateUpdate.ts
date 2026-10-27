@@ -1,5 +1,5 @@
 import { Events, VoiceState } from "discord.js";
-import { getBinding } from "../store/bindingStore";
+import { listTrackedMembers } from "../store/bindingStore";
 import { setActiveVoiceChannel } from "../store/announcerStore";
 import { startPolling, stopPolling } from "../services/gameMonitor";
 
@@ -7,7 +7,7 @@ export default {
   name: Events.VoiceStateUpdate,
   async execute(oldState: VoiceState, newState: VoiceState): Promise<void> {
     const guildId = newState.guild.id;
-    const binding = getBinding(guildId);
+    const binding = listTrackedMembers(guildId)[0];
 
     if (!binding) {
       return;

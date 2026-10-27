@@ -8,7 +8,7 @@ import { getRiotDataLabel, isMockData } from "../services/riotData";
 import { isSyntheticAccount } from "../utils/bindingAccounts";
 import { BotCommand } from "../types";
 import { isAdmin } from "../utils/permissions";
-import { getBinding } from "../store/bindingStore";
+import { listTrackedMembers } from "../store/bindingStore";
 
 const bindingsCommand: BotCommand = {
   data: new SlashCommandBuilder()
@@ -38,7 +38,7 @@ const bindingsCommand: BotCommand = {
       return;
     }
 
-    const binding = getBinding(guildId);
+    const binding = listTrackedMembers(guildId)[0];
     if (!binding) {
       await interaction.reply({
         embeds: [
