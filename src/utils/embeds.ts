@@ -54,6 +54,9 @@ export function buildProfileEmbed(
   return embed;
 }
 
+/** For command replies that show member mentions without notifying anyone. */
+export const NO_MENTIONS = { parse: [], roles: [], users: [], repliedUser: false } as const;
+
 export function buildErrorEmbed(message: string): EmbedBuilder {
   return new EmbedBuilder()
     .setColor(0xE74C3C)
@@ -87,6 +90,8 @@ const QUEUE_NAMES: Readonly<Record<number, string>> = {
 };
 
 export interface RecentAccountView {
+  /** The owning member's place in the server's bind order, from 1; it prefixes the account's field. */
+  memberOrder: number;
   riotId: string;
   puuid: string;
   /** The monitor's starting point or last announced match for this account, while monitoring. */
@@ -96,11 +101,20 @@ export interface RecentAccountView {
   notice?: string;
 }
 
+export interface RecentMemberView {
+  memberId: string;
+  /** The member's place in the server's bind order, from 1. */
+  order: number;
+  /** The member's current voice channel, or null when they are not in voice. */
+  voiceChannelId: string | null;
+  /** Whether the monitoring session currently covers this member. */
+  monitored: boolean;
+}
+
 export interface RecentMatchesView {
   mock: boolean;
-  memberId: string;
-  /** The tracked member's current voice channel. */
-  voiceChannelId: string | null;
+  /** The members shown, in bind order: the whole server, or the one member asked for. */
+  members: RecentMemberView[];
   pollIntervalSeconds: number;
   status: MonitorStatus;
   accounts: RecentAccountView[];
@@ -133,12 +147,16 @@ export function buildRecentMatchesEmbed(view: RecentMatchesView): EmbedBuilder {
   const { status } = view;
   const lines: string[] = [];
   if (status.active) {
-    lines.push(`🟢 正在监听 <@${view.memberId}>${view.voiceChannelId ? ` · <#${view.voiceChannelId}>` : ""} · 每 ${view.pollIntervalSeconds} 秒检查一次 · `
+    lines.push(`🟢 正在监听 · 每 ${view.pollIntervalSeconds} 秒检查一次 · `
       + (status.lastPollAt ? `上次检查 ${timestamp(status.lastPollAt)}` : "正在记录监听起点"));
-  } else if (view.voiceChannelId) {
-    lines.push(`⚪ 没在监听：<@${view.memberId}> 在语音频道里，但监听已停止。修好下面的错误后重启机器人，或重新进入语音频道。`);
+  } else if (view.members.some((member) => member.voiceChannelId)) {
+    lines.push("⚪ 没在监听：有成员在语音频道里，但监听已停止。修好下面的错误后重启机器人，或重新进入语音频道。");
   } else {
-    lines.push(`⚪ 没在监听：<@${view.memberId}> 不在语音频道。进入语音频道后才开始监听，之前结束的对局不会补播。`);
+    lines.push("⚪ 没在监听：没有被追踪成员在语音频道。进入语音频道后才开始监听，之前结束的对局不会补播。");
+  }
+  for (const member of view.members) {
+    lines.push(`${member.order}. <@${member.memberId}> · ${member.voiceChannelId ? `<#${member.voiceChannelId}>` : "不在语音"} · `
+      + (member.monitored ? "监听中" : "未监听"));
   }
   if (status.lastError) lines.push(`⚠️ 上次错误 ${timestamp(status.lastError.at)}：${status.lastError.message.slice(0, 300)}`);
   if (status.active) lines.push("📍 监听起点之后结束的召唤师峡谷对局会被播报。");
@@ -148,6 +166,7 @@ export function buildRecentMatchesEmbed(view: RecentMatchesView): EmbedBuilder {
     .setColor(view.mock ? 0x95A5A6 : 0x1C7A6F)
     .setDescription(lines.join("\n"))
     .setFooter({ text: view.mock ? "模拟数据 / Mock data • 策马军师" : "Riot 实时数据 • 策马军师" });
+  // Discord allows 25 fields in an embed, counted across every member's accounts.
   for (const account of view.accounts.slice(0, 25)) {
     const rows = account.notice ? [account.notice]
       : account.matches.length === 0 ? ["没有对局记录。"]
@@ -157,7 +176,7 @@ export function buildRecentMatchesEmbed(view: RecentMatchesView): EmbedBuilder {
       if (value.length + row.length + 1 > 1024) break;
       value += `${value ? "\n" : ""}${row}`;
     }
-    embed.addFields({ name: account.riotId.slice(0, 256), value: value || rows[0].slice(0, 1024) });
+    embed.addFields({ name: `${account.memberOrder}. ${account.riotId}`.slice(0, 256), value: value || rows[0].slice(0, 1024) });
   }
   return embed;
 }

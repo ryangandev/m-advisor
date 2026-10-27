@@ -13,12 +13,12 @@ function account(): RecentAccountView {
   });
   matches[3].detail.info.queueId = 450;
   matches[4].detail.info.aborted = true;
-  return { riotId: "Tracked#NA1", puuid: "tracked", lastMatchId: "NA1_4", matches };
+  return { memberOrder: 1, riotId: "Tracked#NA1", puuid: "tracked", lastMatchId: "NA1_4", matches };
 }
 
 function view(overrides: Partial<RecentMatchesView> = {}): RecentMatchesView {
   return {
-    mock: false, memberId: "member-1", voiceChannelId: "voice-1", pollIntervalSeconds: 45,
+    mock: false, members: [{ memberId: "member-1", order: 1, voiceChannelId: "voice-1", monitored: true }], pollIntervalSeconds: 45,
     status: { active: true, startedAt: ENDED, lastPollAt: ENDED + 30_000, announced: new Set(), presentMemberIds: ["member-1"] },
     accounts: [account()], ...overrides,
   };
@@ -30,8 +30,8 @@ test("each match shows the result, champion, queue, end time and what the monito
   const embed = buildRecentMatchesEmbed(view());
   const json = embed.toJSON();
   assert.equal(json.title, "最近对局 · 策马军师");
-  assert.equal(json.fields![0].name, "Tracked#NA1");
-  assert.match(json.description!, /^🟢 正在监听 <@member-1> · <#voice-1> · 每 45 秒检查一次 · 上次检查 <t:1759500030:R>/);
+  assert.equal(json.fields![0].name, "1. Tracked#NA1");
+  assert.match(json.description!, /^🟢 正在监听 · 每 45 秒检查一次 · 上次检查 <t:1759500030:R>\n1\. <@member-1> · <#voice-1> · 监听中\n/);
   assert.match(json.description!, /监听起点之后结束的召唤师峡谷对局会被播报/);
   const [newest, baseline, older, aram, aborted] = rows(embed);
   assert.equal(newest, "✅ 胜 · 阿狸 8/2/7 · 单双排 · 30 分钟 · <t:1759500000:R> · ⏳ 下次检查时播报");
@@ -49,9 +49,9 @@ test("an announced match is marked as announced instead of the baseline", () => 
 });
 
 test("without monitoring the reply explains why and shows the last error", () => {
-  const absent = buildRecentMatchesEmbed(view({ voiceChannelId: null,
+  const absent = buildRecentMatchesEmbed(view({ members: [{ memberId: "member-1", order: 1, voiceChannelId: null, monitored: false }],
     status: { active: false, announced: new Set(), presentMemberIds: [] }, accounts: [{ ...account(), lastMatchId: undefined }] }));
-  assert.match(absent.toJSON().description!, /^⚪ 没在监听：<@member-1> 不在语音频道。进入语音频道后才开始监听，之前结束的对局不会补播。$/);
+  assert.equal(absent.toJSON().description!, "⚪ 没在监听：没有被追踪成员在语音频道。进入语音频道后才开始监听，之前结束的对局不会补播。\n1. <@member-1> · 不在语音 · 未监听");
   assert.ok(rows(absent).every((row) => !/监听起点|下次检查/.test(row)));
   const stopped = buildRecentMatchesEmbed(view({
     status: { active: false, lastError: { message: "Riot API key is invalid.", at: ENDED }, announced: new Set(), presentMemberIds: [] },
@@ -62,8 +62,8 @@ test("without monitoring the reply explains why and shows the last error", () =>
 
 test("notices replace the match list, mock data is labeled and long lists fit Discord limits", () => {
   const embed = buildRecentMatchesEmbed(view({ mock: true, accounts: [
-    { riotId: "MockWin#NA1", puuid: "MOCK-1", matches: [], notice: "⚠️ 这是模拟账号" },
-    { riotId: "Empty#NA1", puuid: "empty", matches: [] },
+    { memberOrder: 1, riotId: "MockWin#NA1", puuid: "MOCK-1", matches: [], notice: "⚠️ 这是模拟账号" },
+    { memberOrder: 1, riotId: "Empty#NA1", puuid: "empty", matches: [] },
     { ...account(), matches: Array.from({ length: 30 }, () => account().matches[0]) },
   ] })).toJSON();
   assert.equal(embed.title, "模拟数据 · 最近对局");
@@ -71,4 +71,43 @@ test("notices replace the match list, mock data is labeled and long lists fit Di
   assert.equal(embed.fields![0].value, "⚠️ 这是模拟账号");
   assert.equal(embed.fields![1].value, "没有对局记录。");
   assert.ok(embed.fields![2].value.length <= 1024);
+});
+
+test("several members each get a status line and their accounts are numbered by bind order", () => {
+  const embed = buildRecentMatchesEmbed(view({
+    members: [
+      { memberId: "member-1", order: 1, voiceChannelId: "voice-1", monitored: true },
+      { memberId: "member-2", order: 2, voiceChannelId: null, monitored: false },
+      { memberId: "member-3", order: 3, voiceChannelId: "voice-2", monitored: true },
+    ],
+    accounts: [
+      account(),
+      { ...account(), memberOrder: 2, riotId: "Second#NA1" },
+      { ...account(), memberOrder: 3, riotId: "Third#NA1" },
+    ],
+  })).toJSON();
+  assert.deepEqual(embed.description!.split("\n").slice(1, 4), [
+    "1. <@member-1> · <#voice-1> · 监听中",
+    "2. <@member-2> · 不在语音 · 未监听",
+    "3. <@member-3> · <#voice-2> · 监听中",
+  ]);
+  assert.deepEqual(embed.fields!.map((field) => field.name), ["1. Tracked#NA1", "2. Second#NA1", "3. Third#NA1"]);
+});
+
+test("a stopped session with a member in voice says monitoring stopped", () => {
+  const embed = buildRecentMatchesEmbed(view({
+    members: [
+      { memberId: "member-1", order: 1, voiceChannelId: null, monitored: false },
+      { memberId: "member-2", order: 2, voiceChannelId: "voice-1", monitored: false },
+    ],
+    status: { active: false, announced: new Set(), presentMemberIds: [] },
+  })).toJSON();
+  assert.match(embed.description!, /^⚪ 没在监听：有成员在语音频道里，但监听已停止。/);
+});
+
+test("the 25-field cap counts accounts across every member", () => {
+  const accounts = Array.from({ length: 30 }, (_, index) => ({ ...account(), memberOrder: Math.floor(index / 3) + 1, riotId: `Player${index}#NA1` }));
+  const embed = buildRecentMatchesEmbed(view({ accounts })).toJSON();
+  assert.equal(embed.fields!.length, 25);
+  assert.equal(embed.fields!.at(-1)!.name, "9. Player24#NA1");
 });

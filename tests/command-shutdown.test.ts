@@ -59,7 +59,9 @@ Module._load = function(request, parent, ...args) {
       "../services/voiceAnnouncements": { announceTextInVoiceChannel: async () => { played++; } },
       "../utils/riotApi": { getAccountByRiotId: async () => { await pause(); return account; } },
       "../store/bindingStore": {
+        ...bindingStore,
         listTrackedMembers: guildId => { countRead(); return bindingStore.listTrackedMembers(guildId); },
+        getTrackedMember: (...args) => { countRead(); return bindingStore.getTrackedMember(...args); },
         setMemberAccounts: (...args) => { mutations++; return bindingStore.setMemberAccounts(...args); },
         removeTrackedMember: (...args) => { mutations++; return bindingStore.removeTrackedMember(...args); },
       },

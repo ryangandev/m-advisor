@@ -6,9 +6,9 @@ import {
   SlashCommandOptionsOnlyBuilder,
 } from "discord.js";
 import { BotCommand } from "../types";
-import { buildErrorEmbed } from "../utils/embeds";
+import { buildErrorEmbed, NO_MENTIONS } from "../utils/embeds";
 import { isAdmin } from "../utils/permissions";
-import { stopPolling } from "../services/gameMonitor";
+import { reconcileGuildMonitoring } from "../services/monitorLifecycle";
 import { getTrackedMember, removeTrackedMember } from "../store/bindingStore";
 import { logInfo } from "../utils/log";
 
@@ -28,6 +28,7 @@ const unbindCommand: BotCommand = {
       await interaction.reply({
         content: "You need Administrator permission to use this command.",
         flags: MessageFlags.Ephemeral,
+        allowedMentions: NO_MENTIONS,
       });
       return;
     }
@@ -38,6 +39,7 @@ const unbindCommand: BotCommand = {
     if (!guildId) {
       await interaction.editReply({
         embeds: [buildErrorEmbed("This command can only be used in a server.")],
+        allowedMentions: NO_MENTIONS,
       });
       return;
     }
@@ -46,21 +48,22 @@ const unbindCommand: BotCommand = {
     const binding = getTrackedMember(guildId, user.id);
 
     if (!binding) {
-      await interaction.editReply("No binding found for that member.");
+      await interaction.editReply({ content: "No binding found for that member.", allowedMentions: NO_MENTIONS });
       return;
     }
 
-    stopPolling(guildId, "the binding was removed");
+    // Only this member leaves the session: a report speaking for them is cancelled, everyone else stays monitored.
     removeTrackedMember(guildId, user.id);
     logInfo(`Removed the binding of ${binding.accounts.map((account) => `${account.gameName}#${account.tagLine}`).join(", ")} `
       + `from Discord member ${user.username}.`);
+    await reconcileGuildMonitoring(interaction.client, guildId);
 
     const successEmbed = new EmbedBuilder()
       .setColor(0x2ECC71)
       .setTitle("Binding Removed")
       .setDescription(`Removed all bindings for <@${user.id}>`);
 
-    await interaction.editReply({ embeds: [successEmbed] });
+    await interaction.editReply({ embeds: [successEmbed], allowedMentions: NO_MENTIONS });
   },
 };
 
