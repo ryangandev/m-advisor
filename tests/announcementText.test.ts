@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { buildMatchAnnouncement, championLabel } from "../src/services/announcementText";
+import { extractMatchEvents } from "../src/services/matchEvents";
+import type { MatchEvent } from "../src/services/matchEvents";
+import { POSITIONS } from "../src/types";
 import { buildHorseReportEmbed } from "../src/utils/embeds";
-import { testMatch } from "./helpers/matches";
+import { testMatch, testMatchWithTimeline } from "./helpers/matches";
 
 const TIER_ORDER = /特等马，.*上等马，.*中等马，.*下等马，.*没有马，/;
 
@@ -151,4 +154,79 @@ test("the channel report lists every tier with its score", () => {
   assert.ok(ranking.includes("(召唤者)"));
   assert.ok(embed.fields!.some((field) => field.name.includes("表扬")));
   assert.ok(embed.fields!.some((field) => field.name.includes("批评")));
+});
+
+test("timeline moments replace the statistic in the praise and the roast", () => {
+  for (const [outcome, praise, roast] of [
+    ["win", "第24分钟大龙团你参与4个击杀还全身而退，大龙顺手就收了。", "第14分钟小龙团你第一个倒下，对面转身就把小龙拿了。"],
+    ["loss", "第12分钟小龙团你参与3个击杀还全身而退，小龙顺手就收了。", "第22分钟大龙团你第一个倒下，对面转身就把大龙拿了。"],
+  ] as const) {
+    const { detail, timeline } = testMatchWithTimeline(`MOMENT-${outcome}`, ["tracked"], outcome);
+    const plain = buildMatchAnnouncement(detail, "tracked", true);
+    const { speech, report } = buildMatchAnnouncement(detail, "tracked", true, { events: extractMatchEvents(detail, timeline) });
+    assert.deepEqual(report.lines, plain.report.lines);
+    // The moment takes the statistic's place; the opener and everything after it are unchanged.
+    for (const [text, before, moment] of [[report.praise!, plain.report.praise!, praise], [report.roast!, plain.report.roast!, roast]]) {
+      const at = text.indexOf(moment);
+      assert.ok(at > 0, text);
+      assert.ok(before.startsWith(text.slice(0, at)) && before.endsWith(text.slice(at + moment.length)), `${before} -> ${text}`);
+      assert.ok(!before.includes(moment));
+    }
+    assert.ok(speech.length <= plain.speech.length * 1.1, `${speech.length} vs ${plain.speech.length}`);
+    assert.deepEqual(buildMatchAnnouncement(detail, "tracked", true, { events: extractMatchEvents(detail, timeline) }).speech, speech);
+  }
+});
+
+test("a missing or failed timeline leaves the report exactly as before", () => {
+  const detail = testMatch("NO-TIMELINE", ["tracked"], "win");
+  const plain = buildMatchAnnouncement(detail, "tracked", true);
+  for (const events of [undefined, null, []]) assert.deepEqual(buildMatchAnnouncement(detail, "tracked", true, { events }), plain);
+  // Moments for other players only, or in the wrong tone, never reach the 特等马 or the 没有马.
+  const best = plain.report.lines[0];
+  const worst = plain.report.lines[4];
+  const puuidOf = (name: string) => detail.info.participants.find((player) => player.riotIdGameName === name)!.puuid;
+  const unrelated: MatchEvent[] = [
+    { puuid: puuidOf(best.name), timestamp: 600_000, kind: "firstBloodGiven", enemy: "TOP" },
+    { puuid: puuidOf(worst.name), timestamp: 600_000, kind: "multiKill", kills: 5 },
+    { puuid: "MOCK-ENEMY-1", timestamp: 600_000, kind: "lostFightFirstDeath", monster: "BARON" },
+  ];
+  assert.deepEqual(buildMatchAnnouncement(detail, "tracked", true, { events: unrelated }), plain);
+});
+
+test("moment lines never name an enemy, only their position", () => {
+  const detail = testMatch("ENEMY-NAMES", ["tracked"], "win");
+  const enemies = detail.info.participants.filter((player) => player.teamId === 200);
+  for (const enemy of enemies) enemy.riotIdGameName = `Foe${enemy.position}`;
+  const { report } = buildMatchAnnouncement(detail, "tracked", true);
+  const puuidOf = (name: string) => detail.info.participants.find((player) => player.riotIdGameName === name)!.puuid;
+  const forbidden = enemies.flatMap((enemy) => [enemy.riotIdGameName, enemy.puuid, championLabel(enemy), enemy.championName]);
+  const seen = new Set<string>();
+  for (const position of [...POSITIONS, null]) {
+    const best = puuidOf(report.lines[0].name);
+    const worst = puuidOf(report.lines[4].name);
+    const kinds: MatchEvent[][] = [
+      [{ puuid: best, timestamp: 1_400_000, kind: "multiKill", kills: 5 }],
+      [{ puuid: best, timestamp: 1_400_000, kind: "wonFight", takedowns: 4, monster: "ELDER" }],
+      [{ puuid: best, timestamp: 1_400_000, kind: "wonFight", takedowns: 3 }],
+      [{ puuid: best, timestamp: 1_400_000, kind: "shutdown", bounty: 700, enemy: position }],
+      [{ puuid: best, timestamp: 200_000, kind: "firstBlood", solo: true, enemy: position }],
+      [{ puuid: best, timestamp: 200_000, kind: "firstBlood", solo: false, enemy: position }],
+      [{ puuid: worst, timestamp: 1_400_000, kind: "lostFightFirstDeath", monster: "HERALD" }],
+      [{ puuid: worst, timestamp: 1_400_000, kind: "lostFightFirstDeath" }],
+      [{ puuid: worst, timestamp: 1_400_000, kind: "objectiveDeath", monster: "BARON" }],
+      [{ puuid: worst, timestamp: 1_400_000, kind: "shutdownGiven", bounty: 500, enemy: position }],
+      [{ puuid: worst, timestamp: 20_000, kind: "firstBloodGiven", enemy: position }],
+    ];
+    for (const events of kinds) {
+      const { speech, report: withEvent } = buildMatchAnnouncement(detail, "tracked", true, { events });
+      const line = events[0].puuid === best ? withEvent.praise! : withEvent.roast!;
+      assert.match(line, /第\d+分钟/, `${events[0].kind} is cited`);
+      seen.add(line);
+      for (const text of [speech, JSON.stringify(buildHorseReportEmbed(withEvent).toJSON())]) {
+        for (const name of forbidden) assert.ok(!text.includes(name), `${name} in ${line}`);
+      }
+      if (position && "enemy" in events[0]) assert.ok(line.includes(`对面${({ TOP: "上单", JUNGLE: "打野", MIDDLE: "中单", BOTTOM: "下路", UTILITY: "辅助" })[position]}`), line);
+    }
+  }
+  assert.ok([...seen].some((line) => line.includes("第1分钟就被对面")), "an event before the first minute reads as minute 1");
 });
