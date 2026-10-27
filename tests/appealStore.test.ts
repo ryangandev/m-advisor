@@ -8,7 +8,7 @@ import Database from "better-sqlite3";
 import { APPEAL_RETENTION_MS, closeAppeal, eraseMemberAppeals, isAppealClosed, reopenAppeal } from "../src/store/appealStore";
 import type { AppealCase } from "../src/store/appealStore";
 import { listTrackedMembers } from "../src/store/bindingStore";
-import { closeDatabase, getDatabase } from "../src/store/database";
+import { SCHEMA_VERSION, closeDatabase, getDatabase } from "../src/store/database";
 import { eraseMemberHorseRecords } from "../src/store/horseRecordStore";
 import { getPregameVoiceEnabled } from "../src/store/announcerStore";
 import { ROWS_V5, SCHEMA_V5 } from "./helpers/schemaV5";
@@ -78,9 +78,9 @@ test("a version 5 database upgrades to version 6 in a separate process with a ba
     closeAppeal(${JSON.stringify(CASE)});
     closeDatabase();
   `);
-  assert.equal(output.trim().split("\n").pop(), "6");
+  assert.equal(output.trim().split("\n").pop(), String(SCHEMA_VERSION));
 
-  assert.equal(getDatabase().pragma("user_version", { simple: true }), 6);
+  assert.equal(getDatabase().pragma("user_version", { simple: true }), SCHEMA_VERSION);
   assert.equal(isAppealClosed(CASE), true, "the case written by the other process is here");
   assert.deepEqual(listTrackedMembers("guild-one").map((member) => member.discordUserId), ["laowang"]);
   assert.equal(getPregameVoiceEnabled("guild-one"), false);
