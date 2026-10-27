@@ -69,44 +69,76 @@ function memberLine(member: MemberReport, rank: number | null): string {
   return `${lead} ${mention(member)} · ${member.games} 局 ${member.wins} 胜 · 均分 **${formatScore(member.averageScore)}** · ${tierCounts(member.tiers)}`;
 }
 
-/** The 军师's line for the period's 特等马. It talks about play only. */
-function topRemark(data: ReportData, member: MemberReport): string {
-  const when = data.kind === "day" ? "今日" : "本周";
+/**
+ * How the text refers to the period. A finished period is never called "today" or "this week": the 00:30 post covers the
+ * day before, and a catch-up post can be older still, so it says 当日 / 当周 and the title carries the date.
+ */
+function whenWord(data: ReportData, final: boolean): string {
+  if (data.kind === "day") return final ? "当日" : "今日";
+  return final ? "当周" : "本周";
+}
+
+const mentions = (members: readonly MemberReport[]) => members.map(mention).join("、");
+
+/** The 军师's line for the period's 特等马, or for several who share the best average. It talks about play only. */
+function topRemark(data: ReportData, members: readonly MemberReport[], final: boolean): string {
+  const when = whenWord(data, final);
+  const seed = `${data.kind}:${data.range.start}:top:${members.map((member) => member.discordUserId).join(",")}`;
+  if (members.length > 1) {
+    const closing = pick(["并驾齐驱，军师一碗水端平。", "谁也不让谁，马厩里难得的双雄并立。"], seed);
+    return `${mentions(members)} 并列：${when}各自均分都是 ${formatScore(members[0].averageScore)}。${closing}`;
+  }
+  const member = members[0];
   const detail = `${when} ${member.games} 局均分 ${formatScore(member.averageScore)}，最亮眼的是${championLabel(member.best)}那把 ${kda(member.best)}，拿下 ${formatScore(member.best.score)} 分`;
   const closing = pick(data.kind === "day"
     ? ["这一天的头牌非此马莫属。", "别的马只配看着它的尾灯。", "军师的羽扇都为它摇了三下。"]
-    : ["这一周的马厩，它说了算。", "别的马见了都得让道，军师记下一笔。", "一周下来稳稳压着全场，军师服气。"],
-  `${data.kind}:${data.range.start}:top:${member.discordUserId}`);
+    : ["这一周的马厩，它说了算。", "别的马见了都得让道，军师记下一笔。", "一周下来稳稳压着全场，军师服气。"], seed);
   return `${mention(member)}：${detail}。${closing}`;
 }
 
-/** The 军师's line for the period's 没有马. It talks about play only. */
-function noneRemark(data: ReportData, member: MemberReport): string {
-  const when = data.kind === "day" ? "今日" : "本周";
+/** The 军师's line for the period's 没有马, or for several who share the worst average. It talks about play only. */
+function noneRemark(data: ReportData, members: readonly MemberReport[], final: boolean): string {
+  const when = whenWord(data, final);
+  const seed = `${data.kind}:${data.range.start}:none:${members.map((member) => member.discordUserId).join(",")}`;
+  if (members.length > 1) {
+    const closing = pick(["难兄难弟，军师建议结伴去训练模式。", "一起罚抄孙子兵法，抄完再战。"], seed);
+    return `${mentions(members)} 并列：${when}各自均分都只有 ${formatScore(members[0].averageScore)}。${closing}`;
+  }
+  const member = members[0];
   const detail = `${when} ${member.games} 局均分只有 ${formatScore(member.averageScore)}，最难看的是${championLabel(member.worst)}那把 ${kda(member.worst)}，只拿 ${formatScore(member.worst.score)} 分`;
   const closing = pick(data.kind === "day"
-    ? ["军师建议明天先去训练模式热热身。", "兵法有云，知耻而后勇，明日再战。", "这样的操作，军师看了都替马脸红。"]
-    : ["罚抄孙子兵法一遍，下周再看表现。", "这一周的操作，军师建议先跟木桩谈谈心。", "败军之将不言勇，下周请拿出点真功夫。"],
-  `${data.kind}:${data.range.start}:none:${member.discordUserId}`);
+    ? ["军师建议先去训练模式热热身。", "兵法有云，知耻而后勇。", "这样的操作，军师看了都替马脸红。"]
+    : ["罚抄孙子兵法一遍，军师等着看长进。", "这一周的操作，军师建议先跟木桩谈谈心。", "败军之将不言勇，请拿出点真功夫。"], seed);
   return `${mention(member)}：${detail}。${closing}`;
 }
 
 /** Why nobody was crowned, so the field never looks broken. */
-function noWinnerNote(data: ReportData): string {
+function noWinnerNote(data: ReportData, final: boolean): string {
   const ranked = data.members.filter((member) => member.qualified);
   if (ranked.length >= 2) return "大家的均分一模一样，军师分不出高下，这次不评。";
-  const who = data.kind === "day" ? "今天只有" : `本周满 ${data.minGames} 局的只有`;
+  const when = whenWord(data, final);
+  const who = data.kind === "day" ? `${when}只有` : `${when}满 ${data.minGames} 局的只有`;
   return `${who} ${ranked.length} 位参评，至少要两位才分得出高下，这次不评。`;
+}
+
+/** Everyone who holds the highest value of a count, or nobody when it is below `minimum` or the whole field shares it. */
+function leaders(data: ReportData, value: (member: MemberReport) => number, minimum: number, skipWhenAllShare: boolean): { members: MemberReport[]; value: number } | null {
+  const best = Math.max(0, ...data.members.map(value));
+  if (best < minimum) return null;
+  const members = data.members.filter((member) => value(member) === best);
+  if (skipWhenAllShare && members.length === data.members.length) return null;
+  return { members, value: best };
 }
 
 function summaryLines(data: ReportData): string[] {
   const lines = [`共鉴定 ${data.totalGames} 局：${tierCounts(data.tierTotals)}`];
-  const busiest = [...data.members].sort((a, b) => b.games - a.games || a.discordUserId.localeCompare(b.discordUserId))[0];
-  if (data.kind === "week" && busiest && data.members.length > 1) lines.push(`出勤最多：${mention(busiest)}（${busiest.games} 局）`);
-  const topStreak = [...data.members].sort((a, b) => b.topStreak - a.topStreak || a.discordUserId.localeCompare(b.discordUserId))[0];
-  if (data.kind === "week" && topStreak && topStreak.topStreak >= 2) lines.push(`最长连续特等马：${mention(topStreak)} ${topStreak.topStreak} 局`);
-  const noneStreak = [...data.members].sort((a, b) => b.noneStreak - a.noneStreak || a.discordUserId.localeCompare(b.discordUserId))[0];
-  if (data.kind === "week" && noneStreak && noneStreak.noneStreak >= 2) lines.push(`最长连续没有马：${mention(noneStreak)} ${noneStreak.noneStreak} 局，军师替这匹马捏了把汗`);
+  if (data.kind !== "week") return lines;
+  const busiest = leaders(data, (member) => member.games, 1, true);
+  if (busiest) lines.push(`出勤最多：${mentions(busiest.members)}（${busiest.value} 局）`);
+  const topStreak = leaders(data, (member) => member.topStreak, 2, false);
+  if (topStreak) lines.push(`最长连续特等马：${mentions(topStreak.members)} ${topStreak.value} 局`);
+  const noneStreak = leaders(data, (member) => member.noneStreak, 2, false);
+  if (noneStreak) lines.push(`最长连续没有马：${mentions(noneStreak.members)} ${noneStreak.value} 局，军师替这${noneStreak.members.length > 1 ? "几" : ""}匹马捏了把汗`);
   return lines;
 }
 
@@ -120,10 +152,14 @@ function overallRemark(data: ReportData): string {
   return pick(["有高光也有翻车，军师继续观察。", "不上不下，稳稳当当，是马厩的常态。"], seed);
 }
 
-/** The public 马报 of a period. Mock-mode reports are visibly labeled. `final` is false for a period still running. */
+/**
+ * The public 马报 of a period. Mock-mode reports are visibly labeled.
+ * `final` is false for a period still running; a finished one is worded as that period, never as "today" or "this week".
+ */
 export function buildReportEmbed(data: ReportData, options: { final: boolean }): EmbedBuilder {
   const name = data.kind === "day" ? "每日马报" : "每周马报";
   const label = periodLabel(data);
+  const when = whenWord(data, options.final);
   const embed = new EmbedBuilder()
     .setTitle(`${data.mock ? "模拟数据 · " : ""}${name} · ${label}${options.final ? "" : "（进行中）"}`)
     .setColor(data.mock ? 0x95A5A6 : 0x1C7A6F)
@@ -140,19 +176,17 @@ export function buildReportEmbed(data: ReportData, options: { final: boolean }):
     ...unranked.map((member) => memberLine(member, null)),
   ];
   const notes: string[] = [];
-  if (unranked.length > 0 && data.kind === "week") notes.push(`▫️ 本周不满 ${data.minGames} 局的不参与评选。`);
+  if (unranked.length > 0 && data.kind === "week") notes.push(`▫️ ${when}不满 ${data.minGames} 局的不参与评选。`);
 
   embed.setDescription(fit([`共 **${data.totalGames}** 局 · **${data.members.length}** 位出战`, ...notes], DESCRIPTION_LIMIT));
-  embed.addFields(
-    { name: data.kind === "day" ? "今日战绩" : "本周排行榜（按平均分）", value: fit(board) },
-  );
-  if (data.topHorse && data.noneHorse) {
+  embed.addFields({ name: data.kind === "day" ? `${when}战绩` : `${when}排行榜（按平均分）`, value: fit(board) });
+  if (data.topHorses.length > 0 && data.noneHorses.length > 0) {
     embed.addFields(
-      { name: data.kind === "day" ? "👑 今日特等马" : "👑 本周特等马", value: fit([topRemark(data, data.topHorse)]) },
-      { name: data.kind === "day" ? "🪦 今日没有马" : "🪦 本周没有马", value: fit([noneRemark(data, data.noneHorse)]) },
+      { name: `👑 ${when}特等马`, value: fit([topRemark(data, data.topHorses, options.final)]) },
+      { name: `🪦 ${when}没有马`, value: fit([noneRemark(data, data.noneHorses, options.final)]) },
     );
   } else {
-    embed.addFields({ name: data.kind === "day" ? "今日特等马 / 没有马" : "本周特等马 / 没有马", value: noWinnerNote(data) });
+    embed.addFields({ name: `${when}特等马 / 没有马`, value: noWinnerNote(data, options.final) });
   }
   if (data.bestGame && data.worstGame) {
     embed.addFields({ name: "单局之最", value: fit([gameLine("👑 最佳", data.bestGame), gameLine("🪦 最差", data.worstGame)]) });

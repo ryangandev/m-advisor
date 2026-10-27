@@ -6,7 +6,7 @@ import { loadCommands } from "./handlers/commandHandler";
 import { BotCommand, BotEvent } from "./types";
 import { getRiotMode } from "./services/riotData";
 import { stopAllPolling } from "./services/gameMonitor";
-import { stopReportScheduler } from "./services/reportScheduler";
+import { finishReportScheduler, haltReportScheduler } from "./services/reportScheduler";
 import { shutdownTTS } from "./utils/tts";
 import { closeDatabase } from "./store/database";
 import { getVoiceConnections } from "@discordjs/voice";
@@ -93,7 +93,7 @@ function shutdown(): Promise<void> {
         logError(`Bot shutdown failed (${label}): ${error instanceof Error ? error.name : "unknown error"}`);
       }
     };
-    await cleanup("report scheduler", stopReportScheduler);
+    await cleanup("report scheduler halt", haltReportScheduler);
     await cleanup("match monitoring", stopAllPolling);
     await cleanup("voice connections", async () => {
       for (const connection of getVoiceConnections().values()) {
@@ -102,6 +102,8 @@ function shutdown(): Promise<void> {
     });
     await cleanup("Discord client", () => client.destroy());
     await cleanup("speech provider", shutdownTTS);
+    // A report still being sent gets a few seconds to finish before the database closes under it.
+    await cleanup("report scheduler", () => finishReportScheduler());
     await cleanup("database", closeDatabase);
     if (failed) logError("Bot stopped with cleanup errors; see the messages above.");
     else logInfo("Bot stopped; speech process and database closed.");

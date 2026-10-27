@@ -56,9 +56,17 @@ export function roleGuildFrom(guild: Guild): RoleGuild {
 export const MISSING_MANAGE_ROLES = "机器人没有「管理身份组」(Manage Roles) 权限。请在 服务器设置 → 身份组 里给机器人的身份组打开这一项。";
 export const HIERARCHY_PROBLEM = `机器人的最高身份组必须排在「${TOP_ROLE_NAME}」和「${NONE_ROLE_NAME}」之上，否则 Discord 不允许它分配。请在 服务器设置 → 身份组 里把机器人的身份组拖到这两个身份组上面。`;
 
+/** Creating the pair of roles failed part-way: `partial` holds whichever role was found or created before the failure. */
+export class RoleCreationError extends Error {
+  constructor(readonly partial: { top: RoleLike | null; none: RoleLike | null }, readonly original: unknown) {
+    super("The weekly roles could not all be created.");
+    this.name = "RoleCreationError";
+  }
+}
+
 /** An admin-facing explanation of a failed Discord call. The logs, not this text, carry anything technical. */
 export function explainRoleFailure(error: unknown): string {
-  const code = discordErrorCode(error);
+  const code = discordErrorCode(error instanceof RoleCreationError ? error.original : error);
   if (code === RESTJSONErrorCodes.MissingPermissions || code === RESTJSONErrorCodes.MissingAccess) return `Discord 拒绝了身份组操作：机器人缺少权限，或身份组位置太低。${HIERARCHY_PROBLEM}`;
   if (code === RESTJSONErrorCodes.MaximumNumberOfGuildRolesReached) return "服务器的身份组数量已到上限，机器人建不了新身份组。请删掉不用的身份组，或用 /report-settings roles 指定已有的身份组。";
   return "Discord 拒绝了这次身份组操作，详情见机器人日志。";
@@ -102,12 +110,18 @@ async function ensureRole(guild: RoleGuild, configuredId: string | null, name: s
 
 /**
  * Reuses the configured weekly roles and creates whichever is missing, named 本周特等马 and 本周没有马 with no permissions.
- * Throws the Discord error when creation fails; callers turn it into an admin explanation.
+ * When a step fails it throws a RoleCreationError that still carries the roles found or created before the failure,
+ * so the caller can keep them instead of creating them again next time.
  */
 export async function ensureWeeklyRoles(guild: RoleGuild, configured: { top: string | null; none: string | null }): Promise<{ top: RoleLike; none: RoleLike }> {
-  const top = await ensureRole(guild, configured.top, TOP_ROLE_NAME);
-  const none = await ensureRole(guild, configured.none, NONE_ROLE_NAME);
-  return { top, none };
+  let top: RoleLike | null = null;
+  try {
+    top = await ensureRole(guild, configured.top, TOP_ROLE_NAME);
+    const none = await ensureRole(guild, configured.none, NONE_ROLE_NAME);
+    return { top, none };
+  } catch (error) {
+    throw new RoleCreationError({ top, none: null }, error);
+  }
 }
 
 export interface WeeklyRoleState {
@@ -123,74 +137,109 @@ export interface WeeklyRoleOutcome extends WeeklyRoleState {
 }
 
 export interface WeeklyWinners {
-  /** The week's 特等马, or null when nobody was named. */
-  top: string | null;
-  /** The week's 没有马, or null when nobody was named. */
-  none: string | null;
+  /** Everyone who shares the week's best average (usually one), or empty when nobody was named. */
+  top: readonly string[];
+  /** Everyone who shares the week's worst average (usually one), or empty when nobody was named. */
+  none: readonly string[];
 }
 
-/** Takes the role from `previous` holders who no longer deserve it and gives it to `winner`. Returns the holders now. */
-async function rotateOne(guild: RoleGuild, roleId: string, previous: readonly string[], winner: string | null, problems: string[]): Promise<string[]> {
+/** Takes the role from `previous` holders who are not among `winners` and gives it to every winner. Returns the holders now. */
+async function rotateOne(guild: RoleGuild, roleId: string, previous: readonly string[], winners: readonly string[], problems: string[]): Promise<string[]> {
+  const keep = new Set(winners);
   const holders: string[] = [];
   for (const userId of previous) {
-    if (userId === winner) { holders.push(userId); continue; }
+    if (keep.has(userId)) { holders.push(userId); continue; }
     try {
       const member = await guild.fetchMember(userId);
       // A member who left no longer holds anything.
       if (member) await member.roles.remove(roleId, AUDIT_REASON);
     } catch (error) {
+      // A role that no longer exists is held by nobody.
+      if (discordErrorCode(error) === RESTJSONErrorCodes.UnknownRole) continue;
       problems.push(explainRoleFailure(error));
       // Keep the holder so the next rotation tries again.
       holders.push(userId);
     }
   }
-  if (winner && !holders.includes(winner)) {
+  for (const winner of winners) {
     try {
       const member = await guild.fetchMember(winner);
-      if (member) {
-        await member.roles.add(roleId, AUDIT_REASON);
-        holders.push(winner);
+      if (!member) {
+        // Left the server: nothing to give, and nothing to remember.
+        const index = holders.indexOf(winner);
+        if (index >= 0) holders.splice(index, 1);
+        continue;
       }
+      // Also when already recorded as a holder, in case the role was removed by hand.
+      await member.roles.add(roleId, AUDIT_REASON);
+      if (!holders.includes(winner)) holders.push(winner);
     } catch (error) {
       problems.push(explainRoleFailure(error));
     }
-  } else if (winner) {
-    // Already recorded as holder: make sure Discord agrees, in case the role was removed by hand.
-    try { await (await guild.fetchMember(winner))?.roles.add(roleId, AUDIT_REASON); }
-    catch (error) { problems.push(explainRoleFailure(error)); }
   }
   return holders;
 }
 
+/** The holders of a role that is being replaced by another one belong to the old role and do not carry over. */
+const holdersOfSameRole = (oldId: string, newId: string, holders: readonly string[]): readonly string[] => (oldId === newId ? holders : []);
+
 /**
  * Gives the week's winners their roles and takes the roles back from last week's holders.
- * It creates a role that is missing and only ever touches the two configured roles and the members the bot itself
- * gave them to. Any Discord failure is collected in `problems` instead of thrown, so a report is never blocked.
- * With missing permissions or an unreachable role nothing is changed at all.
+ * Tied winners all get the role. It creates a role that is missing and only ever touches the two configured roles and
+ * the members the bot itself gave them to. Any Discord failure is collected in `problems` instead of thrown, so a report
+ * is never blocked. With missing permissions or an unreachable role nothing is changed at all, except that roles which
+ * were created before a failure are kept in the returned ids.
  */
 export async function rotateWeeklyRoles(guild: RoleGuild, state: WeeklyRoleState, winners: WeeklyWinners): Promise<WeeklyRoleOutcome> {
   const unchanged: WeeklyRoleOutcome = { ...state, problems: [] };
   const check = await checkRoleSetup(guild).catch((error: unknown) => ({ ok: false, problems: [explainRoleFailure(error)] }));
   if (!check.ok) return { ...unchanged, problems: check.problems };
   const problems: string[] = [];
+  const withIds = (top: RoleLike | null, none: RoleLike | null): WeeklyRoleState => {
+    const topRoleId = top?.id ?? state.topRoleId;
+    const noneRoleId = none?.id ?? state.noneRoleId;
+    return {
+      topRoleId,
+      noneRoleId,
+      topHolderIds: holdersOfSameRole(state.topRoleId, topRoleId, state.topHolderIds),
+      noneHolderIds: holdersOfSameRole(state.noneRoleId, noneRoleId, state.noneHolderIds),
+    };
+  };
   try {
     const { top, none } = await ensureWeeklyRoles(guild, { top: state.topRoleId, none: state.noneRoleId });
+    const ensured = withIds(top, none);
     const standing = (await guild.botStanding())!;
     if (top.position >= standing.highestRolePosition || none.position >= standing.highestRolePosition || top.managed || none.managed) {
-      return { ...unchanged, problems: [HIERARCHY_PROBLEM] };
+      return { ...ensured, problems: [HIERARCHY_PROBLEM] };
     }
-    const topHolderIds = await rotateOne(guild, top.id, state.topHolderIds, winners.top, problems);
-    const noneHolderIds = await rotateOne(guild, none.id, state.noneHolderIds, winners.none, problems);
+    const topHolderIds = await rotateOne(guild, top.id, ensured.topHolderIds, winners.top, problems);
+    const noneHolderIds = await rotateOne(guild, none.id, ensured.noneHolderIds, winners.none, problems);
     return { topRoleId: top.id, noneRoleId: none.id, topHolderIds, noneHolderIds, problems: [...new Set(problems)] };
   } catch (error) {
-    return { ...unchanged, problems: [explainRoleFailure(error)] };
+    const partial = error instanceof RoleCreationError ? withIds(error.partial.top, error.partial.none) : unchanged;
+    return { ...partial, problems: [explainRoleFailure(error)] };
   }
+}
+
+/**
+ * Takes one role back from the members the bot gave it to. A role that no longer exists counts as already released.
+ * Returns the holders that still have it, which is only the ones Discord refused to change.
+ */
+export async function releaseRoleHolders(guild: RoleGuild, roleId: string, holders: readonly string[]): Promise<{ holders: string[]; problems: string[] }> {
+  if (holders.length === 0) return { holders: [], problems: [] };
+  try {
+    if (!(await guild.fetchRole(roleId))) return { holders: [], problems: [] };
+  } catch (error) {
+    return { holders: [...holders], problems: [explainRoleFailure(error)] };
+  }
+  const problems: string[] = [];
+  const left = await rotateOne(guild, roleId, holders, [], problems);
+  return { holders: left, problems: [...new Set(problems)] };
 }
 
 /** Takes both roles back from the members the bot gave them to, for turning the feature off. Returns what is still held. */
 export async function releaseWeeklyRoles(guild: RoleGuild, state: WeeklyRoleState): Promise<WeeklyRoleOutcome> {
-  const problems: string[] = [];
-  const topHolderIds = await rotateOne(guild, state.topRoleId, state.topHolderIds, null, problems);
-  const noneHolderIds = await rotateOne(guild, state.noneRoleId, state.noneHolderIds, null, problems);
-  return { ...state, topHolderIds, noneHolderIds, problems: [...new Set(problems)] };
+  const top = await releaseRoleHolders(guild, state.topRoleId, state.topHolderIds);
+  const none = await releaseRoleHolders(guild, state.noneRoleId, state.noneHolderIds);
+  return { ...state, topHolderIds: top.holders, noneHolderIds: none.holders, problems: [...new Set([...top.problems, ...none.problems])] };
 }

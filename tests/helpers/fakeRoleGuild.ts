@@ -15,6 +15,8 @@ export class FakeRoleGuild implements RoleGuild {
   changes: string[] = [];
   /** Throws this for the matching operation, e.g. { add: error }. */
   failures: Partial<Record<"add" | "remove" | "create" | "standing" | "fetchRole" | "fetchMember", Error>> = {};
+  /** How many roles may be created before creation starts failing; unlimited when undefined. */
+  createLimit: number | undefined;
   private created = 0;
 
   addRole(id: string, name: string, position = 1, managed = false): void {
@@ -37,6 +39,7 @@ export class FakeRoleGuild implements RoleGuild {
 
   async createRole(name: string, _reason?: string): Promise<RoleLike> {
     if (this.failures.create) throw this.failures.create;
+    if (this.createLimit !== undefined && this.created >= this.createLimit) throw discordError(50013, "Missing Permissions");
     this.created += 1;
     const role = { id: `created-${this.created}`, name, position: 1, managed: false };
     this.roles.set(role.id, role);

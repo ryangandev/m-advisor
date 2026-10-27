@@ -11,9 +11,11 @@ A day is a Pacific calendar day, so it is 23 or 25 hours long when daylight savi
 A week runs from Monday 00:00 to the next Monday 00:00, so it settles at the end of Sunday.
 A game belongs to the period containing its `played_at`.
 
-A finished period becomes due 5 minutes after it ends (`REPORT_GRACE_MS` in `src/services/reports.ts`).
-A game that ends just before midnight is announced and recorded a little later, and the grace keeps it in its own day.
-At 00:05 Pacific the previous day is posted, and on Mondays the previous week too.
+A finished period becomes due 30 minutes after it ends (`REPORT_GRACE_MS` in `src/services/reports.ts`).
+A game's time is when it ended, but Riot publishes the match minutes later, the monitor polls every 45 seconds and the record is written around the announcement.
+Half an hour keeps a game that ended just before midnight in its own day, and on Sunday in its own week and its roles.
+At 00:30 Pacific the previous day is posted, and on Mondays the previous week too.
+There is no mechanism that holds a report while a game is still unrecorded; a game recorded more than the grace after its period ended is not reported.
 
 ## What a report contains
 
@@ -32,8 +34,12 @@ A member removed with `/unbind` keeps their history but is left out of reports, 
 The weekly bar is 3 games, the same bar the 马厩 uses before it calls a dimension a strength, so that one lucky or unlucky game cannot decide the week.
 Members below the bar are listed without a rank and are not eligible.
 Nobody is named when fewer than two members are ranked or when everyone averaged the same, and the report then says why.
+When several members share the best or the worst average, all of them are named as 并列 in the text and all of them get the weekly role.
+The busiest member and the longest 特等马 or 没有马 streak name everyone who shares the top value, and the busiest line is left out when the whole field played the same number of games.
 The 军师 lines are chosen deterministically from the period and the member, so the same report always reads the same, and they talk about play only.
 
+A finished period is worded as that period: the daily post says 当日 and the weekly post says 当周, and the title carries the date or date range.
+Only `/report` on the period in progress says 今日 and 本周, and no closing line promises a tomorrow or a next week.
 Members are written as `<@id>`, and every send passes `allowedMentions` that pings nobody.
 A mock-mode report has the title prefix 模拟数据 and a mock footer.
 A period with no recorded games is not posted; it is marked as handled silently.
@@ -47,19 +53,28 @@ After an outage this means the latest missed day and week and never a flood of o
 Each handled period is stored in `report_marks`, kept apart for mock and real data, and a mark only moves forward, so a period is posted at most once even across restarts.
 The mark is written right after the send, so a crash between the two could post one period twice, which is accepted over losing a report.
 
-When a channel is first set, or a daily or weekly report is switched on, the periods that have already finished are marked as handled.
+When a channel is first set, or a daily or weekly report is switched from off to on, every period that has already ended is marked as handled, even one still inside its grace period.
 Reports then start with the next period instead of replaying yesterday, and `/report` still shows any finished period on demand.
+Switching a report on when it is already on changes nothing, so it never drops a report that is due.
 
-A failed send does not mark the period when the cause may pass, and it is retried on the next check, up to 3 attempts.
-A missing channel, missing access or missing permissions give up on that period at once and log a warning.
+A failed send does not mark the period, and it is retried on every check until it has kept failing for 6 hours (`GIVE_UP_AFTER_MS`), counted from the first failure in this process.
+Network and timeout errors therefore never use up attempts: a Mac that wakes without Wi-Fi for a few minutes still posts once the network is back.
+The log gets one line when a send starts failing and one when the period is given up.
+A missing channel, missing access or missing permissions give up on that period at once.
 A server that fails never blocks the other servers.
+
+Every report is sent with a nonce derived from the server, data mode, kind and period and with `enforceNonce: true`, which discord.js 14.27 supports.
+If a request times out after Discord already accepted it, the retry carries the same nonce and Discord returns the first message instead of posting a second one.
+Discord only remembers a nonce for a few minutes, so a restart is protected by the stored marks and not by the nonce.
+If the database refuses the mark after a successful send, the period is remembered in memory and logged, so it is not reposted every minute; after a restart it could post once more.
 
 ### Startup and shutdown hook
 
 `src/events/reportScheduler.ts` is a second `ClientReady` listener that the existing event loader registers by itself, so `ready.ts` and `gameMonitor.ts` are untouched.
 It calls `startReportScheduler(client)`, whose first check is the restart catch-up.
-`src/index.ts` calls `stopReportScheduler()` first in graceful shutdown, before monitoring, the client and the database are closed.
-It cancels the timer and waits for a report that is being sent, and the stopping flag prevents a new one from starting.
+`src/index.ts` calls `haltReportScheduler()` first in graceful shutdown, which cancels the timer and stops any new check or send at once without waiting.
+Just before the database closes it calls `finishReportScheduler()`, which waits at most 3 seconds (`SHUTDOWN_WAIT_MS`) for a report that is still being sent.
+Role calls and a hung send therefore cannot hold up the voice, speech and client cleanup.
 
 ## Commands
 
@@ -68,8 +83,8 @@ It cancels the timer and waits for a report that is being sent, and the stopping
 | `/report day` and `/report week`, option `when` | Everyone, public reply | The period in progress (default) or the previous finished one, built by the same code as the scheduled report. It changes no marks and no roles. |
 | `/report-settings show` | Administrator, private reply | Show the channel, switches and roles |
 | `/report-settings channel channel` | Administrator, private reply | Set the channel, after checking the bot has View Channel, Send Messages and Embed Links there |
-| `/report-settings channel-clear` | Administrator, private reply | Stop automatic reports; the other settings are kept |
-| `/report-settings daily enabled` and `weekly enabled` | Administrator, private reply | Switch the daily or weekly report |
+| `/report-settings channel-clear` | Administrator, private reply | Stop automatic reports; the other settings are kept. If weekly roles are on, they are released and turned off too |
+| `/report-settings daily enabled` and `weekly enabled` | Administrator, private reply | Switch the daily or weekly report. Switching weekly off while roles are on releases and turns off the roles |
 | `/report-settings roles enabled top-role none-role` | Administrator, private reply | Switch the weekly roles; the two role options reuse existing roles |
 
 Automatic reports are off until a channel is set, and then daily and weekly are both on.
@@ -86,13 +101,17 @@ Without role options the bot creates 本周特等马 and 本周没有马 with no
 After the weekly report is posted, `rotateWeeklyRoles` in `src/services/reportRoles.ts` gives the week's two champions their roles and takes the roles back from last week's holders.
 It touches only the two configured roles and only members the bot itself gave them to, which are stored in `report_settings`, so roles given by hand are never taken away.
 A role that was deleted is created again, and a champion who left the server is skipped.
+When creating the two roles fails after the first one was made, that role is kept and reused on the next try instead of being created twice.
 When nobody was named, the old holders lose the roles and nobody gains them.
-A week with no games is skipped and leaves the roles as they were.
+A week with no games posts nothing, but the roles still rotate silently to nobody, so a stale 本周特等马 never lingers; a failure there is only logged.
 Roles are only changed for real data: in mock mode the report is posted and the roles are left alone.
 
 Any Discord failure is logged and collected, never thrown, so it cannot block the report, which is posted first.
 The channel then gets one short note listing what to fix, and the rotation tries again the next week.
 Turning roles off takes them back from the members the bot gave them to, keeps the role ids for later and does not delete the roles.
+Roles follow the weekly report, so clearing the channel or switching weekly reports off while roles are on also releases the holders and turns the roles off; they stay off until `/report-settings roles` enables them again.
+Enabling roles with different roles than before first takes the replaced roles back from their holders, and lists in the reply any member Discord would not let it release so an administrator can remove the role by hand.
+A role that no longer exists counts as already released.
 
 ## What the administrator does in Discord
 
@@ -104,7 +123,7 @@ Turning roles off takes them back from the members the bot gave them to, keeps t
 ## Verification
 
 `tests/reportStore.test.ts` covers the version 3 to 4 migration from a literal version 3 file with an uncheckpointed WAL, its backup, rollback of a failed step and the settings and marks API.
-`tests/reports.test.ts` covers the period timing including daylight saving, the report math, mock and real separation and the embed.
+`tests/reports.test.ts` and `tests/reportEmbed.test.ts` cover the period timing including daylight saving, the report math, ties, mock and real separation, the finished and in-progress wording and the embed.
 `tests/reportScheduler.test.ts` covers catch-up, at-most-once posting, empty periods, retries, the timer, shutdown and the role hand-off with a fake clock and fake Discord.
 `tests/reportRoles.test.ts` and `tests/reportCommands.test.ts` cover role rotation and failures with a fake server and the commands.
 None of them contacts Discord, and live posting and role changes are not yet verified in a real server.

@@ -20,10 +20,11 @@ export const MIN_WEEKLY_GAMES = 3;
 /** A single game is enough to be ranked for a day. */
 export const MIN_DAILY_GAMES = 1;
 /**
- * How long after a period ends the report waits before it counts as due.
- * A game that ends just before midnight is announced and recorded a little later, and this keeps it in its own day.
+ * How long after a period ends the report waits before it counts as due, so posts go out at 00:30 Pacific.
+ * A game's time is when it ended, but Riot publishes the match minutes later, the monitor polls every 45 seconds and the
+ * record is written around the announcement. Half an hour keeps a game that ended just before midnight in its own period.
  */
-export const REPORT_GRACE_MS = 5 * 60_000;
+export const REPORT_GRACE_MS = 30 * 60_000;
 
 export const minGamesFor = (kind: ReportKind): number => (kind === "day" ? MIN_DAILY_GAMES : MIN_WEEKLY_GAMES);
 
@@ -73,13 +74,19 @@ export interface ReportData {
   tierTotals: Record<HorseTier, number>;
   /** Ranked members first, best average first; members below the games bar follow, most games first. */
   members: MemberReport[];
-  /** The best average among ranked members, named only when at least two members are ranked and their averages differ. */
-  topHorse: MemberReport | null;
-  /** The worst average among ranked members, named only when at least two members are ranked and their averages differ. */
-  noneHorse: MemberReport | null;
+  /**
+   * Everyone sharing the best average among ranked members, usually one. Empty unless at least two members are ranked
+   * and their averages differ.
+   */
+  topHorses: MemberReport[];
+  /** Everyone sharing the worst average among ranked members, usually one. Empty under the same conditions as `topHorses`. */
+  noneHorses: MemberReport[];
   bestGame: HorseRecord | null;
   worstGame: HorseRecord | null;
 }
+
+/** Averages are sums of fractions, so equal averages can differ in the last bits. */
+const TIE_EPSILON = 1e-9;
 
 const byScoreThenAge = (a: HorseRecord, b: HorseRecord) => b.score - a.score || a.playedAt - b.playedAt || a.matchId.localeCompare(b.matchId);
 
@@ -132,7 +139,7 @@ export function buildReportData(input: ReportInput): ReportData {
 
   const ranked = members.filter((member) => member.qualified);
   // Nobody is crowned or shamed when the whole field averaged the same.
-  const separated = ranked.length >= 2 && ranked[0].averageScore - ranked[ranked.length - 1].averageScore > 1e-9;
+  const separated = ranked.length >= 2 && ranked[0].averageScore - ranked[ranked.length - 1].averageScore > TIE_EPSILON;
   const ordered = [...records].sort(byScoreThenAge);
   return {
     kind,
@@ -142,8 +149,8 @@ export function buildReportData(input: ReportInput): ReportData {
     totalGames: records.length,
     tierTotals: Object.fromEntries(HORSE_TIERS.map((tier) => [tier, records.filter((record) => record.tier === tier).length])) as Record<HorseTier, number>,
     members,
-    topHorse: separated ? ranked[0] : null,
-    noneHorse: separated ? ranked[ranked.length - 1] : null,
+    topHorses: separated ? ranked.filter((member) => Math.abs(member.averageScore - ranked[0].averageScore) <= TIE_EPSILON) : [],
+    noneHorses: separated ? ranked.filter((member) => Math.abs(member.averageScore - ranked[ranked.length - 1].averageScore) <= TIE_EPSILON) : [],
     bestGame: ordered[0] ?? null,
     worstGame: ordered[ordered.length - 1] ?? null,
   };
@@ -157,12 +164,13 @@ export function loadReport(guildId: string, kind: ReportKind, range: TimeRange, 
 }
 
 /**
- * Marks every period that has already finished as handled, for both data modes.
- * Called when a channel is first set or a kind is switched on, so turning reports on posts from the next period
- * onward instead of replaying yesterday. `/report` can still show any finished period on demand.
+ * Marks every period that has already ended as handled, for both data modes, even one still inside its grace period.
+ * Called when a channel is first set or a daily or weekly report is switched from off to on, so turning reports on posts
+ * from the next period onward instead of replaying the one that just ended. `/report` still shows any finished period.
  */
 export function skipFinishedPeriods(guildId: string, kinds: readonly ReportKind[], now: number): void {
   for (const kind of kinds) {
-    for (const mock of [false, true]) markReportHandled(guildId, mock, kind, latestDuePeriod(kind, now).start, now);
+    const lastEnded = periodOf(kind, periodOf(kind, now).start - 1).start;
+    for (const mock of [false, true]) markReportHandled(guildId, mock, kind, lastEnded, now);
   }
 }

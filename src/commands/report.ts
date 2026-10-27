@@ -29,7 +29,7 @@ const reportCommand: BotCommand = {
   async execute(interaction: ChatInputCommandInteraction): Promise<void> {
     const guildId = interaction.guildId;
     if (!guildId) {
-      await interaction.reply({ embeds: [buildErrorEmbed("这个命令只能在服务器里使用。")], flags: MessageFlags.Ephemeral });
+      await interaction.reply({ embeds: [buildErrorEmbed("这个命令只能在服务器里使用。")], flags: MessageFlags.Ephemeral, allowedMentions: REPORT_ALLOWED_MENTIONS });
       return;
     }
     const kind = interaction.options.getSubcommand() as ReportKind;

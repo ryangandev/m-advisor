@@ -114,6 +114,28 @@ export function setReportRoles(guildId: string, roles: { enabled: true; topRoleI
   `).run(roles.topRoleId, roles.noneRoleId, roles.topRoleId, roles.noneRoleId, guildId);
 }
 
+/**
+ * Remembers role ids without switching roles on, for roles that were created before a later step failed.
+ * A role that changes forgets the holders recorded for the old one; ids that are null or undefined stay as they are.
+ */
+export function rememberReportRoleIds(guildId: string, ids: { topRoleId?: string | null; noneRoleId?: string | null }): void {
+  requireString(guildId, "Guild ID");
+  const top = ids.topRoleId ?? null;
+  const none = ids.noneRoleId ?? null;
+  if (top !== null) requireString(top, "Top role ID");
+  if (none !== null) requireString(none, "None role ID");
+  if (top !== null && top === none) throw new TypeError("The two weekly roles must be different roles.");
+  ensureRow(guildId);
+  getDatabase().prepare(`
+    UPDATE report_settings SET
+      top_holder_ids = CASE WHEN @top IS NOT NULL AND top_role_id IS NOT @top THEN '[]' ELSE top_holder_ids END,
+      none_holder_ids = CASE WHEN @none IS NOT NULL AND none_role_id IS NOT @none THEN '[]' ELSE none_holder_ids END,
+      top_role_id = COALESCE(@top, top_role_id),
+      none_role_id = COALESCE(@none, none_role_id)
+    WHERE guild_id = @guildId
+  `).run({ guildId, top, none });
+}
+
 /** Remembers who the bot gave each weekly role, replacing the previous lists. */
 export function setReportRoleHolders(guildId: string, holders: { top: readonly string[]; none: readonly string[] }): void {
   requireString(guildId, "Guild ID");

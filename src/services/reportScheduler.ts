@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { Client, EmbedBuilder } from "discord.js";
 import { RESTJSONErrorCodes } from "discord.js";
 import {
@@ -19,13 +20,30 @@ import { isStopping } from "./shutdownState";
 /** The longest the scheduler sleeps. A timer does not count time the computer slept, so waking checks again within a minute. */
 export const REPORT_TICK_MS = 60_000;
 const MIN_DELAY_MS = 1_000;
-/** A send that keeps failing for a reason that may pass is retried on this many consecutive checks before the period is given up. */
-export const MAX_SEND_ATTEMPTS = 3;
+/**
+ * How long a send may keep failing before the period is given up.
+ * Measured from the first failure in this process, so a Mac that wakes without Wi-Fi for a few minutes, or a Discord
+ * outage, never drops a period, while a problem that never clears does not retry forever.
+ */
+export const GIVE_UP_AFTER_MS = 6 * 3_600_000;
+/** How long shutdown waits for a report that is being sent before it closes the database anyway. */
+export const SHUTDOWN_WAIT_MS = 3_000;
 
 export interface ReportPayload {
   content?: string;
   embeds?: EmbedBuilder[];
   allowedMentions: typeof REPORT_ALLOWED_MENTIONS;
+  /**
+   * A fixed id for this exact report, sent with `enforceNonce` so that Discord returns the first message instead of
+   * posting a second when a request is repeated after a timeout. Discord only remembers a nonce for a few minutes, so
+   * restarts are covered by the stored marks and not by this.
+   */
+  nonce?: string;
+}
+
+/** The nonce of one report: the same server, data mode, kind and period always give the same value, at most 25 characters. */
+export function reportNonce(guildId: string, mock: boolean, kind: ReportKind, periodStart: number): string {
+  return createHash("sha256").update(`m-advisor:report:${guildId}:${mock ? 1 : 0}:${kind}:${periodStart}`).digest("hex").slice(0, 24);
 }
 
 /** The channel is gone, is not a text channel of this server, or the bot cannot reach it. */
@@ -58,12 +76,16 @@ function isPermanent(error: unknown): boolean {
 }
 
 const errorName = (error: unknown) => (error instanceof Error ? error.name : "unknown error");
+const kindName = (kind: ReportKind) => (kind === "day" ? "daily" : "weekly");
 
 export class ReportScheduler {
   private timer: unknown;
   private running: Promise<void> | undefined;
   private halted = false;
-  private readonly attempts = new Map<string, number>();
+  /** When each period's send first failed in this process. */
+  private readonly firstFailure = new Map<string, number>();
+  /** Periods this process must not touch again, because they were posted or given up but could not be marked in the database. */
+  private readonly settled = new Set<string>();
 
   constructor(private readonly deps: ReportSchedulerDeps) {}
 
@@ -73,12 +95,21 @@ export class ReportScheduler {
     this.tick();
   }
 
-  /** Stops timing and waits for a check already in progress, so the database is never closed under it. */
-  async stop(): Promise<void> {
+  /** Stops timing and prevents any new work, without waiting for anything. A check in progress notices at its next step. */
+  halt(): void {
     this.halted = true;
     if (this.timer !== undefined) this.deps.clearTimer(this.timer);
     this.timer = undefined;
-    await this.running;
+  }
+
+  /** Halts, then waits for a check in progress for at most `timeoutMs`, so the database is not closed under it for long. */
+  async stop(timeoutMs = SHUTDOWN_WAIT_MS): Promise<void> {
+    this.halt();
+    const running = this.running;
+    if (!running) return;
+    let timeout: NodeJS.Timeout | undefined;
+    await Promise.race([running, new Promise<void>((resolve) => { timeout = setTimeout(resolve, timeoutMs); })]);
+    clearTimeout(timeout);
   }
 
   private tick(): void {
@@ -96,6 +127,10 @@ export class ReportScheduler {
     this.timer = this.deps.setTimer(() => { this.tick(); }, delay);
   }
 
+  private get stopping(): boolean {
+    return this.halted || this.deps.stopped();
+  }
+
   /** Posts every report that is due and has not been handled. Never throws: one server's failure leaves the others alone. */
   async runDue(): Promise<void> {
     let destinations: ReportSettings[];
@@ -108,14 +143,27 @@ export class ReportScheduler {
       return;
     }
     for (const settings of destinations) {
-      if (this.halted || this.deps.stopped()) return;
+      if (this.stopping) return;
       try {
         if (settings.dailyEnabled) await this.handle(settings, "day", mock);
-        if (this.halted || this.deps.stopped()) return;
+        if (this.stopping) return;
         if (settings.weeklyEnabled) await this.handle(settings, "week", mock);
       } catch (error) {
         logError(`Report for server ${settings.guildId} failed: ${errorName(error)}`);
       }
+    }
+  }
+
+  /**
+   * Records that a period is done. If the database refuses, the period is remembered in memory instead, so a successful
+   * post is never repeated every minute; after a restart the mark is missing and the period could post once more.
+   */
+  private settle(key: string, guildId: string, mock: boolean, kind: ReportKind, periodStart: number, now: number): void {
+    try {
+      markReportHandled(guildId, mock, kind, periodStart, now);
+    } catch (error) {
+      this.settled.add(key);
+      logError(`Could not record the ${kindName(kind)} 马报 of server ${guildId} as handled (${errorName(error)}); it will not be touched again until the bot restarts.`);
     }
   }
 
@@ -124,43 +172,61 @@ export class ReportScheduler {
     const now = this.deps.now();
     // Only the newest finished period is ever considered, so a long outage never produces a flood of old reports.
     const range = latestDuePeriod(kind, now);
+    const key = `${guildId}:${mock ? 1 : 0}:${kind}:${range.start}`;
+    if (this.settled.has(key)) return;
     const mark = getReportMark(guildId, mock, kind);
     if (mark !== undefined && mark >= range.start) return;
 
     const data = loadReport(guildId, kind, range, mock);
     if (data.totalGames === 0) {
-      markReportHandled(guildId, mock, kind, range.start, now);
+      this.settle(key, guildId, mock, kind, range.start, now);
+      // Nothing is posted for an empty week, but its roles still move on: last week's holders lose them and nobody gains any.
+      if (kind === "week") await this.rotateRoles(settings, [], [], mock, { quiet: true });
       return;
     }
 
-    const key = `${guildId}:${mock ? 1 : 0}:${kind}:${range.start}`;
+    if (this.stopping) return;
     try {
-      await this.deps.send(guildId, settings.channelId!, { embeds: [buildReportEmbed(data, { final: true })], allowedMentions: REPORT_ALLOWED_MENTIONS });
+      await this.deps.send(guildId, settings.channelId!, {
+        embeds: [buildReportEmbed(data, { final: true })],
+        allowedMentions: REPORT_ALLOWED_MENTIONS,
+        nonce: reportNonce(guildId, mock, kind, range.start),
+      });
     } catch (error) {
-      const attempt = (this.attempts.get(key) ?? 0) + 1;
-      this.attempts.set(key, attempt);
-      const giveUp = isPermanent(error) || attempt >= MAX_SEND_ATTEMPTS;
-      logWarn(`Could not post the ${kind === "day" ? "daily" : "weekly"} 马报 for ${periodLabel(data)} in server ${guildId} (${errorName(error)}, code ${discordErrorCode(error) ?? "none"})${giveUp ? "; giving up on this period. Check the report channel and the bot's permissions there." : "; will retry."}`);
+      const first = this.firstFailure.get(key);
+      if (first === undefined) this.firstFailure.set(key, now);
+      const giveUp = isPermanent(error) || (first !== undefined && now - first >= GIVE_UP_AFTER_MS);
+      // One line when the trouble starts and one when the period is dropped; the retries in between stay quiet.
+      if (first === undefined || giveUp) {
+        logWarn(`Could not post the ${kindName(kind)} 马报 for ${periodLabel(data)} in server ${guildId} (${errorName(error)}, code ${discordErrorCode(error) ?? "none"})${giveUp ? "; giving up on this period. Check the report channel and the bot's permissions there." : "; will keep retrying."}`);
+      }
       if (giveUp) {
-        markReportHandled(guildId, mock, kind, range.start, now);
-        this.attempts.delete(key);
+        this.firstFailure.delete(key);
+        this.settle(key, guildId, mock, kind, range.start, now);
       }
       return;
     }
-    this.attempts.delete(key);
+    this.firstFailure.delete(key);
     // Recorded right after the send so a restart never posts the same period twice.
-    markReportHandled(guildId, mock, kind, range.start, now);
-    logInfo(`Posted the ${kind === "day" ? "daily" : "weekly"} 马报 for ${periodLabel(data)} in server ${guildId}${mock ? " (mock data)" : ""}.`);
+    this.settle(key, guildId, mock, kind, range.start, now);
+    logInfo(`Posted the ${kindName(kind)} 马报 for ${periodLabel(data)} in server ${guildId}${mock ? " (mock data)" : ""}.`);
 
-    if (kind === "week") await this.rotateRoles(settings, data.topHorse?.discordUserId ?? null, data.noneHorse?.discordUserId ?? null, mock);
+    if (kind === "week") {
+      await this.rotateRoles(settings, data.topHorses.map((member) => member.discordUserId), data.noneHorses.map((member) => member.discordUserId), mock, { quiet: false });
+    }
   }
 
-  /** Rotates the weekly roles after the report. Whatever goes wrong is logged and told to the admins once, and never reaches the caller. */
-  private async rotateRoles(settings: ReportSettings, top: string | null, none: string | null, mock: boolean): Promise<void> {
+  /**
+   * Rotates the weekly roles after the report. Whatever goes wrong is logged and, unless `quiet`, told to the admins once;
+   * it never reaches the caller.
+   */
+  private async rotateRoles(settings: ReportSettings, top: readonly string[], none: readonly string[], mock: boolean, options: { quiet: boolean }): Promise<void> {
     if (!settings.rolesEnabled || !settings.topRoleId || !settings.noneRoleId) return;
+    // Nothing to take back from an empty week when nobody holds a role.
+    if (options.quiet && settings.topHolderIds.length === 0 && settings.noneHolderIds.length === 0) return;
     // Roles reward real games. A mock rehearsal never changes who holds them.
     if (mock) {
-      logInfo(`Weekly roles in server ${settings.guildId} were left alone because the bot runs on mock data.`);
+      if (!options.quiet) logInfo(`Weekly roles in server ${settings.guildId} were left alone because the bot runs on mock data.`);
       return;
     }
     const guildId = settings.guildId;
@@ -188,6 +254,7 @@ export class ReportScheduler {
     }
     if (problems.length === 0) return;
     logWarn(`Weekly roles in server ${guildId} were not fully updated: ${problems.join(" ")}`);
+    if (options.quiet || this.stopping) return;
     const content = `⚠️ 本周的「本周特等马」「本周没有马」身份组没有更新完整，周报本身已正常发出：\n${problems.map((problem) => `- ${problem}`).join("\n")}\n管理员处理好之后，下周会自动恢复；也可以用 \`/report-settings roles\` 关闭这个功能。`;
     try {
       await this.deps.send(guildId, settings.channelId!, { content: content.slice(0, 1900), allowedMentions: REPORT_ALLOWED_MENTIONS });
@@ -205,7 +272,8 @@ export function discordSchedulerDeps(client: Client): ReportSchedulerDeps {
     async send(guildId, channelId, payload) {
       const channel = await client.channels.fetch(channelId);
       if (!channel || !channel.isSendable() || channel.isDMBased() || channel.guildId !== guildId) throw new ReportChannelError();
-      await channel.send(payload);
+      const { nonce, ...message } = payload;
+      await channel.send(nonce === undefined ? message : { ...message, nonce, enforceNonce: true });
     },
     roleGuild(guildId) {
       const guild = client.guilds.cache.get(guildId);
@@ -227,9 +295,14 @@ export function startReportScheduler(client: Client): void {
   active.start();
 }
 
-/** Stops the scheduler and waits for a report in progress. Safe to call when it never started. */
-export async function stopReportScheduler(): Promise<void> {
+/** First step of shutdown: no new check or send starts. It does not wait for anything. */
+export function haltReportScheduler(): void {
+  active?.halt();
+}
+
+/** Last step before the database closes: waits briefly for a report still being sent. Safe when it never started. */
+export async function finishReportScheduler(timeoutMs = SHUTDOWN_WAIT_MS): Promise<void> {
   const scheduler = active;
   active = undefined;
-  await scheduler?.stop();
+  await scheduler?.stop(timeoutMs);
 }

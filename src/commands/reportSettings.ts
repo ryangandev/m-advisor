@@ -1,10 +1,12 @@
-import { ChannelType, ChatInputCommandInteraction, MessageFlags, PermissionFlagsBits, SlashCommandBuilder } from "discord.js";
+import { ChannelType, ChatInputCommandInteraction, Guild, MessageFlags, PermissionFlagsBits, SlashCommandBuilder } from "discord.js";
 import { BotCommand } from "../types";
 import {
   HIERARCHY_PROBLEM,
   checkRoleSetup,
   ensureWeeklyRoles,
   explainRoleFailure,
+  RoleCreationError,
+  releaseRoleHolders,
   releaseWeeklyRoles,
   roleGuildFrom,
 } from "../services/reportRoles";
@@ -12,6 +14,7 @@ import { skipFinishedPeriods } from "../services/reports";
 import { isMockData } from "../services/riotData";
 import {
   getReportSettings,
+  rememberReportRoleIds,
   setReportChannel,
   setReportKindEnabled,
   setReportRoleHolders,
@@ -66,7 +69,7 @@ const reportSettingsCommand: BotCommand = {
     }
     const guild = interaction.guild;
     if (!interaction.guildId || !guild) {
-      await interaction.reply({ embeds: [buildErrorEmbed("这个命令只能在服务器里使用。")], flags: MessageFlags.Ephemeral });
+      await interaction.reply({ embeds: [buildErrorEmbed("这个命令只能在服务器里使用。")], flags: MessageFlags.Ephemeral, allowedMentions: REPORT_ALLOWED_MENTIONS });
       return;
     }
     const guildId = interaction.guildId;
@@ -103,19 +106,42 @@ const reportSettingsCommand: BotCommand = {
       return;
     }
 
-    if (subcommand === "channel-clear") {
+    // The weekly roles change hands only when a weekly report is posted. Turning that off, by clearing the channel or
+    // switching weekly reports off, would leave last week's holders wearing a stale role, so it also turns the roles off.
+    if (subcommand === "channel-clear" || (subcommand === "weekly" && interaction.options.getBoolean("enabled", true) === false)) {
+      if (getReportSettings(guildId)?.rolesEnabled) await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      let roleNote = "";
+      try {
+        const stopped = await stopWeeklyRoles(guild, guildId);
+        if (stopped.active) {
+          roleNote = stopped.problems.length === 0
+            ? "\n每周身份组跟着每周马报换人，所以也一并关闭了，并从机器人发过身份组的成员身上收回了它们。身份组本身没有删除，要继续用请重新执行 /report-settings roles。"
+            : `\n每周身份组也已关闭，但没能收回全部身份组，请管理员手动处理：\n${stopped.problems.map((problem) => `- ${problem}`).join("\n")}`;
+        }
+      } catch (error) {
+        logError(`Releasing the weekly roles failed: ${error instanceof Error ? error.name : "unknown error"}`);
+        roleNote = `\n每周身份组没能收回：${explainRoleFailure(error)}`;
+      }
+      if (subcommand === "weekly") {
+        setReportKindEnabled(guildId, "week", false);
+        await reply(`每周马报已关闭。${roleNote}\n${describe(guildId)}`);
+        return;
+      }
       const had = getReportSettings(guildId)?.channelId != null;
       setReportChannel(guildId, null);
-      await reply(had ? "已清除马报频道，不会再自动发马报。其余设置保留。" : "本来就没有设置马报频道。");
+      await reply(`${had ? "已清除马报频道，不会再自动发马报。其余设置保留。" : "本来就没有设置马报频道。"}${roleNote}`);
       return;
     }
 
     if (subcommand === "daily" || subcommand === "weekly") {
       const kind: ReportKind = subcommand === "daily" ? "day" : "week";
       const enabled = interaction.options.getBoolean("enabled", true);
+      const before = getReportSettings(guildId);
+      const wasOn = (kind === "day" ? before?.dailyEnabled : before?.weeklyEnabled) ?? true;
       setReportKindEnabled(guildId, kind, enabled);
-      if (enabled) skipFinishedPeriods(guildId, [kind], Date.now());
-      await reply(`${subcommand === "daily" ? "每日" : "每周"}马报已${enabled ? "开启，从下一个结算时间开始发" : "关闭"}。\n${describe(guildId)}`);
+      // Only an off-to-on switch skips the finished periods; saying "on" again must not drop a report that is due.
+      if (enabled && !wasOn) skipFinishedPeriods(guildId, [kind], Date.now());
+      await reply(`${subcommand === "daily" ? "每日" : "每周"}马报已${enabled ? (wasOn ? "是开启的" : "开启，从下一个结算时间开始发") : "关闭"}。\n${describe(guildId)}`);
       return;
     }
 
@@ -130,14 +156,10 @@ const reportSettingsCommand: BotCommand = {
           await reply("每周身份组本来就是关闭的。");
           return;
         }
-        const released = await releaseWeeklyRoles(roleGuild, {
-          topRoleId: settings.topRoleId!, noneRoleId: settings.noneRoleId!, topHolderIds: settings.topHolderIds, noneHolderIds: settings.noneHolderIds,
-        });
-        setReportRoleHolders(guildId, { top: released.topHolderIds, none: released.noneHolderIds });
-        setReportRoles(guildId, { enabled: false });
-        await reply(released.problems.length === 0
+        const stopped = await stopWeeklyRoles(guild, guildId);
+        await reply(stopped.problems.length === 0
           ? "已关闭每周身份组，并从机器人发过身份组的成员身上收回了它们。身份组本身没有删除。"
-          : `已关闭每周身份组，但没能收回全部身份组，请管理员手动处理：\n${released.problems.map((problem) => `- ${problem}`).join("\n")}`);
+          : `已关闭每周身份组，但没能收回全部身份组，请管理员手动处理：\n${stopped.problems.map((problem) => `- ${problem}`).join("\n")}`);
         return;
       }
 
@@ -162,9 +184,21 @@ const reportSettingsCommand: BotCommand = {
         await reply(`没能开启每周身份组：${HIERARCHY_PROBLEM}`);
         return;
       }
+      // Roles that are being replaced stop being managed, so take them back from their holders first; otherwise those
+      // members would keep a stale role that nothing would ever remove.
+      const leftovers: string[] = [];
+      for (const [oldId, newId, holders] of [
+        [settings?.topRoleId, roles.top.id, settings?.topHolderIds ?? []],
+        [settings?.noneRoleId, roles.none.id, settings?.noneHolderIds ?? []],
+      ] as const) {
+        if (!oldId || oldId === newId || holders.length === 0) continue;
+        const released = await releaseRoleHolders(roleGuild, oldId, holders);
+        if (released.holders.length > 0) leftovers.push(`这些成员还拿着换下来的身份组 <@&${oldId}>，请手动收回：${released.holders.map((id) => `<@${id}>`).join("、")}`);
+      }
       setReportRoles(guildId, { enabled: true, topRoleId: roles.top.id, noneRoleId: roles.none.id });
       const after = getReportSettings(guildId)!;
       const notes = [
+        ...leftovers,
         !after.channelId ? "还没有设置马报频道（/report-settings channel），身份组要等每周马报发出时才会换人。" : "",
         !after.weeklyEnabled ? "每周马报目前是关闭的，身份组跟着每周马报换人，请用 /report-settings weekly 开启。" : "",
         isMockData() ? "机器人现在用的是模拟数据，模拟模式下不会改动任何人的身份组。" : "",
@@ -178,10 +212,30 @@ const reportSettingsCommand: BotCommand = {
       ].join("\n"));
     } catch (error) {
       logError(`Report roles command failed: ${error instanceof Error ? error.name : "unknown error"}`);
+      // A role created before the failure is kept, so the next try reuses it instead of creating a second one.
+      if (error instanceof RoleCreationError) {
+        try { rememberReportRoleIds(guildId, { topRoleId: error.partial.top?.id, noneRoleId: error.partial.none?.id }); }
+        catch { /* the explanation below is still the useful part */ }
+      }
       await reply(`没能完成身份组设置：${explainRoleFailure(error)}`);
     }
   },
 };
+
+/**
+ * Takes the weekly roles back from the members the bot gave them to and turns the feature off, keeping the role ids.
+ * Holders Discord refused to change stay recorded so a later attempt can retry. `active` is false when roles were off.
+ */
+async function stopWeeklyRoles(guild: Guild, guildId: string): Promise<{ active: boolean; problems: string[] }> {
+  const settings = getReportSettings(guildId);
+  if (!settings?.rolesEnabled || !settings.topRoleId || !settings.noneRoleId) return { active: false, problems: [] };
+  const released = await releaseWeeklyRoles(roleGuildFrom(guild), {
+    topRoleId: settings.topRoleId, noneRoleId: settings.noneRoleId, topHolderIds: settings.topHolderIds, noneHolderIds: settings.noneHolderIds,
+  });
+  setReportRoleHolders(guildId, { top: released.topHolderIds, none: released.noneHolderIds });
+  setReportRoles(guildId, { enabled: false });
+  return { active: true, problems: released.problems };
+}
 
 /** The current settings in plain Chinese, for `/report-settings show` and after each change. */
 function describe(guildId: string): string {
@@ -192,7 +246,7 @@ function describe(guildId: string): string {
     `频道：${channel}`,
     `每日马报：${onOff(settings?.dailyEnabled ?? true)} · 每周马报：${onOff(settings?.weeklyEnabled ?? true)}`,
     settings?.rolesEnabled ? `每周身份组：开（<@&${settings.topRoleId}>、<@&${settings.noneRoleId}>）` : "每周身份组：关",
-    "结算按太平洋时间：每天 00:00 后发前一天，周一 00:00 后发上一周（周一到周日）。机器人没开时错过的，会在下次启动时补发最近的一天和一周。",
+    "结算按太平洋时间：每天 00:30 左右发前一天，周一 00:30 左右发上一周（周一到周日）。机器人没开时错过的，会在下次启动时补发最近的一天和一周。",
   ].join("\n");
 }
 
