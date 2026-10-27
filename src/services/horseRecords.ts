@@ -1,13 +1,25 @@
 import type { MatchDetail } from "../types";
 import type { HorseRecord } from "../store/horseRecordStore";
 import { MIN_RANKED_MINUTES } from "./announcementText";
+import type { MatchAnnouncement } from "./announcementText";
 import { DEFAULT_BENCHMARKS, rankTeam } from "./horseRanking";
 import type { Benchmarks, HorseRanking } from "./horseRanking";
+import { strongestEvent } from "./matchEvents";
+import type { MatchEvent } from "./matchEvents";
 
 /** A tracked member and one of their Riot accounts. A member with several accounts contributes one pair per account. */
 export interface TrackedAccount {
   discordUserId: string;
   puuid: string;
+}
+
+/** What was said about the match, so each record can keep the line spoken about its member. */
+export interface RecordedAnnouncement {
+  announcement: MatchAnnouncement;
+  /** The tracked account the announcement was built for; its team is the team that was praised and roasted. */
+  perspectivePuuid: string;
+  /** The timeline moments the announcement was built with, or null/omitted when it used statistics only. */
+  events?: readonly MatchEvent[] | null;
 }
 
 export interface BuildHorseRecordsInput {
@@ -23,6 +35,12 @@ export interface BuildHorseRecordsInput {
   benchmarks?: Benchmarks;
   /** Rankings the caller already computed with the same benchmarks; any team without one is ranked here. */
   rankings?: readonly HorseRanking[];
+  /**
+   * The announcement that was spoken. When given, the member who was praised or roasted keeps that line and
+   * the kind of timeline moment it cited; every other record keeps neither. Members on the other team from
+   * the perspective were not praised or roasted, so they never get a line.
+   */
+  announcement?: RecordedAnnouncement;
 }
 
 /**
@@ -46,6 +64,9 @@ export function buildHorseRecords(input: BuildHorseRecordsInput): HorseRecord[] 
     if (ranking.matchId === detail.metadata.matchId && team !== undefined) rankingsByTeam.set(team, ranking);
   }
 
+  const spoken = input.announcement;
+  const perspectiveTeam = spoken ? info.participants.find((player) => player.puuid === spoken.perspectivePuuid)?.teamId : undefined;
+
   const records: HorseRecord[] = [];
   const seenMembers = new Set<string>();
   for (const { discordUserId, puuid } of tracked) {
@@ -61,12 +82,18 @@ export function buildHorseRecords(input: BuildHorseRecordsInput): HorseRecord[] 
     if (index === -1) continue;
     const horse = ranking.horses[index];
     seenMembers.add(discordUserId);
+    // The announcement praises the team's best horse and roasts its worst, and only for the perspective's team.
+    const tone = spoken && participant.teamId === perspectiveTeam
+      ? (horse.rank === 1 ? "praise" : horse.rank === ranking.horses.length ? "roast" : null) : null;
+    const commentary = tone === "praise" ? spoken!.announcement.report.praise : tone === "roast" ? spoken!.announcement.report.roast : undefined;
     records.push({
       guildId,
       discordUserId,
       matchId: detail.metadata.matchId,
       puuid,
       mock,
+      teamId: participant.teamId,
+      gameVersion: info.gameVersion ?? null,
       playedAt: info.gameEndTimestamp ?? recordedAt,
       recordedAt,
       queueId: info.queueId,
@@ -89,6 +116,9 @@ export function buildHorseRecords(input: BuildHorseRecordsInput): HorseRecord[] 
       features: { ...horse.features },
       benchmarkVersion: benchmarks.version,
       benchmarkCollectedAt: benchmarks.sample.collectedAt,
+      commentaryTone: commentary ? tone : null,
+      commentary: commentary ? commentary : null,
+      momentKind: commentary && tone ? strongestEvent(spoken!.events, puuid, tone)?.kind ?? null : null,
     });
   }
   return records;

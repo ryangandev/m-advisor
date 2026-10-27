@@ -25,6 +25,11 @@ export interface AnnouncementOptions {
   events?: readonly MatchEvent[] | null;
 }
 
+/** One decimal place, rounded half up, so a score reads the same in speech, the channel report and the 马厩. */
+export function formatScore(score: number): string {
+  return (Math.round(score * 10) / 10).toFixed(1);
+}
+
 /** Keep names from turning into Discord mentions or spoken control-like text. */
 function readableName(name: string): string {
   return (typeof name === "string" ? name : "").replace(/[@<>`*_~|\\\r\n]/g, " ").replace(/\s+/g, " ").trim().slice(0, 32) || "无名氏";
@@ -255,7 +260,7 @@ export function buildMatchAnnouncement(detail: MatchDetail, trackedPuuid: string
   const best = ranking.horses[0];
   const worst = ranking.horses.at(-1)!;
   const summary = `${displayName(tracked)}这局${result}，打了${minutes}分钟。军师羽扇一挥，本局马匹鉴定如下。`;
-  const roll = lines.map((line) => `${line.tier}，${line.champion}，${line.name}，${line.score.toFixed(1)}分。`).join("");
+  const roll = lines.map((line) => `${line.tier}，${line.champion}，${line.name}，${formatScore(line.score)}分。`).join("");
   let praiseText = praise(best, ranking.durationMinutes, ranking.won, choose, events);
   let roastText = worst === best ? "" : roast(worst, ranking.durationMinutes, ranking.won, choose, events);
   if (best === tracked) praiseText += "召唤军师的人自己就是特等马，军师怀疑你在刷存在感。";

@@ -15,7 +15,7 @@ import {
   recordHorseRecords,
 } from "../src/store/horseRecordStore";
 import { pacificDay, pacificWeek } from "../src/utils/pacificTime";
-import { makeHorseRecord } from "./helpers/horseRecords";
+import { makeHorseRecord, recordTracked } from "./helpers/horseRecords";
 
 let directory: string;
 let savedDatabasePath: string | undefined;
@@ -172,10 +172,10 @@ test("a fresh database creates the horse table with its indexes and is not backe
 
 test("recording the same match twice keeps one record, unchanged", () => {
   const record = makeHorseRecord({ matchId: "NA1_ONCE", tier: "特等马", teamRank: 1, score: 9.1, scoreAbove: null });
-  assert.equal(recordHorseRecords([record]), 1);
-  assert.equal(recordHorseRecords([record]), 0);
+  assert.equal(recordTracked([record]), 1);
+  assert.equal(recordTracked([record]), 0);
   // A later write for the same (guild, member, match) never rewrites the first one.
-  assert.equal(recordHorseRecords([{ ...record, tier: "没有马", teamRank: 5, score: 0.5 }]), 0);
+  assert.equal(recordTracked([{ ...record, tier: "没有马", teamRank: 5, score: 0.5 }]), 0);
   const stored = listHorseRecords("guild-one", { mock: false });
   assert.equal(stored.length, 1);
   assert.deepEqual(stored[0], record);
@@ -183,7 +183,7 @@ test("recording the same match twice keeps one record, unchanged", () => {
 
 test("another member, another guild or another match is a separate record", () => {
   const base = makeHorseRecord({ matchId: "NA1_SHARED" });
-  const written = recordHorseRecords([
+  const written = recordTracked([
     base,
     { ...base, discordUserId: "member-two", puuid: "account-b" },
     { ...base, guildId: "guild-two" },
@@ -213,7 +213,7 @@ test("a batch with an invalid record writes nothing", () => {
 
 test("the database itself refuses an unknown tier or a duplicate key", () => {
   const db = getDatabase();
-  recordHorseRecords([makeHorseRecord({ matchId: "NA1_DB" })]);
+  recordTracked([makeHorseRecord({ matchId: "NA1_DB" })]);
   assert.throws(() => db.prepare("UPDATE horse_records SET tier = '神马'").run(), /CHECK/);
   assert.throws(() => db.prepare("UPDATE horse_records SET dimensions = 'not json'").run(), /CHECK/);
   assert.throws(() => db.prepare("INSERT INTO horse_records SELECT * FROM horse_records").run(), /UNIQUE|PRIMARY/);
@@ -221,7 +221,7 @@ test("the database itself refuses an unknown tier or a duplicate key", () => {
 
 test("history survives removing the member and rebinding", () => {
   setMemberAccounts("guild-one", "member-one", [{ puuid: "account-a", gameName: "Player A", tagLine: "NA1" }]);
-  recordHorseRecords([makeHorseRecord({ matchId: "NA1_KEEP_1" }), makeHorseRecord({ matchId: "NA1_KEEP_2" })]);
+  recordTracked([makeHorseRecord({ matchId: "NA1_KEEP_1" }), makeHorseRecord({ matchId: "NA1_KEEP_2" })]);
 
   assert.equal(removeTrackedMember("guild-one", "member-one"), true);
   assert.equal(getTrackedMember("guild-one", "member-one"), undefined);
@@ -239,7 +239,7 @@ test("history has no foreign key to tracked members", () => {
 });
 
 test("erasing one member removes only their records, real and mock, and reports the count", () => {
-  recordHorseRecords([
+  recordTracked([
     makeHorseRecord({ matchId: "NA1_E1" }),
     makeHorseRecord({ matchId: "NA1_E2" }),
     makeHorseRecord({ matchId: "MOCK_E3", mock: true }),
@@ -255,7 +255,7 @@ test("erasing one member removes only their records, real and mock, and reports 
 });
 
 test("mock and real records are never returned together", () => {
-  recordHorseRecords([
+  recordTracked([
     makeHorseRecord({ matchId: "NA1_REAL" }),
     makeHorseRecord({ matchId: "MOCK_ONE", mock: true }),
   ]);
@@ -268,7 +268,7 @@ test("mock and real records are never returned together", () => {
 });
 
 test("queries come back oldest first, newest first on request, and honor a limit", () => {
-  recordHorseRecords([
+  recordTracked([
     makeHorseRecord({ matchId: "NA1_B", playedAt: 2000 }),
     makeHorseRecord({ matchId: "NA1_A", playedAt: 2000 }),
     makeHorseRecord({ matchId: "NA1_C", playedAt: 1000 }),
@@ -280,7 +280,7 @@ test("queries come back oldest first, newest first on request, and honor a limit
 
 test("a day range includes its first millisecond and excludes its last, across the 25-hour day", () => {
   const day = pacificDay(Date.parse("2026-11-01T12:00:00Z"));
-  recordHorseRecords([
+  recordTracked([
     makeHorseRecord({ matchId: "BEFORE", playedAt: day.start - 1 }),
     makeHorseRecord({ matchId: "START", playedAt: day.start }),
     makeHorseRecord({ matchId: "FALL_BACK_ONE", playedAt: Date.parse("2026-11-01T09:30:00Z") }),
@@ -296,7 +296,7 @@ test("a week range follows Monday midnight Pacific, across the daylight saving c
   const week = pacificWeek(Date.parse("2026-03-08T20:00:00Z"));
   const sundayNight = Date.parse("2026-03-09T06:59:59Z");
   const mondayMorning = Date.parse("2026-03-09T07:00:00Z");
-  recordHorseRecords([
+  recordTracked([
     makeHorseRecord({ matchId: "LAST_WEEK_SUNDAY", playedAt: week.start - 1 }),
     makeHorseRecord({ matchId: "MONDAY", playedAt: week.start }),
     makeHorseRecord({ matchId: "SPRING_FORWARD", playedAt: Date.parse("2026-03-08T11:00:00Z") }),
@@ -315,7 +315,7 @@ test("a week range follows Monday midnight Pacific, across the daylight saving c
 });
 
 test("a range can be limited to one member", () => {
-  recordHorseRecords([
+  recordTracked([
     makeHorseRecord({ matchId: "NA1_R1", playedAt: 5000 }),
     makeHorseRecord({ matchId: "NA1_R1", playedAt: 5000, discordUserId: "member-two", puuid: "account-b" }),
   ]);
@@ -333,6 +333,6 @@ test("a record round-trips with its dimensions, features and neighbour scores", 
     features: { visionPerMinute: 2.4, deathsPerMinute: 0.1 },
     won: false,
   });
-  recordHorseRecords([record]);
+  recordTracked([record]);
   assert.deepEqual(listHorseRecords("guild-one", { mock: false })[0], record);
 });

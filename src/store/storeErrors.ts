@@ -15,3 +15,11 @@ export class GuildAccountLimitError extends Error {
     this.name = "GuildAccountLimitError";
   }
 }
+
+/** A horse record was refused because its member does not currently own that Riot account in the server. */
+export class UntrackedMemberError extends Error {
+  constructor(readonly guildId: string, readonly discordUserId: string, readonly puuid: string) {
+    super("A horse record can only be saved for a tracked member's own Riot account.");
+    this.name = "UntrackedMemberError";
+  }
+}

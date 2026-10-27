@@ -3,6 +3,9 @@ import type { Dimension, FeatureValues, HorseTier } from "../services/horseRanki
 import { POSITIONS } from "../types";
 import type { Position } from "../types";
 import { getDatabase } from "./database";
+import { UntrackedMemberError } from "./storeErrors";
+
+export { UntrackedMemberError };
 
 /**
  * One tracked member's result in one announced match: the permanent 马厩 entry.
@@ -16,6 +19,10 @@ export interface HorseRecord {
   puuid: string;
   /** Records made from mock fixtures are kept apart from real ones and never mixed into real statistics. */
   mock: boolean;
+  /** Riot's team ID (100 or 200), so friends on opposite teams are never ranked against each other. */
+  teamId: number;
+  /** Riot's game version string, or null when the match data had none. */
+  gameVersion: string | null;
   /** Game end in Unix milliseconds, or the time of recording when Riot omitted it. Range queries use this. */
   playedAt: number;
   recordedAt: number;
@@ -47,6 +54,12 @@ export interface HorseRecord {
   /** Which reference sample scored this record, since scores from different samples do not compare exactly. */
   benchmarkVersion: number;
   benchmarkCollectedAt: string;
+  /** Which kind of line the announcement said about this member; null when it said nothing about them. */
+  commentaryTone: "praise" | "roast" | null;
+  /** The praise or roast the 军师 spoke about this member, for `/why` to quote. It names only this member. */
+  commentary: string | null;
+  /** The timeline moment the commentary cited (a MatchEvent kind), or null when it quoted a statistic. */
+  momentKind: string | null;
 }
 
 export interface HorseRecordQuery {
@@ -68,6 +81,8 @@ interface HorseRecordRow {
   match_id: string;
   puuid: string;
   mock: number;
+  team_id: number;
+  game_version: string | null;
   played_at: number;
   recorded_at: number;
   queue_id: number;
@@ -90,6 +105,9 @@ interface HorseRecordRow {
   features: string;
   benchmark_version: number;
   benchmark_collected_at: string;
+  commentary_tone: "praise" | "roast" | null;
+  commentary: string | null;
+  moment_kind: string | null;
 }
 
 function requireString(value: unknown, name: string): asserts value is string {
@@ -114,6 +132,8 @@ function validate(record: HorseRecord): void {
   requireString(record.puuid, "Account PUUID");
   if (typeof record.mock !== "boolean") throw new TypeError("mock must be a boolean.");
   if (typeof record.won !== "boolean") throw new TypeError("won must be a boolean.");
+  requireCount(record.teamId, "teamId");
+  if (record.gameVersion !== null) requireString(record.gameVersion, "gameVersion");
   requireCount(record.playedAt, "playedAt");
   requireCount(record.recordedAt, "recordedAt");
   requireCount(record.queueId, "queueId");
@@ -142,6 +162,17 @@ function validate(record: HorseRecord): void {
   }
   requireCount(record.benchmarkVersion, "benchmarkVersion");
   requireString(record.benchmarkCollectedAt, "benchmarkCollectedAt");
+  if (record.commentaryTone !== null && record.commentaryTone !== "praise" && record.commentaryTone !== "roast") {
+    throw new TypeError("commentaryTone must be praise, roast or null.");
+  }
+  if (record.commentary !== null) requireString(record.commentary, "commentary");
+  if ((record.commentary === null) !== (record.commentaryTone === null)) {
+    throw new TypeError("commentary and commentaryTone must both be set or both be null.");
+  }
+  if (record.momentKind !== null) {
+    requireString(record.momentKind, "momentKind");
+    if (record.commentary === null) throw new TypeError("A cited moment needs the commentary that cited it.");
+  }
 }
 
 function fromRow(row: HorseRecordRow): HorseRecord {
@@ -151,6 +182,8 @@ function fromRow(row: HorseRecordRow): HorseRecord {
     matchId: row.match_id,
     puuid: row.puuid,
     mock: row.mock === 1,
+    teamId: row.team_id,
+    gameVersion: row.game_version,
     playedAt: row.played_at,
     recordedAt: row.recorded_at,
     queueId: row.queue_id,
@@ -173,13 +206,19 @@ function fromRow(row: HorseRecordRow): HorseRecord {
     features: JSON.parse(row.features) as FeatureValues,
     benchmarkVersion: row.benchmark_version,
     benchmarkCollectedAt: row.benchmark_collected_at,
+    commentaryTone: row.commentary_tone,
+    commentary: row.commentary,
+    momentKind: row.moment_kind,
   };
 }
 
 /**
  * Saves records in one transaction and returns how many were new.
- * A record for a (guild, member, match) that already exists is left exactly as it was, so announcing or
+ * A record for a (guild, member, match, mock) that already exists is left exactly as it was, so announcing or
  * recording the same match twice never creates a second entry or changes the first.
+ * Every record must belong to a member who currently owns that Riot account in that server, checked inside the
+ * transaction; otherwise UntrackedMemberError is thrown and nothing in the batch is saved. This keeps the table
+ * to bound members even if a caller passes the wrong list.
  */
 export function recordHorseRecords(records: readonly HorseRecord[]): number {
   records.forEach(validate);
@@ -187,16 +226,24 @@ export function recordHorseRecords(records: readonly HorseRecord[]): number {
   const db = getDatabase();
   const insert = db.prepare(`
     INSERT INTO horse_records (
-      guild_id, discord_user_id, match_id, puuid, mock, played_at, recorded_at, queue_id, duration_seconds, won,
+      guild_id, discord_user_id, match_id, puuid, mock, team_id, game_version, played_at, recorded_at, queue_id, duration_seconds, won,
       position, champion_id, champion_name, kills, deaths, assists, tier, team_rank, team_size, score, composite,
-      score_above, score_below, dimensions, features, benchmark_version, benchmark_collected_at
+      score_above, score_below, dimensions, features, benchmark_version, benchmark_collected_at,
+      commentary_tone, commentary, moment_kind
     ) VALUES (
-      @guildId, @discordUserId, @matchId, @puuid, @mock, @playedAt, @recordedAt, @queueId, @durationSeconds, @won,
+      @guildId, @discordUserId, @matchId, @puuid, @mock, @teamId, @gameVersion, @playedAt, @recordedAt, @queueId, @durationSeconds, @won,
       @position, @championId, @championName, @kills, @deaths, @assists, @tier, @teamRank, @teamSize, @score, @composite,
-      @scoreAbove, @scoreBelow, @dimensions, @features, @benchmarkVersion, @benchmarkCollectedAt
-    ) ON CONFLICT(guild_id, discord_user_id, match_id) DO NOTHING
+      @scoreAbove, @scoreBelow, @dimensions, @features, @benchmarkVersion, @benchmarkCollectedAt,
+      @commentaryTone, @commentary, @momentKind
+    ) ON CONFLICT(guild_id, discord_user_id, match_id, mock) DO NOTHING
   `);
+  const owns = db.prepare("SELECT 1 FROM member_accounts WHERE guild_id = ? AND discord_user_id = ? AND puuid = ?");
   return db.transaction(() => {
+    for (const record of records) {
+      if (!owns.get(record.guildId, record.discordUserId, record.puuid)) {
+        throw new UntrackedMemberError(record.guildId, record.discordUserId, record.puuid);
+      }
+    }
     let inserted = 0;
     for (const record of records) {
       inserted += insert.run({
@@ -242,12 +289,15 @@ export function listHorseRecords(guildId: string, query: HorseRecordQuery): Hors
   return (getDatabase().prepare(sql).all(parameters) as HorseRecordRow[]).map(fromRow);
 }
 
-/** Every tracked member's record for one match, for ranking the friends against each other. */
+/**
+ * Every tracked member's record for one match, grouped by team and best first within a team.
+ * Friends on opposite teams were ranked against their own teammates, so rank only within a `teamId`.
+ */
 export function listMatchHorseRecords(guildId: string, matchId: string, mock: boolean): HorseRecord[] {
   requireString(guildId, "Guild ID");
   requireString(matchId, "Match ID");
   const rows = getDatabase().prepare(
-    "SELECT * FROM horse_records WHERE guild_id = ? AND match_id = ? AND mock = ? ORDER BY team_rank, discord_user_id",
+    "SELECT * FROM horse_records WHERE guild_id = ? AND match_id = ? AND mock = ? ORDER BY team_id, team_rank, discord_user_id",
   ).all(guildId, matchId, mock ? 1 : 0) as HorseRecordRow[];
   return rows.map(fromRow);
 }

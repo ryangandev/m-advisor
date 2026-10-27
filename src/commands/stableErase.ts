@@ -1,4 +1,4 @@
-import { ChatInputCommandInteraction, MessageFlags, SlashCommandBuilder } from "discord.js";
+import { ChatInputCommandInteraction, MessageFlags, PermissionFlagsBits, SlashCommandBuilder } from "discord.js";
 import { BotCommand } from "../types";
 import { countMemberHorseRecords, eraseMemberHorseRecords } from "../store/horseRecordStore";
 import { buildErrorEmbed } from "../utils/embeds";
@@ -11,6 +11,7 @@ const stableEraseCommand: BotCommand = {
   data: new SlashCommandBuilder()
     .setName("stable-erase")
     .setDescription("Erase one member's whole 马厩 history on request (Admin only)")
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .addUserOption((option) => option
       .setName("user")
       .setDescription("Discord member whose history to erase")

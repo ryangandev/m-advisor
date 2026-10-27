@@ -6,9 +6,8 @@ import { afterEach, beforeEach, test } from "node:test";
 import { getMemberHorseProfile, summarizeHorseRecords } from "../src/services/horseProfile";
 import type { HorseTier } from "../src/services/horseRanking";
 import { closeDatabase } from "../src/store/database";
-import { recordHorseRecords } from "../src/store/horseRecordStore";
 import type { HorseRecord } from "../src/store/horseRecordStore";
-import { makeHorseRecord } from "./helpers/horseRecords";
+import { makeHorseRecord, recordTracked } from "./helpers/horseRecords";
 
 let directory: string;
 let savedDatabasePath: string | undefined;
@@ -140,10 +139,10 @@ test("mock and real records are never summarized together", () => {
 });
 
 test("a member's stored profile counts only the current data mode", () => {
-  recordHorseRecords([
+  recordTracked([
     ...seed(TEN_GAMES.slice(0, 4)),
     ...seed([["没有马", 0.2], ["没有马", 0.1]], { mock: true }).map((record, index) => ({ ...record, matchId: `MOCK_${index}` })),
-    ...seed(TEN_GAMES.slice(0, 1), { discordUserId: "member-two", matchId: "NA1_OTHER" }),
+    ...seed(TEN_GAMES.slice(0, 1), { discordUserId: "member-two", puuid: "account-b", matchId: "NA1_OTHER" }),
   ]);
   const real = getMemberHorseProfile("guild-one", "member-one", false);
   const mock = getMemberHorseProfile("guild-one", "member-one", true);

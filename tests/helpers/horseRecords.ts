@@ -1,3 +1,5 @@
+import { getTrackedMember, setMemberAccounts } from "../../src/store/bindingStore";
+import { recordHorseRecords } from "../../src/store/horseRecordStore";
 import type { HorseRecord } from "../../src/store/horseRecordStore";
 
 let sequence = 0;
@@ -11,6 +13,8 @@ export function makeHorseRecord(overrides: Partial<HorseRecord> = {}): HorseReco
     matchId: `NA1_${sequence}`,
     puuid: "account-a",
     mock: false,
+    teamId: 100,
+    gameVersion: "16.19.100.1",
     playedAt: 1_800_000_000_000 + sequence * 60_000,
     recordedAt: 1_800_000_100_000 + sequence * 60_000,
     queueId: 420,
@@ -33,6 +37,19 @@ export function makeHorseRecord(overrides: Partial<HorseRecord> = {}): HorseReco
     features: { damageShare: 0.22, killParticipation: 0.6 },
     benchmarkVersion: 1,
     benchmarkCollectedAt: "2026-10-03",
+    commentaryTone: null,
+    commentary: null,
+    momentKind: null,
     ...overrides,
   };
+}
+
+/** Makes each record's member own its account in its server, as the store requires, then saves the records. */
+export function recordTracked(records: readonly HorseRecord[]): number {
+  for (const { guildId, discordUserId, puuid } of records) {
+    const known = getTrackedMember(guildId, discordUserId)?.accounts ?? [];
+    if (known.some((account) => account.puuid === puuid)) continue;
+    setMemberAccounts(guildId, discordUserId, [...known, { puuid, gameName: `Name ${discordUserId}`, tagLine: "NA1" }]);
+  }
+  return recordHorseRecords(records);
 }
