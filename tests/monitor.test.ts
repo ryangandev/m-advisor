@@ -2305,6 +2305,27 @@ test("a storage failure is only logged: the report, the edit, the 段位播报 a
   ], "once with the report and once with the late update, and nothing else failed");
 });
 
+test("nothing is stored when the monitor shuts down while the report is being sent", async () => {
+  const { bot, rank } = await rankedTrio("rank-store-send-guild");
+  rank.league.set("alice", [ranked("GOLD", "II", 86, 11, 10)]);
+  const calls = storingRankResults(bot);
+  const channel = bot.channel("x");
+  const send = channel.send;
+  const gate = deferred<void>();
+  let inFlight = false;
+  channel.send = async (message) => { inFlight = true; await gate.promise; return send(message); };
+  const polled = bot.poll().catch(() => undefined);
+  await until(() => inFlight, "the report being sent");
+  bot.monitor.stopAll();
+  gate.resolve();
+  await polled;
+  await delay(50);
+  assert.equal(bot.sent.length, 1, "the send itself was already under way");
+  assert.deepEqual(calls, [], "no LP result is written after shutdown, which would reopen the closed database");
+  assert.deepEqual(bot.records, [], "and no 马厩 record either");
+  assert.deepEqual(listRankResults("rank-store-send-guild", { mock: true }), []);
+});
+
 test("nothing is stored after the monitor shut down", async () => {
   const { bot, rank } = await rankedTrio("rank-store-shutdown-guild", { retryFloorMs: 30 });
   const calls = storingRankResults(bot);
