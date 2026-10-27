@@ -113,18 +113,28 @@ The party is every bound member on the speaker's team, whether or not they are i
 A bound friend on the other team counts as an enemy: they are not ranked, scored or named, though they are still mentioned when they are in the channel.
 With fewer than two members, and for remakes, aborted and short games, there is no party and the report and speech are exactly as without the feature.
 
-Members are ordered by the team ranking, so ties keep team rank order.
-The first is the 车队 MVP and the last takes the 本局背锅, even when that member is 特等马 or 上等马, because the blame is only relative.
+Members are ordered by the team ranking, so equal scores keep team rank order.
+Ties are decided on the displayed score, one decimal place.
+The members sharing the top score are the 车队 MVP together, and the 本局背锅 is named only when exactly one member has the lowest score.
+When several members share the lowest score nobody takes the blame: they are 并列垫底.
+When every member has the same score there is neither an MVP nor a 背锅, and the members are simply 并列.
+A single 背锅 is blamed even when that member is 特等马 or 上等马, because the blame is only relative.
 
 A second embed titled `车队内战` is sent in the same message right after the report embed.
 It lists each member's mention, champion, tier, score and team rank, such as 队内第 2/5, then names the MVP and the 背锅, each with a short 军师 line about play only.
+Tied members share one field, titled `车队 MVP 并列`, `垫底并列 (无人背锅)` or `车队并列`.
 In mock mode the title is `模拟战报 · 车队内战`, with the report's gray colour and mock footer.
 The members appear as mentions inside the embed, which notifies nobody, so `allowedMentions.users` stays exactly the participants in the channel that the report already pings.
 
 The speech ends with one more sentence, such as `车队内战，A最好，B背锅。`.
 It names no tier, and its names are the report's sanitized names, trimmed to keep it within 29 characters.
 When the 背锅 is a 特等马 or 上等马 it reads `B今天只是相对背锅` or `B只是相对背锅` instead.
+When the best member is only 中等马 or lower, which a duo that finished 4th and 5th can be, it claims no lead: `车队内战，A相对最好，B背锅。`, and the embed line says 相对靠前.
+Ties read `A和B并列最好` (or `并列靠前` when they are only 中等马 or lower), `B和C并列垫底`, and `车队内战，A和B并列。` when everyone is tied.
+Names that would sound the same after trimming keep the distinguishing end of the name instead, and fall back to the champions when that is not enough.
 The wording comes from its own seed built from the match ID, so the same match always produces the same sentence and the report's own wording does not shift.
+The sentence is built again for every voice attempt from the members who still own their accounts.
+So if a member is unbound between the text post and a voice retry, the spoken sentence follows the live party and can differ from the posted embed.
 
 ## Text first, timeline and 马厩 records
 
