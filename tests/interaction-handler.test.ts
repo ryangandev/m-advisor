@@ -31,6 +31,8 @@ function interactionFixture(name: string, commands: Collection<string, BotComman
     commandName: name,
     client: { commands },
     isChatInputCommand: () => true,
+    isAutocomplete: () => false,
+    isButton: () => false,
     replied: false,
     deferred: false,
     reply: async (payload: unknown) => { replies.push(payload); },
@@ -105,3 +107,71 @@ for (const state of ["fresh", "deferred", "replied"] as const) {
     assert.doesNotMatch(JSON.stringify(logs), /private-interaction-token|private-request-body/);
   });
 }
+
+function buttonFixture(customId: string, commands: Collection<string, BotCommand>) {
+  const f = interactionFixture("", commands);
+  return { ...f, interaction: { ...f.interaction, customId, isChatInputCommand: () => false, isButton: () => true } };
+}
+
+test("buttons are routed by custom ID prefix to the command that owns them", async () => {
+  const seen: string[] = [];
+  const owner = {
+    componentPrefix: "why-appeal",
+    handleButton: async (interaction: { customId: string }) => { seen.push(interaction.customId); },
+  } as unknown as BotCommand;
+  const f = buttonFixture("why-appeal:r:1:NA1_1", new Collection([["why", owner]]));
+  await handler.execute(f.interaction as unknown as Interaction);
+  assert.deepEqual(seen, ["why-appeal:r:1:NA1_1"]);
+  assert.equal(f.replies.length, 0);
+});
+
+test("a button nobody owns gets a private expiry note", async () => {
+  const f = buttonFixture("retired:1", new Collection());
+  await handler.execute(f.interaction as unknown as Interaction);
+  assert.deepEqual(f.replies, [{ content: "这个按钮已经失效了。", flags: MessageFlags.Ephemeral }]);
+});
+
+test("a failing button replies privately and logs only the prefix", async () => {
+  const owner = {
+    componentPrefix: "why-appeal",
+    handleButton: async () => { throw Object.assign(new Error("private-request-body"), { name: "DiscordAPIError" }); },
+  } as unknown as BotCommand;
+  const f = buttonFixture("why-appeal:r:member-secret:NA1_1", new Collection([["why", owner]]));
+  await handler.execute(f.interaction as unknown as Interaction);
+  assert.equal((f.replies[0] as { flags: MessageFlags }).flags, MessageFlags.Ephemeral);
+  assert.match(String(logs[0][0]), /Button handling failed for why-appeal: DiscordAPIError$/);
+  assert.doesNotMatch(JSON.stringify(logs), /member-secret|private-request-body/);
+});
+
+function autocompleteFixture(name: string, commands: Collection<string, BotCommand>) {
+  const responses: unknown[] = [];
+  const interaction = {
+    commandName: name,
+    client: { commands },
+    responded: false,
+    isAutocomplete: () => true,
+    isButton: () => false,
+    isChatInputCommand: () => false,
+    respond: async (choices: unknown) => { responses.push(choices); interaction.responded = true; },
+  };
+  return { interaction, responses };
+}
+
+test("autocomplete is routed to its command, and a failure answers with no choices", async () => {
+  const working = { autocomplete: async (interaction: { respond: (choices: unknown) => Promise<void> }) => {
+    await interaction.respond([{ name: "a", value: "a" }]);
+  } } as unknown as BotCommand;
+  const ok = autocompleteFixture("why", new Collection([["why", working]]));
+  await handler.execute(ok.interaction as unknown as Interaction);
+  assert.deepEqual(ok.responses, [[{ name: "a", value: "a" }]]);
+
+  const failing = { autocomplete: async () => { throw new TypeError("boom"); } } as unknown as BotCommand;
+  const broken = autocompleteFixture("why", new Collection([["why", failing]]));
+  await handler.execute(broken.interaction as unknown as Interaction);
+  assert.deepEqual(broken.responses, [[]]);
+  assert.match(String(logs[0][0]), /Autocomplete failed for \/why: TypeError$/);
+
+  const missing = autocompleteFixture("gone", new Collection());
+  await handler.execute(missing.interaction as unknown as Interaction);
+  assert.deepEqual(missing.responses, [[]]);
+});

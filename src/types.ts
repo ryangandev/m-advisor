@@ -1,4 +1,6 @@
 import {
+  AutocompleteInteraction,
+  ButtonInteraction,
   ChatInputCommandInteraction,
   Collection,
   SlashCommandBuilder,
@@ -43,6 +45,11 @@ export interface RankedEntry {
 export interface BotCommand {
   data: SlashCommandBuilder;
   execute: (interaction: ChatInputCommandInteraction) => Promise<void>;
+  /** Suggests values for an option marked with autocomplete while the user types. */
+  autocomplete?: (interaction: AutocompleteInteraction) => Promise<void>;
+  /** Buttons whose custom ID is this prefix followed by a colon are routed to handleButton. */
+  componentPrefix?: string;
+  handleButton?: (interaction: ButtonInteraction) => Promise<void>;
 }
 
 export interface BotEvent {
