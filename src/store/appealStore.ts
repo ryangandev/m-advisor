@@ -52,6 +52,14 @@ export function reopenAppeal(appeal: AppealCase): boolean {
   ).run(appeal.guildId, appeal.discordUserId, appeal.matchId, appeal.mock ? 1 : 0).changes === 1;
 }
 
+/** How many closed cases a member has in one server, mock and real together, for the erase confirmation. */
+export function countMemberAppeals(guildId: string, discordUserId: string): number {
+  requireString(guildId, "Guild ID");
+  requireString(discordUserId, "Discord user ID");
+  return (getDatabase().prepare("SELECT count(*) AS count FROM appeal_cases WHERE guild_id = ? AND discord_user_id = ?")
+    .get(guildId, discordUserId) as { count: number }).count;
+}
+
 /** Deletes every closed case, real and mock, of one member in one server and returns how many were removed. */
 export function eraseMemberAppeals(guildId: string, discordUserId: string): number {
   requireString(guildId, "Guild ID");
