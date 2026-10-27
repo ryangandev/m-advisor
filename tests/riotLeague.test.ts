@@ -3,11 +3,11 @@ import { afterEach, beforeEach, test } from "node:test";
 import { buildMockProfile } from "../src/fixtures/riotFixtures";
 import { classifyRankChange, entryForQueue } from "../src/services/rankMath";
 import {
-  resetMockData, RiotApiError, setMockRankedEntry, simulateMockGameStart, simulateMockMatch,
+  resetMockData, RiotApiError, riotFetch, setMockRankedEntry, simulateMockGameStart, simulateMockMatch,
 } from "../src/services/riotData";
 import { getAccountByRiotId, getRankedEntries } from "../src/utils/riotApi";
 import {
-  createLeagueRequester, getLeagueEntries, LEAGUE_REQUESTER_OPTIONS, LEAGUE_TIMEOUT_MS, parseLeagueEntries, rankedQueueFor,
+  createLeagueRequester, getLeagueEntries, LEAGUE_REQUESTER_OPTIONS, leagueRequester, LEAGUE_TIMEOUT_MS, parseLeagueEntries, rankedQueueFor,
 } from "../src/utils/riotLeagueApi";
 
 const SOLO = "RANKED_SOLO_5x5";
@@ -235,25 +235,33 @@ test("resetMockData puts the mock ranked state back to the fixtures", async () =
   assert.deepEqual((await getLeagueEntries(await mockPuuid("MockWin"))).entries, [solo, flex]);
 });
 
-// Keep this test last: it leaves the default league requester in a 429 cooldown for the rest of the process.
 test("an LP 429 never delays a call through the shared requester", async () => {
   const seen: string[] = [];
   realMode((async (input) => {
     const url = input.toString();
     seen.push(url);
-    if (url.includes("/league/v4/")) {
-      if (url.includes("/by-puuid/lp")) return new Response("{}", { status: 429, headers: { "Retry-After": "60" } });
-      return Response.json([solo]);
-    }
+    if (url.includes("/by-puuid/lp")) return new Response("{}", { status: 429, headers: { "Retry-After": "60" } });
     return Response.json([solo]);
   }) as typeof fetch);
-  await assert.rejects(getLeagueEntries("lp"), { code: "rate_limited", retryAfterMs: 60_000 });
+  const league = createLeagueRequester();
+  await assert.rejects(getLeagueEntries("lp", league), { code: "rate_limited", retryAfterMs: 60_000 });
   // /profile reads ranked entries through the shared requester: it must still go out, at once, and succeed.
   const started = Date.now();
   assert.deepEqual(await getRankedEntries("profile-account"), [solo]);
   assert.ok(Date.now() - started < 1_000, "the shared call did not wait for the LP cooldown");
   assert.equal(seen.length, 2, "both requests reached fetch");
-  // And the default league requester is now fail-fast: no third request.
-  await assert.rejects(getLeagueEntries("lp"), { code: "rate_limited" });
+  // And the league requester that took the 429 is fail-fast: no third request.
+  await assert.rejects(getLeagueEntries("lp", league), { code: "rate_limited" });
   assert.equal(seen.length, 2);
+});
+
+test("the default league requester is its own instance with the league options, not the shared requester", async () => {
+  assert.notEqual(leagueRequester, riotFetch);
+  let calls = 0;
+  realMode((async () => { calls++; return new Response("{}", { status: 503 }); }) as typeof fetch);
+  const started = Date.now();
+  await assert.rejects(getLeagueEntries("default-requester"), { code: "unavailable", status: 503 });
+  // The shared requester would retry a 503 twice with 1 and 2 second backoff; the league one makes a single attempt.
+  assert.equal(calls, 1);
+  assert.ok(Date.now() - started < 500, "and without backoff sleeps");
 });

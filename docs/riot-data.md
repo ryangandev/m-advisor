@@ -163,7 +163,7 @@ Display names belong to the text layer, not to the math.
 - The delta is the value after minus the value before. It is correct across divisions, tiers and the DIAMOND to MASTER boundary: DIAMOND I 90 to MASTER 15 is +25, and GOLD IV 90 to GOLD III 10 is +20.
 - Queue 420 is `RANKED_SOLO_5x5` and 440 is `RANKED_FLEX_SR`. Other queues have no LP read.
 - The attribution key is `wins + losses` of the matching queue entry, before and after: no new game is `pending`, exactly one new game is attributed to the game, and anything else is `unattributable`.
-- A promotion or demotion is a change of rung over one game, in one small predicate (`countsAsRankMove`). Today every division or tier change counts. Whether that is the final definition is still Ryan's decision.
+- A promotion or demotion is a change of rung over one game, in one small predicate (`countsAsRankMove`). Per Ryan's decision of 2026-10-27, every division change and every tier change counts, in solo and in flex (`灵活组排`).
 - Moves between `MASTER`, `GRANDMASTER` and `CHALLENGER` happen through cutoffs, not games, so they are a plain `change`, never a promotion.
 - No entry before and one after is `placed`, with no delta. An entry that disappeared, an unknown tier or division and a queue mismatch give `none`, never an error.
 
