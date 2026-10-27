@@ -139,9 +139,11 @@ const ROAST_GENERIC: Line = () => "五匹马里你跑在最后，马都嫌你慢
 const ENEMY_ROLE: Record<Position, string> = { TOP: "上单", JUNGLE: "打野", MIDDLE: "中单", BOTTOM: "下路", UTILITY: "辅助" };
 const MONSTER_NAME: Record<EpicMonster, string> = { BARON: "大龙", ELDER: "远古龙", DRAGON: "小龙", HERALD: "先锋" };
 const MULTI_KILL_NAME: Record<number, string> = { 3: "三杀", 4: "四杀", 5: "五杀" };
-const enemy = (position: Position | null) => `对面${position ? ENEMY_ROLE[position] : ""}`;
-/** The minute on the game clock, as players read it. */
-const minuteOf = (timestamp: number) => `第${Math.max(1, Math.floor(timestamp / 60_000))}分钟`;
+const enemy = (position: Position | null) => `对面${position ? ENEMY_ROLE[position] : "一人"}`;
+/** The minute on the game clock as players say it, so 22:40 is "22分钟". */
+const minuteOf = (timestamp: number) => timestamp < 60_000 ? "1分钟不到" : `${Math.floor(timestamp / 60_000)}分钟`;
+/** First blood after this is no longer the opening of the game. */
+export const OPENING_MS = 5 * 60_000;
 
 /** A timeline moment replaces the statistic line, so citing it never lengthens the report. */
 function praiseEventLine(event: MatchEvent): string | undefined {
@@ -152,9 +154,11 @@ function praiseEventLine(event: MatchEvent): string | undefined {
       ? `${at}${MONSTER_NAME[event.monster]}团你参与${event.takedowns}个击杀还全身而退，${MONSTER_NAME[event.monster]}顺手就收了。`
       : `${at}那波团战你参与${event.takedowns}个击杀还全身而退，直接把对面打穿。`;
     case "shutdown": return `${at}终结${enemy(event.enemy)}，一口吞下${event.bounty}赏金，这波饭真香。`;
-    case "firstBlood": return event.solo
-      ? `${at}单杀${enemy(event.enemy)}拿下一血，开局就把对面打懵了。`
-      : `${at}拿下${enemy(event.enemy)}的一血，开局就给全队定了调子。`;
+    case "firstBlood": {
+      const lead = event.solo ? `${at}单杀${enemy(event.enemy)}拿下一血` : `${at}拿下${enemy(event.enemy)}的一血`;
+      if (event.timestamp >= OPENING_MS) return `${lead}，全场第一滴血归你。`;
+      return `${lead}，${event.solo ? "开局就把对面打懵了" : "开局就给全队定了调子"}。`;
+    }
     default: return undefined;
   }
 }
@@ -167,7 +171,9 @@ function roastEventLine(event: MatchEvent): string | undefined {
       : `${at}那波团战你第一个倒下，队友只能四打五。`;
     case "objectiveDeath": return `${at}${MONSTER_NAME[event.monster]}前你先倒下了，${MONSTER_NAME[event.monster]}就这么拱手送人。`;
     case "shutdownGiven": return `${at}揣着${event.bounty}赏金被${enemy(event.enemy)}终结，这钱送得比外卖还准时。`;
-    case "firstBloodGiven": return `${at}就被${enemy(event.enemy)}拿走一血，开局先给对面发了个红包。`;
+    case "firstBloodGiven": return event.timestamp >= OPENING_MS
+      ? `${at}被${enemy(event.enemy)}拿走一血，全场第一个给对面发红包的就是你。`
+      : `${at}就被${enemy(event.enemy)}拿走一血，开局先给对面发了个红包。`;
     default: return undefined;
   }
 }

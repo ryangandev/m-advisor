@@ -6,6 +6,8 @@ import { RiotApiError, riotObject } from "../services/riotData";
  * All shape knowledge lives in this file, so an upstream change only needs this parser adjusted.
  */
 export type EpicMonster = "BARON" | "ELDER" | "DRAGON" | "HERALD";
+/** Summoner's Rift map coordinates, roughly 0 to 15000 on each axis. */
+export interface MapPoint { x: number; y: number }
 
 export interface TimelineKill {
   type: "kill";
@@ -16,10 +18,14 @@ export interface TimelineKill {
   assistIds: number[];
   /** Extra gold the killer earned for ending the victim's streak; 0 for an ordinary kill. */
   shutdownBounty: number;
+  /** Where the victim died; null when Riot omits it, which keeps the death out of any fight. */
+  position: MapPoint | null;
 }
 export interface TimelineMultiKill { type: "multiKill"; timestamp: number; killerId: number; length: number }
+/** Riot's own first blood award, which skips executions. */
+export interface TimelineFirstBlood { type: "firstBlood"; timestamp: number; killerId: number }
 export interface TimelineMonster { type: "monster"; timestamp: number; killerId: number; teamId: number; monster: EpicMonster }
-export type TimelineEvent = TimelineKill | TimelineMultiKill | TimelineMonster;
+export type TimelineEvent = TimelineKill | TimelineMultiKill | TimelineFirstBlood | TimelineMonster;
 
 export interface MatchTimeline {
   matchId: string;
@@ -31,6 +37,12 @@ export interface MatchTimeline {
 
 const isCount = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 const isParticipantId = (value: unknown): value is number => isCount(value) && value >= 1 && value <= 10;
+
+function pointOf(value: unknown): MapPoint | null {
+  if (!value || typeof value !== "object") return null;
+  const { x, y } = value as Record<string, unknown>;
+  return typeof x === "number" && Number.isFinite(x) && typeof y === "number" && Number.isFinite(y) ? { x, y } : null;
+}
 
 function monsterOf(event: Record<string, unknown>): EpicMonster | undefined {
   if (event.monsterType === "BARON_NASHOR") return "BARON";
@@ -50,8 +62,11 @@ function parseEvent(value: unknown): TimelineEvent | undefined {
     const assists = Array.isArray(event.assistingParticipantIds) ? event.assistingParticipantIds.filter(isParticipantId) : [];
     return {
       type: "kill", timestamp, killerId: event.killerId, victimId: event.victimId, assistIds: [...new Set(assists)].sort((a, b) => a - b),
-      shutdownBounty: isCount(event.shutdownBounty) ? event.shutdownBounty : 0,
+      shutdownBounty: isCount(event.shutdownBounty) ? event.shutdownBounty : 0, position: pointOf(event.position),
     };
+  }
+  if (event.type === "CHAMPION_SPECIAL_KILL" && event.killType === "KILL_FIRST_BLOOD") {
+    return isParticipantId(event.killerId) ? { type: "firstBlood", timestamp, killerId: event.killerId } : undefined;
   }
   if (event.type === "CHAMPION_SPECIAL_KILL" && event.killType === "KILL_MULTI") {
     if (!isParticipantId(event.killerId) || !isCount(event.multiKillLength) || event.multiKillLength < 2) return undefined;
