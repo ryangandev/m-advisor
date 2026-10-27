@@ -922,7 +922,8 @@ export class GameMonitor {
   private recordRanks(guildId: string, detail: MatchDetail, matchId: string, party: readonly RankMember[]): void {
     const rank = this.dependencies.rank;
     const record = this.dependencies.recordRank;
-    if (!rank || !record) return;
+    // After shutdown the database is closed, and a store call would open it again.
+    if (this.closed || !rank || !record) return;
     try {
       const recordedAt = Date.now();
       const mock = this.dependencies.mock();
@@ -1208,6 +1209,8 @@ export class GameMonitor {
 
   /** Writes the posted announcement's 马厩 records; a failure is logged and never affects the announcement. */
   private recordHorses(guildId: string, progress: MatchProgress, announcement: MatchAnnouncement, perspectivePuuid: string): void {
+    // After shutdown the database is closed, and a store call would open it again.
+    if (this.closed) return;
     const matchId = progress.detail.metadata.matchId;
     try {
       // Read just before the write, so a member unbound during the report is simply absent.
