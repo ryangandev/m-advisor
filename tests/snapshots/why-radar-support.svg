@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="940" viewBox="0 0 800 940" font-family="'PingFang SC', 'Hiragino Sans GB', 'Heiti SC', 'Noto Sans CJK SC', 'Source Han Sans SC', 'Microsoft YaHei', 'WenQuanYi Micro Hei', sans-serif">
+<rect x="1" y="1" width="798" height="938" rx="32" fill="#171B24" stroke="#2A3040" stroke-width="2"/>
+<text x="48" y="96" font-size="56" font-weight="bold"><tspan fill="#EF5350">没有马</tspan><tspan dx="24" fill="#F2F4F8">1.6 分</tspan></text>
+<text x="48" y="146" font-size="28" fill="#A3AABA">锤石·辅助·负·队内第 5/5</text>
+<polygon points="400.0,468.8 436.2,481.9 455.4,515.2 448.7,553.1 419.2,577.9 380.8,577.9 351.3,553.1 344.6,515.2 363.8,481.9" fill="none" stroke="#343B4C" stroke-width="1.5"/>
+<polygon points="400.0,356.3 508.5,395.7 566.2,495.7 546.1,609.4 457.7,683.6 342.3,683.6 253.9,609.4 233.8,495.7 291.5,395.7" fill="none" stroke="#343B4C" stroke-width="1.5"/>
+<polygon points="400.0,300.0 544.6,352.6 621.6,485.9 594.9,637.5 477.0,736.4 323.0,736.4 205.1,637.5 178.4,485.9 255.4,352.6" fill="none" stroke="#343B4C" stroke-width="1.5"/>
+<line x1="400.0" y1="525.0" x2="400.0" y2="300.0" stroke="#343B4C" stroke-width="1.5"/>
+<line x1="400.0" y1="525.0" x2="544.6" y2="352.6" stroke="#6B7487" stroke-width="2.5"/>
+<line x1="400.0" y1="525.0" x2="621.6" y2="485.9" stroke="#343B4C" stroke-width="1.5"/>
+<line x1="400.0" y1="525.0" x2="594.9" y2="637.5" stroke="#343B4C" stroke-width="1.5"/>
+<line x1="400.0" y1="525.0" x2="477.0" y2="736.4" stroke="#343B4C" stroke-width="1.5"/>
+<line x1="400.0" y1="525.0" x2="323.0" y2="736.4" stroke="#6B7487" stroke-width="2.5"/>
+<line x1="400.0" y1="525.0" x2="205.1" y2="637.5" stroke="#343B4C" stroke-width="1.5"/>
+<line x1="400.0" y1="525.0" x2="178.4" y2="485.9" stroke="#6B7487" stroke-width="2.5"/>
+<line x1="400.0" y1="525.0" x2="255.4" y2="352.6" stroke="#343B4C" stroke-width="1.5"/>
+<polygon points="400.0,412.5 472.3,438.8 510.8,505.5 497.4,581.3 438.5,630.7 361.5,630.7 302.6,581.3 289.2,505.5 327.7,438.8" fill="none" stroke="#9AA3B5" stroke-width="2.5" stroke-dasharray="10 8"/>
+<polygon points="400.0,430.5 426.0,494.0 426.6,520.3 507.2,586.9 426.9,599.0 393.1,544.0 341.5,558.8 351.3,516.4 342.1,456.1" fill="#EF5350" fill-opacity="0.28" stroke="#EF5350" stroke-width="4" stroke-linejoin="round"/>
+<circle cx="400.0" cy="430.5" r="7" fill="#EF5350" stroke="#171B24" stroke-width="2"/>
+<circle cx="426.0" cy="494.0" r="7" fill="#EF5350" stroke="#171B24" stroke-width="2"/>
+<circle cx="426.6" cy="520.3" r="7" fill="#EF5350" stroke="#171B24" stroke-width="2"/>
+<circle cx="507.2" cy="586.9" r="7" fill="#EF5350" stroke="#171B24" stroke-width="2"/>
+<circle cx="426.9" cy="599.0" r="7" fill="#EF5350" stroke="#171B24" stroke-width="2"/>
+<circle cx="393.1" cy="544.0" r="7" fill="#EF5350" stroke="#171B24" stroke-width="2"/>
+<circle cx="341.5" cy="558.8" r="7" fill="#EF5350" stroke="#171B24" stroke-width="2"/>
+<circle cx="351.3" cy="516.4" r="7" fill="#EF5350" stroke="#171B24" stroke-width="2"/>
+<circle cx="342.1" cy="456.1" r="7" fill="#EF5350" stroke="#171B24" stroke-width="2"/>
+<text x="400.0" y="218.0" font-size="30" text-anchor="middle" fill="#A3AABA">输出</text>
+<text x="400.0" y="250.0" font-size="26" text-anchor="middle" fill="#FF8A80">42%</text>
+<text x="574.2" y="281.4" font-size="30" text-anchor="start" fill="#F2F4F8" font-weight="bold">★参团</text>
+<text x="574.2" y="313.4" font-size="26" text-anchor="start" fill="#FF8A80">18%</text>
+<text x="666.9" y="473.9" font-size="30" text-anchor="start" fill="#A3AABA">生存</text>
+<text x="666.9" y="505.9" font-size="26" text-anchor="start" fill="#FF8A80">12%</text>
+<text x="634.7" y="656.5" font-size="30" text-anchor="start" fill="#A3AABA">经济</text>
+<text x="634.7" y="688.5" font-size="26" text-anchor="start" fill="#7FD89A">55%</text>
+<text x="492.7" y="801.7" font-size="30" text-anchor="start" fill="#A3AABA">前排</text>
+<text x="492.7" y="833.7" font-size="26" text-anchor="start" fill="#FF8A80">35%</text>
+<text x="307.3" y="801.7" font-size="30" text-anchor="end" fill="#F2F4F8" font-weight="bold">★视野</text>
+<text x="307.3" y="833.7" font-size="26" text-anchor="end" fill="#FF8A80">9%</text>
+<text x="165.3" y="682.5" font-size="30" text-anchor="end" fill="#A3AABA">资源</text>
+<text x="165.3" y="714.5" font-size="26" text-anchor="end" fill="#FF8A80">30%</text>
+<text x="133.1" y="473.9" font-size="30" text-anchor="end" fill="#F2F4F8" font-weight="bold">★功能</text>
+<text x="133.1" y="505.9" font-size="26" text-anchor="end" fill="#FF8A80">22%</text>
+<text x="225.8" y="281.4" font-size="30" text-anchor="end" fill="#A3AABA">对线</text>
+<text x="225.8" y="313.4" font-size="26" text-anchor="end" fill="#FF8A80">40%</text>
+<text x="48" y="880" font-size="22" fill="#8C94A6">★ 辅助最看重的维度　虚线 = 同位置中位数 (50%)</text>
+<text x="48" y="912" font-size="22" fill="#8C94A6">百分比 = 这一项超过了多少同位置玩家</text>
+</svg>
