@@ -56,6 +56,43 @@ const MIGRATIONS: readonly string[] = [
     DROP TABLE bound_accounts;
     DROP TABLE guild_bindings;
   `,
+  // 2 -> 3: the 马厩, one permanent horse record per tracked member per announced match.
+  // Deliberately no foreign key to tracked_members: a member's history must survive /unbind.
+  `
+    CREATE TABLE horse_records (
+      guild_id TEXT NOT NULL CHECK(length(trim(guild_id)) > 0),
+      discord_user_id TEXT NOT NULL CHECK(length(trim(discord_user_id)) > 0),
+      match_id TEXT NOT NULL CHECK(length(trim(match_id)) > 0),
+      puuid TEXT NOT NULL CHECK(length(trim(puuid)) > 0),
+      mock INTEGER NOT NULL CHECK(mock IN (0, 1)),
+      played_at INTEGER NOT NULL,
+      recorded_at INTEGER NOT NULL,
+      queue_id INTEGER NOT NULL,
+      duration_seconds INTEGER NOT NULL CHECK(duration_seconds >= 0),
+      won INTEGER NOT NULL CHECK(won IN (0, 1)),
+      position TEXT CHECK(position IS NULL OR position IN ('TOP', 'JUNGLE', 'MIDDLE', 'BOTTOM', 'UTILITY')),
+      champion_id INTEGER NOT NULL,
+      champion_name TEXT NOT NULL,
+      kills INTEGER NOT NULL CHECK(kills >= 0),
+      deaths INTEGER NOT NULL CHECK(deaths >= 0),
+      assists INTEGER NOT NULL CHECK(assists >= 0),
+      tier TEXT NOT NULL CHECK(tier IN ('特等马', '上等马', '中等马', '下等马', '没有马')),
+      team_rank INTEGER NOT NULL CHECK(team_rank >= 1),
+      team_size INTEGER NOT NULL CHECK(team_size >= team_rank),
+      score REAL NOT NULL CHECK(score >= 0 AND score <= 10),
+      composite REAL NOT NULL,
+      score_above REAL,
+      score_below REAL,
+      dimensions TEXT NOT NULL CHECK(json_valid(dimensions)),
+      features TEXT NOT NULL CHECK(json_valid(features)),
+      benchmark_version INTEGER NOT NULL,
+      benchmark_collected_at TEXT NOT NULL,
+      PRIMARY KEY (guild_id, discord_user_id, match_id)
+    ) STRICT;
+    CREATE INDEX horse_records_by_member ON horse_records(guild_id, discord_user_id, mock, played_at);
+    CREATE INDEX horse_records_by_time ON horse_records(guild_id, mock, played_at);
+    CREATE INDEX horse_records_by_match ON horse_records(guild_id, match_id);
+  `,
 ];
 const SCHEMA_VERSION = MIGRATIONS.length;
 let database: Database.Database | undefined;

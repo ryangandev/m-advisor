@@ -370,13 +370,13 @@ test("a version 1 database upgrades in place when a separate process opens it", 
       { guildId: "guild-two", members: [{ discordUserId: "member-two", accounts: [accountA] }] },
     ],
     styles: ["sweet", "old"],
-    version: 2,
-    tables: ["guild_preferences", "member_accounts", "tracked_members"],
+    version: 3,
+    tables: ["guild_preferences", "horse_records", "member_accounts", "tracked_members"],
   });
   if (process.platform !== "win32") assert.equal(statSync(filePath).mode & 0o777, 0o600);
   assert.deepEqual(backupFiles(filePath), ["v1.sqlite3.v1.bak"]);
 
-  // The upgraded file behaves like any v2 file: another member can join the first guild.
+  // The upgraded file behaves like any current file: another member can join the first guild.
   setMemberAccounts("guild-one", "member-three", [{ puuid: "account-c", gameName: "Player C", tagLine: "NA3" }]);
   assert.deepEqual(listTrackedMembers("guild-one").map((member) => member.discordUserId), ["member-one", "member-three"]);
 });
@@ -386,7 +386,7 @@ test("upgrading writes a private consistent backup first and a second open adds 
   process.env.DATABASE_PATH = filePath;
   writeVersionOneDatabase(filePath);
   // Rows that exist only in the uncheckpointed -wal must be in the backup.
-  assert.equal(getDatabase().pragma("user_version", { simple: true }), 2);
+  assert.equal(getDatabase().pragma("user_version", { simple: true }), 3);
   const backupPath = `${filePath}.v1.bak`;
   assert.deepEqual(backupFiles(filePath), ["v1-backup.sqlite3.v1.bak"]);
   if (process.platform !== "win32") assert.equal(statSync(backupPath).mode & 0o777, 0o600);
@@ -420,7 +420,7 @@ test("a fresh database and an in-memory database are not backed up", () => {
   closeDatabase();
   assert.deepEqual(backupFiles(filePath), []);
   process.env.DATABASE_PATH = ":memory:";
-  assert.equal(getDatabase().pragma("user_version", { simple: true }), 2);
+  assert.equal(getDatabase().pragma("user_version", { simple: true }), 3);
   assert.deepEqual(backupFiles(filePath), []);
 });
 
@@ -467,7 +467,7 @@ test("two processes opening the same version 1 file at once both succeed and mig
   for (const run of runs) {
     assert.equal(run.status, 0, run.stderr);
     const lastLine = run.stdout.trim().split("\n").at(-1)!;
-    assert.deepEqual(JSON.parse(lastLine), { version: 2, members: ["member-one", "member-two"] });
+    assert.deepEqual(JSON.parse(lastLine), { version: 3, members: ["member-one", "member-two"] });
   }
   assert.equal(getDatabase().pragma("integrity_check", { simple: true }), "ok");
   assert.deepEqual(listAllTracking().map((guild) => guild.members.length), [1, 1]);
@@ -499,13 +499,13 @@ test("a failed migration rolls back completely and leaves the version 1 database
   }
 });
 
-test("reopening a version 2 database changes nothing", () => {
+test("reopening a current-version database changes nothing", () => {
   setMemberAccounts("stable-guild", "member", [accountA, accountB]);
   setVoiceStyle("stable-guild", "sweet");
   const schemaBefore = getDatabase().prepare("SELECT type, name, sql FROM sqlite_master ORDER BY name").all();
-  assert.equal(getDatabase().pragma("user_version", { simple: true }), 2);
+  assert.equal(getDatabase().pragma("user_version", { simple: true }), 3);
   closeDatabase();
-  assert.equal(getDatabase().pragma("user_version", { simple: true }), 2);
+  assert.equal(getDatabase().pragma("user_version", { simple: true }), 3);
   assert.deepEqual(getDatabase().prepare("SELECT type, name, sql FROM sqlite_master ORDER BY name").all(), schemaBefore);
   assert.deepEqual(listTrackedMembers("stable-guild"), [{ discordUserId: "member", accounts: [accountA, accountB] }]);
   assert.equal(getAnnouncerState("stable-guild").voiceStyle, "sweet");
