@@ -259,6 +259,58 @@ The line names only the pick, by the name that player's row in the same embed sh
 Chinese text has no spaces around the name, and a name gets a space only on a side where its first or last character is an ASCII letter or digit, as in `军师点名的小明本局` and `军师点名的 Faker 本局`.
 Mock reports keep their mock label.
 
+## 段位变化
+
+A finished solo/duo (queue 420) or flex (queue 440) match that is not a remake or aborted gets one more field on the horse embed, `段位变化`.
+It is text only: the spoken report never mentions LP, so it stays the same length whether or not LP is ready.
+How the reads are made, paced and retried is in [Riot data](riot-data.md#rank-tracking); this section covers when they happen and what the report shows.
+
+### Reads around a game
+
+`src/services/rankTracker.ts` keeps one process-wide tracker, the monitor's `rank` dependency, shared by every guild so an account bound in two servers costs one read.
+It reads an account's rank at three points:
+
+- When Phase A records an account's baseline, as the fallback before-value.
+- When the game start watcher first decides about a ranked game, announced or skipped, for every bound player in it on both teams, because LP does not move during a game. This read absorbs a dodge, decay or a remake penalty since the last read. A game whose finished match the session already knows is over and reads nothing.
+- When Phase B detects the finished match, for every bound player of it on both teams. A read that caught up is the before-value of that account's next game, although only the reported team gets a row.
+
+A remake, an aborted game and every other queue read nothing.
+So a leaver penalty from a remake without a later game start read leaks into the next game's change, a documented limitation.
+
+### Waiting and the late edit
+
+The report waits for the first after-reads only inside the timeline's wait: both start together and share the same 8 second limit, so LP never adds to the worst case.
+A row that league-v4 has not updated by then is posted as pending, and the tracker reads it again in the background.
+Once every pending row of the report has settled, the report message is edited once, with the same content, the same embeds apart from `段位变化` and the same `allowedMentions`.
+The posted `Message` is kept in the match's progress for that.
+The edit runs apart from the poll; a failed edit is logged and changes nothing else.
+A bot restart drops pending reads, so such a row keeps saying it is not updated.
+
+No LP failure delays the report beyond the timeline wait, fails it, counts as an error of the poll or counts toward the voice attempt cap.
+
+### Rows
+
+There is one row per bound member on the reported team, from the same party list as the 车队内战: every tracked member on the speaker's team who still owns the account they played on, in voice or not.
+Strangers, enemies and a bound friend on the other team never get a row.
+Members appear as mentions inside the embed, which notifies nobody, so `allowedMentions` stays exactly the report's ping set.
+`src/services/rankText.ts` owns the wording: tiers as `黄金 II` (MASTER, GRANDMASTER and CHALLENGER without a division), and the queues as `单双排` and `灵活组排`.
+
+| Case | Row |
+| --- | --- |
+| One game, same division | `<@id> 单双排 黄金 II · 86 LP · 本局 +22` |
+| Promotion | `<@id> 单双排 铂金 IV · 7 LP · 本局 +24 · 晋级！` |
+| Demotion | `<@id> 单双排 白银 I · 本局掉段` |
+| Several games since the before-value | `<@id> 单双排 黄金 II · 64 LP · 中间隔了几局，本局变化算不出来` |
+| Placements finished | `<@id> 单双排 · 定级完成：黄金 IV` |
+| League-v4 not updated yet | `<@id> 单双排 · 段位还没更新，稍后补上` |
+| Still not updated after the last read | `<@id> 单双排 · 段位一直没更新，本局变化算不出来` |
+| The read failed | `<@id> 单双排 · 段位暂时查不到` |
+
+A demotion shows the new rank without an LP number, because the ladder distance is not the LP Riot actually takes on a demotion until a real one has been measured.
+Every division and tier change counts as a promotion or demotion, in both queues; a move between MASTER, GRANDMASTER and CHALLENGER happens through cutoffs and shows as a plain change.
+No row is shown for an account that is unranked before and after, whose entry disappeared, whose tier is unknown, that has no before-value at all, or when LP is off after a 401 or 403.
+A mock before-value is never used in real mode, or the reverse.
+
 ## Diagnostics
 
 The bot logs to the terminal and its daily log file, described in [Runtime](runtime.md#logs).
@@ -273,6 +325,7 @@ When the bot joins a channel with the first two speech chunks ready, it logs how
 After playback it logs how many seconds speech generation and playback took after detection.
 It logs once when it gives up on a match's voice after three failed attempts.
 For a game start it logs the detection, a skipped game once with the reason, the posted card, when the line starts and ends, and a dropped line.
+For LP it logs, once per account and match, `league-v4 caught up N s after game end (read k)` or that it had not caught up after the last read, a row left out as `none/entry_lost`, and the late `段位变化` edit; see [Riot data](riot-data.md#rank-tracking).
 Together they show whether a slow announcement waited on Riot's match data, the poll interval or speech.
 A saved mock account skipped in real mode is logged as a monitoring failure that names the account.
 Startup in real mode and `npm run doctor` also warn about each saved mock account before anyone joins voice.
@@ -354,11 +407,14 @@ Before fixing the old monitor, a reproduction through the then-public `startPoll
 
 `tests/monitor.test.ts` exercises complete sessions using the real state store and shared queue with fake external I/O, for one member and for several members across channels.
 It also pins the text-first order, the once-only text and 马厩 write across voice retries, the timeline fallback and its prompt end on a stop, the sticky speaker, records written after the voice when the text fails, the three-attempt cap for voice and report-building failures but not a full queue, and the silent mock baseline after a restart.
+It also pins the `段位变化` rows of the reported team only, a stuck LP read that still posts within the timeline wait, LP failures that never fail the report, an LP 403 that turns off only LP, and the single late edit with the same mentions.
+`tests/rankTracker.test.ts` pins the row wording, the mode-keyed snapshots, the 60 second floor and the 4-read cap under fake timers, serialized reads and each failure kind.
 `tests/partyRanking.test.ts` pins the 车队内战 order, the 背锅 wording, the sentence length, the exclusion of other-team friends and the embed, and `tests/monitor.test.ts` pins the second embed and the unchanged ping set.
 `tests/voicePresence.test.ts` drives voice events through the real lifecycle into a monitor with fake Riot I/O.
 `tests/gameStart.test.ts` runs the real monitor, watcher and voice queue with a fake spectator, clock, speech and Discord.
 It pins the detection rules, the premade dedup and the sixth-tick recheck, the request budget with fake timers, the queue filter, the voice switch, the 90 second window, the finished-match cancel, leaving before and during playback, the rated team, the exact mentions, the quiet 429 and the 403 that leaves match monitoring on.
 It also feeds a game with enemies, strangers and a friend on the other team through the watcher and checks that none of their names, PUUIDs or champions reach the card or the line.
+It checks that a ranked game's start reads both teams' bound players, announced or skipped, so a dodge before it never shows as that game's LP.
 It covers the guild memory: the only member leaving and rejoining during loading gets one card and one line, a 锦囊 is forgotten after 15 minutes, and the memory keeps at most 50 games.
 It also checks that a member flapping in and out of voice costs at most 6 requests per account in 2 minutes, that a failure inside a tick is logged once and never rejects, that the first working check after a failure logs one recovery line, and that the watcher logs with its own prefix.
 `tests/voiceAnnouncements.test.ts` verifies queue serialization, chunk ordering, the two-chunk join, inline retry, early and mid-stream generation failure, cancellation between chunks and during playback, the announcement deadline with a chunk that never resolves, channel changes, limits, and cleanup of every chunk file.

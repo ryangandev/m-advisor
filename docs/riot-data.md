@@ -177,6 +177,28 @@ An account without an entry in that queue stays unranked.
 `setMockRankedEntry(puuid, entry)` replaces or adds an entry for tests and is rejected in real mode.
 `resetMockData()` clears the ranked state back to the fixtures.
 
+### Rank tracking
+
+`src/services/rankTracker.ts` schedules every league-v4 read; when they happen and what the report shows is in [Announcements](announcements.md#段位变化).
+It depends on an injected `readEntries(puuid)`, which is `getLeagueEntries` in production, and never on a requester directly.
+
+- Snapshots live in memory, keyed by data mode and PUUID, so a mock read is never a real before-value, and in real mode a saved `MOCK-` account is never read.
+- Reads run one at a time across every guild. Each is also bounded by the tracker's own 10 second guard, so a stuck dependency cannot hold the queue.
+- The first after-read of a match goes out at detection. While league-v4 has not caught up (`wins + losses` unchanged), the account is read again no sooner than 60 seconds after its previous read, at most 4 reads per account per match.
+- A snapshot read is skipped while the account's last successful read is younger than 60 seconds, and only one snapshot read per account waits in the queue.
+- For 10 accounts that caps LP at about 20 reads per 2 minutes, leaving room under the na1 app limit for `/profile` and `/bind`.
+
+Failures never reach the report as an error:
+
+- A 401 or 403 turns LP off until the bot restarts, with one log line; pending rows are dropped and finished matches are still announced.
+- A 429 is quiet: that read counts toward the cap and the scheduled read follows.
+- A timeout, the requester's 5 seconds or the tracker's guard, counts as not caught up yet.
+- Any other failure is logged once per kind, with one line when a read works again, and the row says `段位暂时查不到`.
+
+Each account's after-reads log one line per match, `league-v4 caught up N s after game end (read k)`, or that it had not caught up after the last read.
+A result that shows no row because the entry disappeared or the tier is unknown is logged as `none/<reason>`.
+
 ### Still to measure
 
 These need real ranked games and are not known yet: how long league-v4 lags behind the end of a game, whether a remake changes LP or `wins + losses`, whether an entry exists during placements, and where a demotion places you in LP.
+The lag lines above answer the first: the retry window is to be set from the p95 of at least 10 real ranked games.

@@ -6,6 +6,7 @@ import type { HorseTier } from "../services/horseRanking";
 import type { PartyEntry, PartyRanking } from "../services/partyRanking";
 import type { MonitorStatus } from "../services/gameMonitor";
 import { RECAP_FIELD_NAME } from "../services/pregameRecap";
+import { RANK_FIELD_NAME } from "../services/rankText";
 import { isAnnouncedQueue } from "./riotMatchApi";
 
 // Verified against the official versions endpoint on 2026-10-02; configurable without changing code.
@@ -70,9 +71,10 @@ const TIER_ICONS: Record<HorseTier, string> = { 特等马: "👑", 上等马: "�
 
 /**
  * Channel report matching the spoken ranking; names are sanitized by the report builder.
- * The optional `recap` is the 锦囊回顾 of the pregame pick: text only, never part of the speech.
+ * The optional `recap` is the 锦囊回顾 of the pregame pick, and `rankRows` the 段位变化 of the reported team's bound
+ * members: both text only, never part of the speech.
  */
-export function buildHorseReportEmbed(report: MatchReport, recap?: string): EmbedBuilder {
+export function buildHorseReportEmbed(report: MatchReport, recap?: string, rankRows: readonly string[] = []): EmbedBuilder {
   const embed = new EmbedBuilder()
     .setTitle(report.title)
     .setColor(report.mock ? 0x95A5A6 : 0x1C7A6F)
@@ -87,6 +89,7 @@ export function buildHorseReportEmbed(report: MatchReport, recap?: string): Embe
   if (report.praise) embed.addFields({ name: "👑 军师表扬", value: report.praise.slice(0, 1024) });
   if (report.roast) embed.addFields({ name: "🪦 军师批评", value: report.roast.slice(0, 1024) });
   if (recap) embed.addFields({ name: RECAP_FIELD_NAME, value: recap.slice(0, 1024) });
+  if (rankRows.length > 0) embed.addFields({ name: RANK_FIELD_NAME, value: rankRows.join("\n").slice(0, 1024) });
   return embed;
 }
 
