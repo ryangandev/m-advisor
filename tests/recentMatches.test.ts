@@ -130,6 +130,17 @@ test("ten members with ten matches each stay within Discord's 6000-character emb
   }
 });
 
+test("a newest row longer than its share is shortened rather than dropped", () => {
+  const notice = `⚠️ ${"很长的提示".repeat(60)}`;
+  const accounts = Array.from({ length: 25 }, (_, index) => ({ ...account(), riotId: `Player${index}#NA1`, notice }));
+  const embed = buildRecentMatchesEmbed(view({ accounts })).toJSON();
+  assert.ok(embedLength(embed) <= 6000, `embed total is ${embedLength(embed)}`);
+  for (const field of embed.fields!) {
+    assert.ok(field.value.startsWith("⚠️ 很长的提示"), field.value);
+    assert.ok(field.value.endsWith("\n…"));
+  }
+});
+
 test("a short list keeps every row without a marker", () => {
   const embed = buildRecentMatchesEmbed(view()).toJSON();
   assert.equal(embed.fields![0].value.split("\n").length, 5);
