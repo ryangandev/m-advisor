@@ -32,7 +32,8 @@ const EPSILON = 1e-9;
 const percent = (value: number) => `${Math.round(value * 100)}%`;
 const timestamp = (milliseconds: number) => `<t:${Math.floor(milliseconds / 1000)}:R>`;
 
-function championLabel(record: HorseRecord): string {
+/** The Chinese champion name, or Riot's English identifier when the table has none. */
+export function championLabel(record: Pick<HorseRecord, "championId" | "championName">): string {
   const names = (championNames as { names: Record<string, string> }).names;
   return names[String(record.championId)] ?? record.championName;
 }
