@@ -15,6 +15,7 @@ import { closeDatabase } from "../src/store/database";
 import { listMatchHorseRecords, recordHorseRecords, type HorseRecord } from "../src/store/horseRecordStore";
 import { getLatestSRMatchId, getMatchDetail } from "../src/utils/riotMatchApi";
 import { RankTracker, type RankTracking } from "../src/services/rankTracker";
+import { buildRankVoiceLine } from "../src/services/rankText";
 import { testMatch } from "./helpers/matches";
 
 const monitors: GameMonitor[] = [];
@@ -1633,16 +1634,16 @@ async function until(condition: () => boolean, what: string): Promise<void> {
 }
 
 /** Alice and Bob on one team, Zed, a bound friend, on the other; all in channel x and all ranked. */
-async function rankedTrio(guildId: string, options: { retryFloorMs?: number } = {}) {
+async function rankedTrio(guildId: string, options: { retryFloorMs?: number; start?: Record<string, RankedEntry> } = {}) {
   const bot = harness(guildId, [
     { id: "alice-id", puuids: ["alice"], channel: "x" },
     { id: "bob-id", puuids: ["bob"], channel: "x" },
     { id: "zed-id", puuids: ["zed"], channel: "x" },
   ]);
   const rank = withRank(bot, options);
-  rank.league.set("alice", [ranked("GOLD", "II", 64)]);
-  rank.league.set("bob", [ranked("SILVER", "I", 31)]);
-  rank.league.set("zed", [ranked("PLATINUM", "III", 50)]);
+  rank.league.set("alice", [options.start?.alice ?? ranked("GOLD", "II", 64)]);
+  rank.league.set("bob", [options.start?.bob ?? ranked("SILVER", "I", 31)]);
+  rank.league.set("zed", [options.start?.zed ?? ranked("PLATINUM", "III", 50)]);
   await bot.start();
   await until(() => rank.reads.length === 3, "the baseline snapshots");
   const detail = match("ranked-trio", ["alice", "bob", "cara", "dan", "eve"], ["zed"]);
@@ -1812,4 +1813,203 @@ test("a deleted report is an info line, not a monitoring failure; another edit f
     assert.equal(bot.infos.includes(infoLine), deleted, `code ${code}`);
     assert.equal(logged(), !deleted, `code ${code}`);
   }
+});
+
+// 段位播报: a separate message and a short voice line for a promotion or a demotion.
+
+const RANK_TITLE = "模拟数据 · 段位播报";
+/** The 段位播报 messages posted so far. */
+const castsOf = (bot: ReturnType<typeof harness>) => bot.messages.filter((message) => postedEmbeds(message)[0]?.title?.endsWith("段位播报"));
+/** Records every voice job in the order the monitor queued it. */
+function recordAnnouncements(bot: ReturnType<typeof harness>): string[] {
+  const queued: string[] = [];
+  const announce = bot.dependencies.announce;
+  bot.dependencies.announce = (guildId, text, ...rest) => { queued.push(text); return announce(guildId, text, ...rest); };
+  return queued;
+}
+const embedDescription = (message: MessageCreateOptions) => (message.embeds![0] as { toJSON: () => { description?: string } }).toJSON().description;
+
+test("a promotion the first reads show is posted right after the report as a separate 段位播报, and spoken after the report", async () => {
+  const { bot, rank } = await rankedTrio("cast-first-guild");
+  const queued = recordAnnouncements(bot);
+  rank.league.set("alice", [ranked("PLATINUM", "IV", 7, 11, 10)]);
+  rank.league.set("bob", [ranked("SILVER", "I", 12, 10, 11)]);
+  // The other team's bound friend is promoted too, but is never announced.
+  rank.league.set("zed", [ranked("DIAMOND", "IV", 5, 11, 10)]);
+  assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
+  await until(() => queued.length === 2, "the 段位播报 voice line");
+  await until(() => castsOf(bot).length === 1, "the 段位播报 message");
+
+  assert.equal(bot.messages.length, 2, "the report and one 段位播报");
+  const [report, cast] = bot.messages;
+  assert.match(postedEmbeds(report)[0].title!, /本局马匹鉴定/);
+  const [embed, ...rest] = postedEmbeds(cast);
+  assert.equal(rest.length, 0);
+  assert.equal(embed.title, RANK_TITLE);
+  assert.equal(embedDescription(cast), "<@alice-id> 单双排 晋级：黄金 II → 铂金 IV · 7 LP");
+  assert.equal(cast.content, undefined, "no ping");
+  assert.deepEqual(cast.allowedMentions, { parse: [], roles: [], users: [], repliedUser: false });
+  assert.equal(bot.sent[1].channelId, bot.sent[0].channelId, "the report's channel");
+
+  const expected = buildRankVoiceLine({
+    matchId: "ranked-trio", mock: true,
+    moves: [{ kind: "promoted", queueType: SOLO_QUEUE, before: ranked("GOLD", "II", 64), after: ranked("PLATINUM", "IV", 7, 11, 10), puuid: "alice", name: "alice" }],
+  });
+  assert.ok(expected.startsWith("模拟段位播报，"));
+  assert.equal(queued[1], expected, "seeded by the match and the account");
+  assert.match(queued[1], /铂金四/);
+  assert.doesNotMatch(queued[0], /LP|段位|晋级|掉段/, "the report's own voice is unchanged");
+  await until(() => bot.generated.length === 2, "the line being spoken");
+  assert.equal(bot.generated[1], expected);
+});
+
+test("the 段位播报 line is queued only after the report's voice has finished", async () => {
+  const { bot, rank } = await rankedTrio("cast-order-guild");
+  const queued = recordAnnouncements(bot);
+  const held = heldPlayback(bot);
+  rank.league.set("alice", [ranked("PLATINUM", "IV", 7, 11, 10)]);
+  rank.league.set("bob", [ranked("SILVER", "I", 12, 10, 11)]);
+  rank.league.set("zed", [ranked("PLATINUM", "III", 71, 11, 10)]);
+  const polling = bot.poll();
+  await held.nextStart();
+  // The text is out while the report is still playing, but the voice line is not queued behind it yet.
+  await until(() => castsOf(bot).length === 1, "the 段位播报 message");
+  await delay(WATCH);
+  assert.equal(queued.length, 1, "only the report's voice is queued while it plays");
+  held.release();
+  assert.deepEqual(await polling, { announced: 1, errors: 0 });
+  await until(() => queued.length === 2, "the line queued after the report");
+  assert.equal(bot.played.length, 1, "the report finished before the line was queued");
+  await held.nextStart();
+  held.release();
+  await until(() => bot.played.length === 2, "the line played");
+});
+
+test("a move among MASTER, GRANDMASTER and CHALLENGER is never announced", async () => {
+  const { bot, rank } = await rankedTrio("cast-apex-guild", {
+    start: { alice: ranked("MASTER", "I", 300), bob: ranked("GRANDMASTER", "I", 500), zed: ranked("PLATINUM", "III", 50) },
+  });
+  const queued = recordAnnouncements(bot);
+  rank.league.set("alice", [ranked("GRANDMASTER", "I", 320, 11, 10)]);
+  rank.league.set("bob", [ranked("MASTER", "I", 480, 10, 11)]);
+  rank.league.set("zed", [ranked("PLATINUM", "III", 71, 11, 10)]);
+  assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
+  await delay(WATCH);
+  assert.match(rankFieldOf(bot.messages[0])!, /宗师 · 320 LP · 本局 \+20/, "the row shows the current rank");
+  assert.equal(castsOf(bot).length, 0);
+  assert.equal(bot.messages.length, 1);
+  assert.equal(queued.length, 1, "no voice line");
+});
+
+test("a demotion shows the new rank and its LP with no change, and is spoken comforting", async () => {
+  const { bot, rank } = await rankedTrio("cast-demotion-guild");
+  const queued = recordAnnouncements(bot);
+  rank.league.set("alice", [ranked("GOLD", "II", 64, 11, 10)]);
+  rank.league.set("bob", [ranked("SILVER", "II", 80, 10, 11)]);
+  rank.league.set("zed", [ranked("PLATINUM", "III", 71, 11, 10)]);
+  assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
+  await until(() => queued.length === 2, "the 段位播报 voice line");
+  assert.equal(embedDescription(castsOf(bot)[0]), "<@bob-id> 单双排 掉段：白银 I → 白银 II · 80 LP");
+  assert.doesNotMatch(embedDescription(castsOf(bot)[0])!, /[+-]\d/);
+  assert.match(queued[1], /^模拟段位播报，bob单双排(掉回|退到|落到)白银二/);
+});
+
+test("a promotion that only the late update shows is announced then, once, with the voice after the report", async () => {
+  const { bot, rank } = await rankedTrio("cast-late-guild", { retryFloorMs: 30 });
+  const queued = recordAnnouncements(bot);
+  // League-v4 has not caught up when the report goes out.
+  assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
+  assert.equal(castsOf(bot).length, 0, "nothing to announce yet");
+  assert.equal(queued.length, 1);
+  rank.league.set("alice", [ranked("PLATINUM", "IV", 7, 11, 10)]);
+  rank.league.set("bob", [ranked("SILVER", "I", 12, 10, 11)]);
+  rank.league.set("zed", [ranked("PLATINUM", "III", 71, 11, 10)]);
+  await until(() => castsOf(bot).length === 1, "the late 段位播报");
+  await until(() => queued.length === 2, "the late voice line");
+  await delay(WATCH);
+  assert.equal(castsOf(bot).length, 1);
+  assert.equal(queued.length, 2);
+  assert.equal(bot.edits.length, 1, "the report is edited once, as before");
+  assert.equal(embedDescription(castsOf(bot)[0]), "<@alice-id> 单双排 晋级：黄金 II → 铂金 IV · 7 LP");
+  assert.match(queued[1], /^模拟段位播报，/);
+});
+
+test("a late 段位播报 is text only when nobody of the reported team is still in voice", async () => {
+  const { bot, rank } = await rankedTrio("cast-text-only-guild", { retryFloorMs: 30 });
+  const queued = recordAnnouncements(bot);
+  assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
+  // The team leaves; the other team's bound friend is still in voice, which is not the reported team.
+  bot.move("alice-id", null);
+  bot.move("bob-id", null);
+  rank.league.set("alice", [ranked("PLATINUM", "IV", 7, 11, 10)]);
+  rank.league.set("bob", [ranked("SILVER", "I", 12, 10, 11)]);
+  rank.league.set("zed", [ranked("PLATINUM", "III", 71, 11, 10)]);
+  await until(() => castsOf(bot).length === 1, "the late 段位播报");
+  await delay(WATCH);
+  assert.equal(queued.length, 1, "no voice job for the line");
+  assert.equal(bot.generated.length, 1);
+  assert.ok(bot.infos.some((line) => /段位播报 of match ranked-trio is text only/.test(line)));
+  assert.equal(bot.errors.length, 0);
+});
+
+test("a match announces its 段位播报 once, even when the late update shows more", async () => {
+  const { bot, rank } = await rankedTrio("cast-once-guild", { retryFloorMs: 30 });
+  const queued = recordAnnouncements(bot);
+  // Alice's promotion is in the first reads; Bob's read has not caught up.
+  rank.league.set("alice", [ranked("PLATINUM", "IV", 7, 11, 10)]);
+  assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
+  await until(() => castsOf(bot).length === 1, "the first 段位播报");
+  rank.league.set("bob", [ranked("SILVER", "II", 80, 10, 11)]);
+  rank.league.set("zed", [ranked("PLATINUM", "III", 71, 11, 10)]);
+  await until(() => bot.edits.length === 1, "the late edit");
+  await delay(WATCH);
+  assert.equal(castsOf(bot).length, 1, "one message per match");
+  assert.equal(embedDescription(castsOf(bot)[0]), "<@alice-id> 单双排 晋级：黄金 II → 铂金 IV · 7 LP");
+  assert.equal(queued.length, 2, "one voice line per match");
+  assert.match(rankFieldOf(bot.edits[0].options)!, /白银 II · 80 LP · 本局掉段/, "the 段位变化 field still shows Bob");
+});
+
+test("a failed 段位播报 voice line is tried once, never retried, and never counts against the report", async () => {
+  const { bot, rank } = await rankedTrio("cast-voice-fail-guild");
+  const queued = recordAnnouncements(bot);
+  bot.generate = async (text) => {
+    bot.generated.push(text);
+    if (text.startsWith("模拟段位播报，")) throw new Error("speech worker down");
+    return "mock-audio.wav";
+  };
+  rank.league.set("alice", [ranked("PLATINUM", "IV", 7, 11, 10)]);
+  rank.league.set("bob", [ranked("SILVER", "I", 12, 10, 11)]);
+  rank.league.set("zed", [ranked("PLATINUM", "III", 71, 11, 10)]);
+  assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
+  await until(() => bot.errors.some((error) => /段位播报 voice line of match ranked-trio failed/.test((error as Error).message)), "the failure being logged");
+  const attempts = bot.generated.filter((text) => text.startsWith("模拟段位播报，")).length;
+  await bot.poll();
+  await bot.poll();
+  await delay(WATCH);
+  assert.equal(bot.generated.filter((text) => text.startsWith("模拟段位播报，")).length, attempts, "not tried again");
+  assert.equal(queued.filter((text) => text.startsWith("模拟段位播报，")).length, 1);
+  assert.equal(castsOf(bot).length, 1, "the text stays");
+  assert.equal(bot.messages.filter((message) => postedEmbeds(message)[0].title?.includes("本局马匹鉴定")).length, 1, "the report was not repeated");
+  assert.equal(bot.errors.length, 1, "nothing but the voice failure is an error");
+});
+
+test("a real match is titled 段位播报 and its line has no mock prefix", async () => {
+  const bot = harness("cast-real-guild", [
+    { id: "alice-id", puuids: ["alice"], channel: "x" },
+    { id: "bob-id", puuids: ["bob"], channel: "x" },
+  ]);
+  bot.dependencies.mock = () => false;
+  const rank = withRank(bot);
+  rank.league.set("alice", [ranked("GOLD", "I", 90)]);
+  const queued = recordAnnouncements(bot);
+  await bot.start();
+  await until(() => rank.reads.length >= 1, "the baseline snapshot");
+  bot.matches.set("real-duo", match("real-duo", ["alice", "bob", "cara", "dan", "eve"]));
+  bot.latestIds.set("alice", "real-duo");
+  rank.league.set("alice", [ranked("PLATINUM", "IV", 12, 11, 10)]);
+  assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
+  await until(() => queued.length === 2, "the line");
+  assert.equal(postedEmbeds(castsOf(bot)[0])[0].title, "段位播报");
+  assert.doesNotMatch(queued[1], /模拟/);
+  assert.match(queued[1], /铂金四/);
 });

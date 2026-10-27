@@ -13,6 +13,7 @@ import { getAccountByRiotId } from "../src/utils/riotApi";
 import { getLatestSRMatchId, getMatchDetail } from "../src/utils/riotMatchApi";
 import { getActiveGame } from "../src/utils/riotSpectatorApi";
 import { resetMockData } from "../src/services/riotData";
+import { getLeagueEntries } from "../src/utils/riotLeagueApi";
 import { isSyntheticAccount, mergeBoundAccount } from "../src/utils/bindingAccounts";
 
 const firstMember = (guildId: string) => listTrackedMembers(guildId)[0];
@@ -29,6 +30,8 @@ const calls = {
   played: [] as Array<{ channelId: string; text: string; style: string }>,
   /** Every pollGameStartNow call, with the mock game the account is in at that moment. */
   gameStarts: [] as Array<{ guildId: string; matchId?: string; channelId?: string; game: unknown }>,
+  /** Every rebaseMockRank call, with the account's solo entry at that moment: /simulate sets it first. */
+  rebased: [] as Array<{ puuids: readonly string[]; solo: { tier: string; rank: string; leaguePoints: number } | undefined }>,
 };
 /** What the stubbed watcher reports for a /simulate start. */
 let gameStartOutcome: { textPosted: boolean; voice: string } | null = { textPosted: true, voice: "played" };
@@ -73,6 +76,11 @@ stubModule("../src/services/gameMonitor.ts", {
     calls.starts.push({ guildId, channelId: member.voice.channelId! });
   },
   stopPolling: (guildId: string) => calls.stops.push(guildId),
+  rebaseMockRank: async (puuids: readonly string[]) => {
+    const { entries } = await getLeagueEntries(puuids[0]);
+    const solo = entries.find((entry) => entry.queueType === "RANKED_SOLO_5x5");
+    calls.rebased.push({ puuids, solo: solo && { tier: solo.tier, rank: solo.rank, leaguePoints: solo.leaguePoints } });
+  },
   // The watcher asks spectator through the normal provider, as the real one does.
   pollGameStartNow: async (guildId: string, matchId?: string, channelId?: string) => {
     const puuid = listTrackedMembers(guildId)[0].accounts[0].puuid;
@@ -303,6 +311,50 @@ for (const outcome of ["win", "loss"]) {
     assert.deepEqual((f.replies.at(-1) as { allowedMentions?: unknown }).allowedMentions, { parse: [], roles: [], users: [], repliedUser: false });
   });
 }
+
+const rankSimulations = [
+  { outcome: "promote", result: "win", before: { tier: "GOLD", rank: "I", leaguePoints: 90 }, after: { tier: "PLATINUM", rank: "IV", leaguePoints: 12 }, reply: /晋级比赛播报完成/ },
+  { outcome: "demote", result: "loss", before: { tier: "GOLD", rank: "IV", leaguePoints: 5 }, after: { tier: "SILVER", rank: "I", leaguePoints: 86 }, reply: /掉段比赛播报完成/ },
+];
+for (const simulation of rankSimulations) {
+  test(`/simulate ${simulation.outcome} places the account just below the line, makes it the before-value, and then plays a ${simulation.result}`, async () => {
+    const puuid = await seedBinding();
+    const before = (await getLeagueEntries(puuid)).entries.find((entry) => entry.queueType === "RANKED_SOLO_5x5")!;
+    const f = interactionFixture({ outcome: simulation.outcome });
+    await commands.simulate.execute(f.interaction);
+    assert.deepEqual(calls.rebased, [{ puuids: [puuid], solo: simulation.before }], "rebased once, after the entry was placed and before the match");
+    assert.match(calls.played[0].text, simulation.result === "win" ? /模拟数据：胜利/ : /模拟数据：失败/);
+    const after = (await getLeagueEntries(puuid)).entries.find((entry) => entry.queueType === "RANKED_SOLO_5x5")!;
+    assert.deepEqual({ tier: after.tier, rank: after.rank, leaguePoints: after.leaguePoints }, simulation.after);
+    assert.equal(after.wins + after.losses, before.wins + before.losses + 1, "the games of the account are kept and one more is counted");
+    assert.match(replyText(f.replies.at(-1)), simulation.reply);
+    assert.match(replyText(f.replies.at(-1)), /此结果不是实际战绩/);
+  });
+
+  test(`/simulate ${simulation.outcome} is refused in real mode before anything is placed`, async () => {
+    const puuid = await seedBinding();
+    const baseline = await getLatestSRMatchId(puuid);
+    const entries = (await getLeagueEntries(puuid)).entries;
+    process.env.RIOT_MODE = "real";
+    const f = interactionFixture({ outcome: simulation.outcome });
+    await commands.simulate.execute(f.interaction);
+    assert.match(replyText(f.replies.at(-1)), /RIOT_MODE=mock/);
+    process.env.RIOT_MODE = "mock";
+    assert.deepEqual(calls.rebased, []);
+    assert.equal(calls.polls.length, 0);
+    assert.equal(await getLatestSRMatchId(puuid), baseline);
+    assert.deepEqual((await getLeagueEntries(puuid)).entries, entries, "the mock entry was not touched");
+  });
+}
+
+test("/simulate offers 晋级（模拟） and 掉段（模拟） as choices of the outcome option", () => {
+  const outcome = (commands.simulate.data.toJSON().options as Array<{ name: string; choices: Array<{ name: string; value: string }> }>)
+    .find((option) => option.name === "outcome")!;
+  assert.deepEqual(outcome.choices.map(({ name, value }) => ({ name, value })), [
+    { name: "胜利", value: "win" }, { name: "失败", value: "loss" }, { name: "开局（赛前锦囊）", value: "start" },
+    { name: "晋级（模拟）", value: "promote" }, { name: "掉段（模拟）", value: "demote" },
+  ]);
+});
 
 test("/simulate start opens a labeled mock game on the loading screen and waits for its 锦囊", async () => {
   const puuid = await seedBinding();
