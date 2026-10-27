@@ -7,7 +7,8 @@ import {
 } from "discord.js";
 import { BotCommand } from "../types";
 import { buildErrorEmbed } from "../utils/embeds";
-import { getAnnouncerState, getPregameVoiceEnabled, setPregameVoiceEnabled, setVoiceStyle } from "../store/announcerStore";
+import { getAnnouncerState, getPregameVoiceEnabled, saveAnnouncerSettings } from "../store/announcerStore";
+import { isAdmin } from "../utils/permissions";
 
 const announcerCommand: BotCommand = {
   data: (new SlashCommandBuilder()
@@ -26,7 +27,7 @@ const announcerCommand: BotCommand = {
     .addBooleanOption((option) =>
       option
         .setName("pregame_voice")
-        .setDescription("Speak the pre-game line in voice (the text is always posted)")
+        .setDescription("Speak the pre-game line in voice (Administrator only)")
         .setRequired(false),
     ) as SlashCommandOptionsOnlyBuilder) as SlashCommandBuilder,
 
@@ -36,6 +37,7 @@ const announcerCommand: BotCommand = {
       await interaction.reply({
         embeds: [buildErrorEmbed("This command can only be used in a server.")],
         flags: MessageFlags.Ephemeral,
+        allowedMentions: { parse: [] },
       });
       return;
     }
@@ -51,8 +53,17 @@ const announcerCommand: BotCommand = {
       return;
     }
 
-    if (style !== null) setVoiceStyle(guildId, style);
-    if (pregameVoice !== null) setPregameVoiceEnabled(guildId, pregameVoice);
+    // The pre-game switch is server-wide, so it needs Administrator; the personal-taste style stays open to everyone.
+    if (pregameVoice !== null && !isAdmin(interaction)) {
+      await interaction.reply({
+        embeds: [buildErrorEmbed("You need Administrator permission to change pregame_voice.")],
+        flags: MessageFlags.Ephemeral,
+        allowedMentions: { parse: [] },
+      });
+      return;
+    }
+
+    saveAnnouncerSettings(guildId, { style: style ?? undefined, pregameVoice: pregameVoice ?? undefined });
 
     const label = getAnnouncerState(guildId).voiceStyle === "sweet" ? "Sweet Girl" : "Old Man";
     const embed = new EmbedBuilder()
@@ -60,7 +71,7 @@ const announcerCommand: BotCommand = {
       .setTitle("Announcer Updated")
       .setDescription([
         `Announcer voice: ${label}`,
-        `Pre-game voice line: ${getPregameVoiceEnabled(guildId) ? "on" : "off (text only)"}`,
+        `Pre-game voice line: ${getPregameVoiceEnabled(guildId) ? "on" : "off"}`,
       ].join("\n"));
 
     await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral, allowedMentions: { parse: [] } });

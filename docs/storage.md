@@ -115,7 +115,8 @@ Neither table has a foreign key, so `/unbind` and `/stable-erase` never touch th
 `pregame_settings` holds one row per server that ever changed the switch: `voice_enabled` is 1 (speak the pre-game line) or 0 (text only).
 A server without a row has the switch on.
 It is a separate table because `guild_preferences.voice_style` is `NOT NULL`, so a row there could not exist without a style.
-`getPregameVoiceEnabled(guildId)` and `setPregameVoiceEnabled(guildId, enabled)` in `src/store/announcerStore.ts` read and write it, and `/announcer pregame_voice` sets it.
+`getPregameVoiceEnabled(guildId)` and `setPregameVoiceEnabled(guildId, enabled)` in `src/store/announcerStore.ts` read and write it, and `/announcer pregame_voice` sets it (Administrator only; `style` stays open to everyone).
+`saveAnnouncerSettings` writes the style and the switch in one transaction and updates the in-memory style only after it commits.
 Nothing reads the switch during play yet.
 
 ## Durability and shutdown
@@ -140,4 +141,5 @@ It covers member and account ordering, guild isolation, cross-member PUUID rejec
 Migration tests build a literal version 1 file in WAL mode, written by a process that exits without closing so rows remain in an uncheckpointed `-wal` file, and upgrade it from a separate process.
 They check that members, account order, voice styles and file mode survive and the old tables are gone.
 They also check the automatic backup (present, mode `0600`, holding the version 1 data, never overwritten, not repeated), two processes opening the same old file concurrently, that a failing migration rolls back to version 1, and that reopening a current file changes nothing.
+`tests/pregameSettings.test.ts` holds the version 4 to 5 migration tests (a literal version 4 file, the `.v4.bak` backup, a failing step that rolls back to version 4, newer-schema rejection) and the pre-game voice switch API.
 The tests do not write to the bot's actual data directory.

@@ -15,7 +15,7 @@ The default setup uses mock Riot data and the installed offline Qwen3-TTS model,
 | `/why user match` | Everyone, public reply | Explain a horse verdict with a radar image: the costliest dimensions for the position, the gap to the neighbouring tiers and what the 军师 said, with an 上诉 button only the member can press (default: your latest game) |
 | `/report day` and `/report week` | Everyone, public reply | Show the 马报 of the day or week in progress (or the previous one with `when`): who was 特等马 and 没有马, the leaderboard and the best and worst game |
 | `/report-settings` | Administrator, private reply | Choose the channel for the automatic daily and weekly 马报, switch each on or off and optionally manage the 本周特等马 and 本周没有马 roles |
-| `/announcer [style] [pregame_voice]` | Everyone | Choose Serena (`sweet`) or Uncle_Fu (`old`, the default), and turn the pre-game voice line on or off (text is always posted); at least one option is required |
+| `/announcer [style] [pregame_voice]` | `style`: everyone; `pregame_voice`: Administrator | Choose Serena (`sweet`) or Uncle_Fu (`old`, the default); `pregame_voice` turns the voice line of the upcoming pre-game 锦囊 on or off (takes effect when the pre-game 锦囊 ships); at least one option is required |
 | `/testvoice` | Administrator, configured test server | Play a short announcement in the caller's voice channel |
 | `/simulate outcome` | Administrator, configured test server, mock mode | Run a simulated win or loss for the earliest-bound tracked member in the test channel through the match announcement pipeline |
 

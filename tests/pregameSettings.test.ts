@@ -207,10 +207,12 @@ test("a failed version 5 step rolls back and leaves the version 4 database intac
 });
 
 test("a database from a newer bot is still rejected", () => {
+  const CURRENT = (getDatabase().pragma("user_version", { simple: true }) as number);
+  closeDatabase();
   const filePath = join(directory, "future.sqlite3");
   process.env.DATABASE_PATH = filePath;
   const future = new Database(filePath);
-  future.exec("CREATE TABLE future_marker (value TEXT); PRAGMA user_version = 6;");
+  future.exec(`CREATE TABLE future_marker (value TEXT); PRAGMA user_version = ${CURRENT + 1};`);
   future.close();
-  assert.throws(() => getDatabase(), /schema 6 is newer/);
+  assert.throws(() => getDatabase(), new RegExp(`schema ${CURRENT + 1} is newer`));
 });
