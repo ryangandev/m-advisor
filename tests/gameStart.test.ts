@@ -3,7 +3,9 @@ import { afterEach, beforeEach, mock, test } from "node:test";
 import type { Client, MessageCreateOptions, VoiceChannel } from "discord.js";
 import type { ActiveGame, ActiveGameParticipant, MatchDetail, TrackedMember } from "../src/types";
 import { GameMonitor, logGameStartFailure, type MonitorDependencies } from "../src/services/gameMonitor";
-import { GAME_START_INTERVAL_MS, GAME_START_WINDOW_MS } from "../src/services/gameStartWatcher";
+import { GAME_START_INTERVAL_MS, GAME_START_WINDOW_MS, PICK_MEMORY_MS } from "../src/services/gameStartWatcher";
+import { buildPregameRecap, RECAP_FIELD_NAME, RECAP_PHRASES } from "../src/services/pregameRecap";
+import { rankTeam } from "../src/services/horseRanking";
 import { VoiceAnnouncementService, type VoiceAnnouncementDependencies } from "../src/services/voiceAnnouncements";
 import { MOCK_PREGAME_PREFIX, OTHER_SIDE_NOTE } from "../src/services/pregameBrief";
 import { resetMockData, RiotApiError, simulateMockGameStart } from "../src/services/riotData";
@@ -854,4 +856,273 @@ test("a member flapping in and out of voice never pushes an account past six req
   }
   assert.ok(solo.requests.length <= 6, `acct-c asked ${solo.requests.length} times`);
   assert.ok(solo.requests.length >= 5, "but it is still checked about every 20 seconds");
+});
+
+// 锦囊回顾: the pick of a posted 锦囊 decorates the finished report's horse embed, text only.
+
+type RecapField = { name: string; value: string };
+const isReport = (message: MessageCreateOptions) => embedOf(message).includes("本局马匹鉴定");
+const reportMessages = (bot: Harness) => bot.sent.filter((entry) => isReport(entry.message)).map((entry) => entry.message);
+const recapFieldOf = (message: MessageCreateOptions): string | undefined =>
+  ((message.embeds![0] as { toJSON(): { fields?: RecapField[] } }).toJSON().fields ?? []).find((field) => field.name === RECAP_FIELD_NAME)?.value;
+/** The 锦囊回顾 field of the match's one finished report: undefined when the report has none. */
+function recapOf(bot: Harness): string | undefined {
+  const reports = reportMessages(bot);
+  assert.equal(reports.length, 1, "exactly one finished report was posted");
+  return recapFieldOf(reports[0]);
+}
+const reportSpeech = (bot: Harness) => bot.generated.filter((text) => text.includes("本局马匹鉴定"));
+
+/** The game loads and its 锦囊 goes out; the first poll is behind it, so a finished match is announced afterwards. */
+async function loadGame(bot: Harness, gameId: number, seats: Seat[]): Promise<ActiveGame> {
+  const game = spectatorGame(gameId, seats);
+  bot.enter(game);
+  bot.sync();
+  await bot.monitor.poll(bot.client, GUILD);
+  await bot.tick();
+  return game;
+}
+
+/** The game ends and the match poll announces it; `shape` may rearrange the match before it is found. */
+async function finishGame(bot: Harness, matchId: string, puuids: string[], shape: (detail: MatchDetail) => void = () => undefined) {
+  const detail = testMatch(matchId, puuids);
+  detail.info.gameEndTimestamp = Date.now();
+  shape(detail);
+  bot.matches.set(matchId, detail);
+  for (const puuid of puuids) bot.latest.set(puuid, matchId);
+  return bot.monitor.poll(bot.client, GUILD);
+}
+
+const SOLO_HISTORY: readonly HorseTier[] = ["上等马", "特等马", "特等马"];
+const ALL_TIERS: readonly HorseTier[] = ["特等马", "上等马", "中等马", "下等马", "没有马"];
+
+test("the finished report of a game whose 锦囊 had a pick shows the 锦囊回顾, worded by the pick's tier in the match", async () => {
+  const seen = new Set<HorseTier>();
+  for (let slot = 0; slot < 5; slot++) {
+    const members = Array.from({ length: 5 }, (_, index) => ({ id: id(30 + index), puuids: [`acct-${index}`], channel: "voice-1", names: [`队友${index}`] }));
+    const bot = harness(members);
+    // Only this member has a history, so the 军师 can only pick them.
+    bot.records.set(id(30 + slot), history(id(30 + slot), SOLO_HISTORY));
+    const puuids = members.map((member) => member.puuids[0]);
+    const matchId = `NA1_${9000 + slot}`;
+    await loadGame(bot, 9000 + slot, puuids.map((puuid) => ({ puuid, teamId: 100, championId: AHRI })));
+    assert.ok(embedOf(bot.sent[0].message).includes("军师之选"), "the card made a pick");
+    await finishGame(bot, matchId, puuids);
+    const tier = rankTeam(bot.matches.get(matchId)!, puuids[0]).horses.find((horse) => horse.participant.puuid === puuids[slot])!.tier;
+    seen.add(tier);
+    const recap = recapOf(bot);
+    assert.ok(recap, `slot ${slot} has a recap`);
+    assert.equal(recap, buildPregameRecap({ matchId, name: `队友${slot}`, tier }));
+    assert.ok(recap.includes(tier) && recap.startsWith("军师点名的 "), recap);
+    for (let other = 0; other < 5; other++) assert.equal(recap.includes(`队友${other}`), other === slot, "only the pick is named");
+    assert.ok(!recap.includes("Stored-") && !recap.includes("#NA1"), "never a Riot ID");
+  }
+  assert.deepEqual([...seen].sort(), [...ALL_TIERS].sort(), "every tier was exercised");
+});
+
+test("the recap wording by tier: the 军师 owns a bad call, no em dash, sanitized names", () => {
+  for (const tier of ALL_TIERS) {
+    assert.ok(RECAP_PHRASES[tier].length >= 2, `${tier} has a small pool`);
+    for (const phrase of RECAP_PHRASES[tier]) {
+      const line = phrase("小明");
+      assert.ok(line.startsWith("军师点名的 小明 ") && line.includes(tier) &&line.endsWith("。"), line);
+      assert.ok(!line.includes("—"), line);
+    }
+  }
+  // A bad call is the 军师's to own after the name: it says so and never blames the player.
+  for (const tier of ["下等马", "没有马"] as const) {
+    for (const phrase of RECAP_PHRASES[tier]) {
+      const verdict = phrase("小明").replace(/^军师点名的 小明 本局[^，]*，/u, "");
+      assert.match(verdict, /军师/u, verdict);
+      assert.ok(!/(菜|废|垃圾|太差|不行|拖累|坑)/u.test(verdict), verdict);
+    }
+  }
+  assert.match(buildPregameRecap({ matchId: "NA1_1", name: "<@123>`*bad*`", tier: "特等马" }), /^军师点名的 [^<>`*]+ 本局特等马/u);
+});
+
+test("the recap is deterministic per match and varies between matches", () => {
+  const line = (matchId: string) => buildPregameRecap({ matchId, name: "小明", tier: "特等马" });
+  assert.equal(line("NA1_42"), line("NA1_42"));
+  const lines = new Set(Array.from({ length: 30 }, (_, index) => line(`NA1_${index}`)));
+  assert.ok(lines.size > 1, "different matches do not all get the same wording");
+});
+
+test("the recap changes nothing in the spoken report", async () => {
+  const run = async (withPick: boolean) => {
+    const bot = harness([{ id: A, puuids: ["acct-a"], channel: "voice-1", names: ["小明"] }]);
+    if (withPick) bot.records.set(A, history(A, SOLO_HISTORY));
+    await loadGame(bot, 9100, [{ puuid: "acct-a", teamId: 100, championId: AHRI }]);
+    await finishGame(bot, "NA1_9100", ["acct-a"]);
+    return bot;
+  };
+  const decorated = await run(true);
+  const plain = await run(false);
+  assert.ok(recapOf(decorated), "the text has the recap");
+  assert.equal(recapOf(plain), undefined);
+  assert.equal(reportSpeech(decorated).length, 1);
+  assert.deepEqual(reportSpeech(decorated), reportSpeech(plain), "byte-identical speech");
+  assert.ok(!reportSpeech(decorated)[0].includes("军师点名") && !reportSpeech(decorated)[0].includes(RECAP_FIELD_NAME));
+});
+
+test("no 锦囊回顾 without a 锦囊, without a pick, or when the pick was for another game", async () => {
+  // A finished match with no game start at all (the bot was off, or not watching).
+  const none = harness([{ id: A, puuids: ["acct-a"], channel: "voice-1" }]);
+  none.records.set(A, history(A, SOLO_HISTORY));
+  none.sync();
+  await none.monitor.poll(none.client, GUILD);
+  await finishGame(none, "NA1_9200", ["acct-a"]);
+  assert.equal(recapOf(none), undefined);
+
+  // Cold start: fewer than three records, so the card made no pick.
+  const cold = harness([{ id: A, puuids: ["acct-a"], channel: "voice-1" }]);
+  cold.records.set(A, history(A, ["特等马", "特等马"]));
+  await loadGame(cold, 9201, [{ puuid: "acct-a", teamId: 100, championId: AHRI }]);
+  assert.equal(cold.sent.length, 1, "the card was posted");
+  await finishGame(cold, "NA1_9201", ["acct-a"]);
+  assert.equal(recapOf(cold), undefined);
+
+  // A pick for another game is not this game's.
+  const other = harness([{ id: A, puuids: ["acct-a"], channel: "voice-1" }]);
+  other.records.set(A, history(A, SOLO_HISTORY));
+  await loadGame(other, 9202, [{ puuid: "acct-a", teamId: 100, championId: AHRI }]);
+  await finishGame(other, "NA1_9203", ["acct-a"]);
+  assert.equal(recapOf(other), undefined);
+});
+
+test("no 锦囊回顾 once the pick is no longer bound to that member", async () => {
+  const setup = async () => {
+    const bot = harness([
+      { id: A, puuids: ["acct-a"], channel: "voice-1", names: ["小明"] },
+      { id: B, puuids: ["acct-b"], channel: "voice-1", names: ["小红"] },
+    ]);
+    bot.records.set(A, history(A, SOLO_HISTORY));
+    await loadGame(bot, 9300, [{ puuid: "acct-a", teamId: 100, championId: AHRI }, { puuid: "acct-b", teamId: 100, championId: LUX }]);
+    assert.ok(embedOf(bot.sent[0].message).includes("军师之选"));
+    return bot;
+  };
+  // Unbound: the member keeps another account.
+  const unbound = await setup();
+  unbound.members = [{ discordUserId: A, accounts: [{ puuid: "acct-a2", gameName: "小明", tagLine: "NA1" }] }, unbound.members[1]];
+  await finishGame(unbound, "NA1_9300", ["acct-a", "acct-b"]);
+  assert.equal(recapOf(unbound), undefined);
+
+  // Rebound to somebody else: the account now belongs to B.
+  const moved = await setup();
+  moved.members = [{ discordUserId: A, accounts: [] }, { discordUserId: B, accounts: [moved.members[1].accounts[0], moved.members[0].accounts[0]] }];
+  await finishGame(moved, "NA1_9300", ["acct-a", "acct-b"]);
+  assert.equal(recapOf(moved), undefined);
+
+  // Control: untouched bindings show it.
+  const bound = await setup();
+  await finishGame(bound, "NA1_9300", ["acct-a", "acct-b"]);
+  assert.match(recapOf(bound)!, /小明/);
+});
+
+test("no 锦囊回顾 when the pick is on the other team from the report's perspective", async () => {
+  const bot = harness([
+    { id: A, puuids: ["acct-a"], channel: "voice-1", names: ["小明"] },
+    { id: F, puuids: ["acct-friend"], channel: "voice-1", names: ["路过"] },
+  ]);
+  bot.records.set(A, history(A, SOLO_HISTORY));
+  bot.records.set(F, history(F, ["中等马", "中等马", "中等马"]));
+  await loadGame(bot, 9400, [{ puuid: "acct-a", teamId: 100, championId: AHRI }, { puuid: "acct-friend", teamId: 200, championId: LUX }]);
+  assert.ok(embedOf(bot.sent[0].message).includes("军师之选"), "the card, from A's side, picked a teammate");
+  // Only the friend on the other side is left to hear the report, so it takes their team's view.
+  bot.move(A, null);
+  bot.sync();
+  await finishGame(bot, "NA1_9400", ["acct-a", "acct-friend"], (detail) => {
+    // The fixture puts every extra tracked account on the first team; move the friend to the enemy team.
+    const [friend, spare] = [detail.info.participants.find((player) => player.puuid === "acct-friend")!, detail.info.participants.find((player) => player.teamId === 200)!];
+    friend.puuid = `moved-${friend.puuid}`;
+    spare.puuid = "acct-friend";
+  });
+  assert.equal(reportMessages(bot).length, 1, "the report was posted");
+  assert.ok(embedOf(reportMessages(bot)[0]).includes("本局马匹鉴定"));
+  assert.equal(recapOf(bot), undefined);
+});
+
+test("a mock pick never decorates a real report, nor a real pick a mock one", async () => {
+  for (const cardInMock of [true, false]) {
+    const options = { mock: cardInMock };
+    const bot = harness([{ id: A, puuids: ["acct-a"], channel: "voice-1" }], options);
+    // The brief reads the records of the current data mode only; both modes have a history here.
+    bot.records.set(A, [...history(A, SOLO_HISTORY, true), ...history(A, SOLO_HISTORY, false)]);
+    await loadGame(bot, 9500, [{ puuid: "acct-a", teamId: 100, championId: AHRI }]);
+    assert.ok(embedOf(bot.sent[0].message).includes("军师之选"));
+    options.mock = !cardInMock;
+    await finishGame(bot, "NA1_9500", ["acct-a"]);
+    assert.equal(recapOf(bot), undefined, cardInMock ? "mock pick, real report" : "real pick, mock report");
+  }
+  // Same mode on both sides: a mock game's recap shows, inside an embed that keeps its mock label.
+  const options = { mock: true };
+  const bot = harness([{ id: A, puuids: ["acct-a"], channel: "voice-1" }], options);
+  bot.records.set(A, history(A, SOLO_HISTORY, true));
+  await loadGame(bot, 9501, [{ puuid: "acct-a", teamId: 100, championId: AHRI }]);
+  await finishGame(bot, "NA1_9501", ["acct-a"]);
+  assert.ok(recapOf(bot));
+  assert.match(embedOf(reportMessages(bot)[0]), /模拟数据 \/ Mock data/);
+});
+
+test("the pick survives a session stop and restart during the game, and outlives the 15 minute 锦囊 memory", async () => {
+  const bot = harness([{ id: A, puuids: ["acct-a"], channel: "voice-1", names: ["小明"] }]);
+  bot.records.set(A, history(A, SOLO_HISTORY));
+  const game = await loadGame(bot, 9600, [{ puuid: "acct-a", teamId: 100, championId: AHRI }]);
+  // The only member leaves voice, so the session stops; two hours of a long game later they are back.
+  bot.move(A, null);
+  bot.sync();
+  assert.equal(bot.monitor.status(GUILD).active, false);
+  bot.advance(2 * 60 * 60_000);
+  bot.leaveGame(game);
+  bot.move(A, "voice-1");
+  bot.sync();
+  await bot.monitor.poll(bot.client, GUILD);
+  await finishGame(bot, "NA1_9600", ["acct-a"]);
+  assert.match(recapOf(bot)!, /小明/);
+});
+
+test("the pick expires after its lifetime", async () => {
+  const outcome = async (elapsed: number) => {
+    const bot = harness([{ id: A, puuids: ["acct-a"], channel: "voice-1" }]);
+    bot.records.set(A, history(A, SOLO_HISTORY));
+    await loadGame(bot, 9700, [{ puuid: "acct-a", teamId: 100, championId: AHRI }]);
+    bot.advance(elapsed);
+    await finishGame(bot, "NA1_9700", ["acct-a"]);
+    return recapOf(bot);
+  };
+  assert.equal(PICK_MEMORY_MS, 3 * 60 * 60_000);
+  // The card goes out at the start of the session, at most one check (20 s) before the clock moves on.
+  assert.ok(await outcome(PICK_MEMORY_MS - 60_000), "just inside the lifetime");
+  assert.equal(await outcome(PICK_MEMORY_MS + 60_000), undefined, "just past the lifetime");
+  assert.equal(await outcome(PICK_MEMORY_MS * 2), undefined, "long past the lifetime");
+});
+
+test("a guild remembers at most 50 picks, the oldest dropped first", async () => {
+  // Fifty-one members, each alone in their own loading game with a history; the last one joins voice a moment later.
+  const specs = Array.from({ length: 51 }, (_, index) => ({
+    id: `3100000000000000${String(index).padStart(2, "0")}`, puuids: [`acct-${index}`], channel: index < 50 ? "voice-1" : null,
+  }));
+  const bot = harness(specs);
+  bot.settings.voice = false;
+  for (const [index, spec] of specs.entries()) {
+    bot.records.set(spec.id, history(spec.id, SOLO_HISTORY));
+    bot.enter(spectatorGame(9800 + index, [{ puuid: spec.puuids[0], teamId: 100, championId: AHRI }]));
+  }
+  bot.sync();
+  await bot.monitor.poll(bot.client, GUILD);
+  await bot.monitor.pollGameStart(GUILD);
+  assert.equal(bot.sent.length, 50);
+  bot.move(specs[50].id, "voice-1");
+  bot.sync();
+  await until(() => bot.sent.length === 51, "the fifty-first 锦囊");
+  await bot.monitor.poll(bot.client, GUILD);
+  const decorated = async (index: number): Promise<boolean> => {
+    const before = reportMessages(bot).length;
+    await finishGame(bot, `NA1_${9800 + index}`, [specs[index].puuids[0]]);
+    const posted = reportMessages(bot);
+    assert.equal(posted.length, before + 1, `the report of game ${index} was posted`);
+    return recapFieldOf(posted.at(-1)!) !== undefined;
+  };
+  assert.equal(await decorated(0), false, "the oldest pick was dropped");
+  assert.equal(await decorated(1), true, "the second oldest is kept");
+  assert.equal(await decorated(50), true, "the newest is kept");
 });
