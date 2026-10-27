@@ -74,30 +74,46 @@ Cancellation due to leaving, stopping, or rebinding is an expected result and ad
 ## Shared voice queue
 
 `src/services/voiceAnnouncements.ts` owns a bounded queue for each guild, shared by automatic reports and `/testvoice`.
-Generation and playback within a guild execute sequentially.
+Announcements within a guild execute sequentially, from the first generated sentence to the end of playback.
 A failed job does not poison subsequent jobs, and different guilds have independent queues.
 The local TTS worker still serializes model generation across guilds to bound model memory use.
 
+Each announcement is split into sentence chunks, described in [Local voice](local-voice.md#sentence-chunks).
+The chunks are generated in order, one request at a time, and generation continues during playback without waiting for it.
+The bot joins the channel as soon as the first chunk is ready, and later chunks join the same stream as they finish.
+A warm worker has generated speech between 1.35 and 3 times faster than it plays, so later chunks are normally ready before they are needed.
+
 `announceTextInVoiceChannel(channel, text, style, canPlay?)` is the manual test entry point.
 The caller supplies an eligibility check that confirms the requesting member still belongs to the chosen channel and the command is still permitted.
-Eligibility is checked before generation and again before connecting to Discord.
+Eligibility is checked before each chunk is generated and again before connecting to Discord.
 
 Automatic reports use `announceTextToCurrentChannel(guildId, text, style, resolveChannel, canPlay?, signal?)`.
-Its resolver reads the tracked member's current channel after TTS generation, allowing a channel move while the model is speaking to file.
-A session abort, departure, or rebind cancels the handoff before joining.
+Its resolver reads the tracked member's current channel after the first chunk is generated, allowing a channel move while the model is speaking the first sentence to file.
+A session abort, departure, or rebind cancels the handoff before joining and stops any further chunk from starting.
 During playback, channel eligibility is checked every 100 milliseconds and a change aborts the transport.
-The TTS request itself may finish before cancellation cleanup; a cancelled request never joins a channel afterward.
+A cancelled announcement waits for the chunk request already in progress, never joins a channel afterward and reports `AnnouncementCancelledError`.
 
-Generated WAV files and optional JSON sidecars are removed on success, playback failure, or cancellation after generation.
-Cleanup errors are logged without turning completed playback into a retry and duplicate speech.
+A generation failure in any chunk stops playback immediately and fails the announcement, so the match stays eligible for retry.
+The retry speaks the whole report again from its first sentence, because only a completed playback advances the match baseline.
+A failure of the first chunk never joins a channel.
+
+Every generated chunk file and optional JSON sidecar is removed when the announcement settles, after success, playback failure, generation failure or cancellation.
+Cleanup errors are logged for each file without turning completed playback into a retry and duplicate speech.
 
 ## Discord transport
 
-`src/utils/voicePlayback.ts` decodes the local WAV files through FFmpeg.
-It attaches connection, player, source-stream, and decoder error handlers before starting playback.
+`src/utils/voicePlayback.ts` plays the chunks as one continuous stream through one audio player and one audio resource.
+FFmpeg decodes each chunk file to 48 kHz stereo PCM as soon as it is available.
+The transport fades the first and last 2.5 milliseconds of each chunk, inserts 350 milliseconds of silence before every chunk after the first, and pads each chunk to a whole 20 millisecond frame.
+Those pauses match the model's own pauses at full stops, the fades prevent clicks at chunk edges, and the padding keeps a partial frame from waiting in the Opus encoder for the next chunk.
+The PCM goes straight into the voice library's Opus encoder, so no decoder buffer can hold the end of a sentence back.
+If generation falls behind, the player sends Opus silence until the next chunk arrives instead of stopping, so a slow chunk only lengthens the pause between sentences.
+
+The transport attaches connection, player, source-stream, and encoder error handlers before starting playback.
 It waits for the connection to become Ready, observes the player become Playing, then waits for Idle.
-The player's initial Idle state cannot count as successful playback.
-Timeouts, aborts, stream errors, and connection disconnects reject the operation.
+The player's initial Idle state cannot count as successful playback, and neither can an Idle state before the last chunk was written.
+Timeouts, aborts, stream errors, chunk failures, and connection disconnects reject the operation.
+The 240 second playback timeout covers the whole stream, including any wait for later chunks.
 Every exit stops the player, destroys the streams, and destroys the voice connection.
 The bot self-deafens because listening to Discord speech is outside this feature's scope.
 
@@ -106,7 +122,9 @@ The bot self-deafens because listening to Discord speech is outside this feature
 Before fixing the old monitor, a public `startPolling` reproduction with fake Riot, TTS, and channel boundaries confirmed historical replay, an enemy-derived false victory, consumed matches after failed TTS, and overlapping lookups.
 
 `tests/monitor.test.ts` exercises complete sessions using the real state store and shared queue with fake external I/O.
-`tests/voiceAnnouncements.test.ts` verifies queue serialization, channel changes, cancellation, limits, and cleanup behavior.
-`tests/voicePlayback.test.ts` uses the installed voice library's `entersState` with fake transports to verify playback lifecycle and failure cleanup.
+`tests/voiceAnnouncements.test.ts` verifies queue serialization, chunk ordering, playback before later chunks exist, mid-stream generation failure, cancellation between chunks and during playback, channel changes, limits, and cleanup of every chunk file.
+`tests/speechChunks.test.ts` verifies sentence boundaries, decimal scores, short and long sentences and the length limits.
+`tests/voicePlayback.test.ts` uses the installed voice library's `entersState` with fake transports to verify playback lifecycle, chunk stitching, gaps while a chunk generates, and failure cleanup.
+It also decodes a real WAV through the installed FFmpeg.
 These tests never connect to or mutate a real Discord server.
 Real Discord playback and human listening remain separate acceptance steps.

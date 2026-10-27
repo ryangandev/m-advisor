@@ -15,6 +15,7 @@
 | `src/utils/matchTimeline.ts` | match-v5 timeline parsing, isolated so an upstream shape change stays in one file |
 | `src/store/` | Guild bindings, preferences and monitor state |
 | `src/utils/tts.ts` | Speech generation provider boundary |
+| `src/utils/speechChunks.ts` | Splitting speech into sentence chunks |
 | `src/utils/voicePlayback.ts` | Discord connection and audio playback |
 | `tests/` | Reproducible behavioral and integration checks |
 | `src/cli/` | Explicit guild command registration and local runtime diagnosis |
@@ -48,7 +49,7 @@ See [Local voice](local-voice.md) for configuration, protocol, provider choice a
 ## Announcements
 
 Each monitoring session establishes a baseline and prevents concurrent polls.
-The shared voice queue generates audio before joining a channel and records success only after playback.
+The shared voice queue generates the first sentence before joining a channel, keeps generating the rest during playback and records success only after the last sentence plays.
 See [Announcements](announcements.md) for retry, cancellation, channel authorization and safe mention behavior.
 
 ## Lifecycle and test commands
