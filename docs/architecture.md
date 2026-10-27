@@ -9,8 +9,10 @@
 | `src/services/gameMonitor.ts` | Match monitoring and announcement orchestration |
 | `src/services/horseRanking.ts` | Position-aware teammate scoring from 特等马 to 没有马 |
 | `src/services/announcementText.ts` | Chinese speech and channel report for a ranked match |
+| `src/services/matchEvents.ts` | Timeline moments, such as a won baron fight, cited by the praise and roast |
 | `src/data/` | Generated reference quantiles and Chinese champion names |
 | `src/utils/riotApi.ts`, `riotMatchApi.ts` | Public Riot account and match operations |
+| `src/utils/matchTimeline.ts` | match-v5 timeline parsing, isolated so an upstream shape change stays in one file |
 | `src/store/` | Guild bindings, preferences and monitor state |
 | `src/utils/tts.ts` | Speech generation provider boundary |
 | `src/utils/voicePlayback.ts` | Discord connection and audio playback |
