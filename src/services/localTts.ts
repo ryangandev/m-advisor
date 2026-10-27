@@ -30,6 +30,8 @@ interface Request {
   speaker: "Serena" | "Uncle_Fu";
   output: string;
   timer: NodeJS.Timeout;
+  /** The caller cancelled while the worker was generating; its audio is deleted when it arrives. */
+  abandoned: boolean;
   resolve: (output: string) => void;
   reject: (error: Error) => void;
 }
@@ -108,7 +110,12 @@ export class LocalTtsService {
     }
   }
 
-  async generate(text: string, style = "old"): Promise<string> {
+  /**
+   * Generates one request. Aborting the signal rejects at once: a queued request is removed, and a request
+   * the worker is already generating finishes in the background and its audio is deleted.
+   */
+  async generate(text: string, style = "old", signal?: AbortSignal): Promise<string> {
+    signal?.throwIfAborted();
     const normalized = text.trim();
     if (!normalized) throw new Error("TTS text cannot be empty.");
     if (normalized.length > 1_000) throw new Error("TTS text must be at most 1000 characters.");
@@ -120,16 +127,24 @@ export class LocalTtsService {
     const id = randomUUID();
     // Queue before awaiting startup or directory creation to enforce the limit.
     const result = new Promise<string>((resolve, reject) => {
+      let settled = false;
+      const onAbort = () => this.abandon(id, signal?.reason);
+      const settle = () => {
+        settled = true;
+        signal?.removeEventListener("abort", onAbort);
+      };
       const request: Request = {
         id,
         text: normalized,
         speaker: style === "sweet" ? "Serena" : "Uncle_Fu",
         output: "",
         timer: setTimeout(() => this.expire(id), this.options.timeoutMs),
-        resolve,
-        reject,
+        abandoned: false,
+        resolve: (output) => { if (!settled) { settle(); resolve(output); } },
+        reject: (error) => { if (!settled) { settle(); reject(error); } },
       };
       this.queue.push(request);
+      signal?.addEventListener("abort", onAbort, { once: true });
     });
     // Startup owns its failures. A stale subscriber must never stop a newer
     // worker started by an immediate retry from another request's catch.
@@ -142,6 +157,23 @@ export class LocalTtsService {
     this.closed = true;
     this.stopping = this.stop();
     return this.stopping;
+  }
+
+  private abandon(id: string, reason: unknown): void {
+    const error = reason instanceof Error ? reason : new Error("Local TTS request was cancelled.");
+    const index = this.queue.findIndex((request) => request.id === id);
+    if (index >= 0) {
+      const [request] = this.queue.splice(index, 1);
+      clearTimeout(request.timer);
+      request.reject(error);
+      return;
+    }
+    // The worker cannot stop mid-generation without losing the loaded model, so the request keeps its
+    // place and deadline, while the caller is released now.
+    if (this.active?.id === id) {
+      this.active.abandoned = true;
+      this.active.reject(error);
+    }
   }
 
   private async directory(): Promise<string> {
@@ -257,7 +289,8 @@ export class LocalTtsService {
       if (this.active !== request || this.worker !== worker) return;
       clearTimeout(request.timer);
       this.active = undefined;
-      request.resolve(request.output);
+      if (request.abandoned) await this.removeOutput(request.output);
+      else request.resolve(request.output);
     } catch {
       if (this.active !== request || this.worker !== worker) return;
       clearTimeout(request.timer);

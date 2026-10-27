@@ -15,7 +15,7 @@ function localService(): LocalTtsService {
   return localTts;
 }
 
-export async function generateTTS(text: string, style = "old"): Promise<string> {
+export async function generateTTS(text: string, style = "old", signal?: AbortSignal): Promise<string> {
   assertRunning();
   const normalizedText = text.trim();
   if (!normalizedText) {
@@ -24,7 +24,7 @@ export async function generateTTS(text: string, style = "old"): Promise<string> 
   if (normalizedText.length > 1_000) {
     throw new Error("TTS text must be at most 1000 characters.");
   }
-  const output = await localService().generate(normalizedText, style);
+  const output = await localService().generate(normalizedText, style, signal);
   // Speech that finishes after shutdown began must never reach a voice channel.
   if (stopped || isStopping()) {
     await rm(output, { force: true }).catch(() => {});
