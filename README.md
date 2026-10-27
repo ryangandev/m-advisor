@@ -16,9 +16,9 @@ Player-facing documentation, in Chinese, is at https://madvisor.rystudio.app.
 | `/why user match` | Everyone, public reply | Explain a horse verdict with a radar image: the costliest dimensions for the position, the gap to the neighbouring tiers and what the 军师 said, with an 上诉 button only the member can press (default: your latest game) |
 | `/report day` and `/report week` | Everyone, public reply | Show the 马报 of the day or week in progress (or the previous one with `when`): who was 特等马 and 没有马, the leaderboard and the best and worst game |
 | `/report-settings` | Administrator, private reply | Choose the channel for the automatic daily and weekly 马报, switch each on or off and optionally manage the 本周特等马 and 本周没有马 roles |
-| `/announcer [style] [pregame_voice]` | `style`: everyone; `pregame_voice`: Administrator | Choose Serena (`sweet`) or Uncle_Fu (`old`, the default); `pregame_voice` turns the voice line of the upcoming pre-game 锦囊 on or off (takes effect when the pre-game 锦囊 ships); at least one option is required |
+| `/announcer [style] [pregame_voice]` | `style`: everyone; `pregame_voice`: Administrator | Choose Serena (`sweet`) or Uncle_Fu (`old`, the default); `pregame_voice` turns the voice line of the pre-game 锦囊 on or off (on by default, and the text card is posted either way); at least one option is required |
 | `/testvoice` | Administrator, configured test server | Play a short announcement in the caller's voice channel |
-| `/simulate outcome` | Administrator, configured test server, mock mode | Run a simulated win or loss for the earliest-bound tracked member in the test channel through the match announcement pipeline |
+| `/simulate outcome` | Administrator, configured test server, mock mode | Run a simulated win (`胜利`) or loss (`失败`) for the earliest-bound tracked member in the test channel through the match announcement pipeline, or start a simulated game (`开局（赛前锦囊）`) for the tracked members in that channel and post and speak the pre-game 锦囊; ending the game later with `胜利` or `失败` reuses the same match |
 
 Bindings, voice preferences, each tracked member's 马厩 history and the 马报 settings persist in SQLite, and `/unbind` keeps the history.
 Each server can track several Discord members, with at most 10 LoL accounts across them.
