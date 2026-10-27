@@ -35,7 +35,7 @@ export class FakeRoleGuild implements RoleGuild {
     return this.roles.get(roleId) ?? null;
   }
 
-  async createRole(name: string): Promise<RoleLike> {
+  async createRole(name: string, _reason?: string): Promise<RoleLike> {
     if (this.failures.create) throw this.failures.create;
     this.created += 1;
     const role = { id: `created-${this.created}`, name, position: 1, managed: false };
