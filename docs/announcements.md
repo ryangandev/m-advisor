@@ -342,25 +342,29 @@ Strangers, enemies and a friend on the other team are never listed.
 
 ### When it is sent
 
-It is sent after the report's text, once per match:
+It is sent after the report's text, once per member per match:
 
-- as soon as the first LP reads show a promotion or demotion, or
-- when the late update lands, if the first reads showed none.
+- as soon as the first LP reads show a promotion or demotion, and
+- again, as a follow-up message, for each member whose move only the late update shows.
 
-Whichever comes first decides the match: a member whose row only settles later is not announced, though the `段位变化` field still shows them.
+The monitor keeps the members it announced in each match, so nobody is announced twice, and a follow-up lists only the members not announced yet.
+The `段位变化` field still shows every member.
+The messages go to the channel where the report text was actually posted; if a retry posts the report in another channel, the 段位播报 follows it.
 A message that fails to send is logged and never retried, and it never affects the report.
+If the report's text never posts, the 段位播报 is dropped with one info line.
 
 ### Voice
 
-The voice line is one short plain job in the shared voice queue, with one attempt and no retry, like the 锦囊.
+Each message has one short plain voice job in the shared voice queue, with one attempt and no retry, like the 锦囊.
 
-- It is queued only after the report's own voice has finished, never before it and never ahead of it, or, when the late update lands after that, at once.
+- A line is queued only after the report's own voice has finished, never before it and never ahead of it. Lines that become ready earlier wait in a queue and are flushed in order when it finishes; lines that become ready later, from the late update, are queued at once.
 - It is queued only if a member of the reported team is still in a usable voice channel and still owns the account; an enemy or a stranger in voice does not count. Otherwise the announcement stays text only, with one info line.
+- If the report's voice hits its attempt cap, the waiting lines stay text only, with one info line.
 - It speaks tiers as `黄金二`, for example `军师贺喜！小明单双排升到铂金四了。` or `小明单双排掉回黄金一，别急，军师陪你重新上马。`
 - Each sentence is chosen from a small pool, seeded by `rank:<matchId>:<puuid>`, so the same match always says the same thing.
-- Several members go into one line of at most two sentences, about 15 seconds. Further members are in the text only.
+- A line has at most two sentences. Further members of the same message are in the text only. The names of one line share a budget of 12 characters, so a line stays at about 15 seconds or less.
 - Mock lines start with `模拟段位播报，`.
-- A voice failure is logged and never counts toward the report's voice attempts.
+- A voice failure, or any failure on this path, is logged and never counts toward the report's voice attempts or replays the report: the line is handled after the match was consumed.
 
 ### /simulate
 
@@ -468,7 +472,8 @@ Before fixing the old monitor, a reproduction through the then-public `startPoll
 `tests/monitor.test.ts` exercises complete sessions using the real state store and shared queue with fake external I/O, for one member and for several members across channels.
 It also pins the text-first order, the once-only text and 马厩 write across voice retries, the timeline fallback and its prompt end on a stop, the sticky speaker, records written after the voice when the text fails, the three-attempt cap for voice and report-building failures but not a full queue, and the silent mock baseline after a restart.
 It also pins the `段位变化` rows of the reported team only, a stuck LP read that still posts within the timeline wait, LP failures that never fail the report, an LP 403 that turns off only LP, and the single late edit with the same mentions.
-It also pins the `段位播报`: the separate mock-labeled message right after the report, the voice line queued only after the report's voice finished, no announcement for a move among the apex tiers, text only when nobody of the team is in voice, a single announcement per match, and a failed line that is neither retried nor counted against the report.
+It also pins the `段位播报`: the separate mock-labeled message right after the report, the voice line queued only after the report's voice finished, no announcement for a move among the apex tiers, text only when nobody of the team is in voice, a single announcement per member with a follow-up for a late move, lines queued behind the report's voice, a rank failure that never replays the report, and a failed line that is neither retried nor counted against the report.
+`tests/simulateRank.test.ts` runs `/simulate` 晋级 twice and 掉段 through the real command, monitor and tracker.
 `tests/rankText.test.ts` pins which rows are announced, the line wording, the seeded and capped voice wording and the mock prefix, and `tests/commands.test.ts` pins `/simulate` 晋级 and 掉段.
 `tests/rankTracker.test.ts` pins the row wording, the mode-keyed snapshots, the 60 second floor and the 4-read cap under fake timers, serialized reads and each failure kind.
 `tests/partyRanking.test.ts` pins the 车队内战 order, the 背锅 wording, the sentence length, the exclusion of other-team friends and the embed, and `tests/monitor.test.ts` pins the second embed and the unchanged ping set.
