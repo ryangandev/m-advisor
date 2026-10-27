@@ -115,24 +115,34 @@ export function createVoicePlayback(dependencies: VoicePlaybackDependencies) {
         : dependencies.enter(target as AudioPlayer, status as AudioPlayerStatus, timeoutSignal);
       await Promise.race([entered, failure]);
     };
-    const feed = async () => {
-      let chunks = 0;
-      for await (const path of audio) {
-        operationSignal.throwIfAborted();
-        const pcm = prepareSpeechPcm(await dependencies.decode(path, operationSignal), chunks === 0 ? 0 : SENTENCE_PAUSE_MS);
-        operationSignal.throwIfAborted();
-        chunks++;
-        if (!source.write(pcm)) await once(source, "drain", { signal: operationSignal });
+    const chunks = audio[Symbol.asyncIterator]();
+    // Waiting for a chunk that is still generating must not outlive an abort.
+    const next = () => new Promise<IteratorResult<string>>((resolve, reject) => {
+      const onAbort = () => reject(operationSignal.reason);
+      operationSignal.addEventListener("abort", onAbort, { once: true });
+      chunks.next().then(resolve, reject).finally(() => operationSignal.removeEventListener("abort", onAbort));
+    });
+    const decodeChunk = async (path: string, pauseMs: number) => {
+      const pcm = prepareSpeechPcm(await dependencies.decode(path, operationSignal), pauseMs);
+      operationSignal.throwIfAborted();
+      return pcm;
+    };
+    const feedRest = async () => {
+      for (let chunk = await next(); !chunk.done; chunk = await next()) {
+        if (!source.write(await decodeChunk(chunk.value, SENTENCE_PAUSE_MS))) await once(source, "drain", { signal: operationSignal });
       }
-      if (chunks === 0) throw new Error("No announcement audio was generated.");
       fed = true;
       source.end();
     };
 
     try {
       source.on("error", (error: Error) => fail("Could not stream the announcement audio.", error));
+      // The first chunk is decoded before joining, so unreadable audio never causes a brief join.
+      const first = await next();
+      if (first.done) throw new Error("No announcement audio was generated.");
+      source.write(await decodeChunk(first.value, 0));
       // Generation and speech failures keep their own error, such as a cancellation, for the caller.
-      void feed().catch((error: unknown) => failWith(error instanceof Error ? error : new Error("Could not read the announcement audio.")));
+      void feedRest().catch((error: unknown) => failWith(error instanceof Error ? error : new Error("Could not read the announcement audio.")));
       connection = dependencies.join({
         channelId: channel.id,
         guildId: channel.guild.id,
@@ -164,6 +174,7 @@ export function createVoicePlayback(dependencies: VoicePlaybackDependencies) {
       player?.stop(true);
       resource?.playStream.destroy();
       source.destroy();
+      void chunks.return?.()?.catch(() => undefined);
       if (connection && connection.state.status !== VoiceConnectionStatus.Destroyed) connection.destroy();
       connection?.off("stateChange", onConnectionState);
       // Error handlers remain on disposed streams to absorb late encoder shutdown events.

@@ -171,7 +171,7 @@ test("a generation failure between chunks rejects with that error and cleans the
 test("an announcement without audio fails instead of reporting success", async () => {
   const voice = transport();
   await assert.rejects(voice.play(chunks()), /No announcement audio/);
-  assert.equal(voice.connectionDestroyed, 1);
+  assert.equal(voice.joins, 0);
 });
 
 test("initial Idle never counts as successful playback before audio starts", async () => {
@@ -182,12 +182,27 @@ test("initial Idle never counts as successful playback before audio starts", asy
   assert.equal(voice.connectionDestroyed, 1);
 });
 
-test("decode errors before connection readiness are handled and cleaned", async () => {
+test("an unreadable first chunk fails before joining", async () => {
   const voice = transport();
   voice.decode = async () => { throw new Error("missing file"); };
   await assert.rejects(voice.play(), /missing file/);
-  assert.equal(voice.connectionDestroyed, 1);
+  assert.equal(voice.joins, 0, "a corrupt first chunk never causes a brief join");
   assert.equal(voice.plays, 0);
+});
+
+test("the first chunk is decoded before joining and a later decode error cleans the transport", async () => {
+  const voice = transport();
+  const order: string[] = [];
+  const join = voice.dependencies.join;
+  voice.dependencies.join = ((options: Parameters<typeof join>[0]) => { order.push("join"); return join(options); }) as typeof join;
+  voice.decode = async (file) => {
+    order.push(`decode:${file}`);
+    if (file === "second.wav") throw new Error("broken second chunk");
+    return pcm(960);
+  };
+  await assert.rejects(voice.play(chunks("first.wav", "second.wav")), /broken second chunk/);
+  assert.deepEqual(order.slice(0, 2), ["decode:first.wav", "join"]);
+  assert.equal(voice.connectionDestroyed, 1);
 });
 
 test("encoder errors after playback starts reject instead of reporting success", async () => {
