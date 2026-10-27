@@ -1,7 +1,10 @@
 import championNames from "../data/championNamesZh.json";
-import type { MatchDetail, MatchParticipant } from "../types";
+import type { MatchDetail, MatchParticipant, Position } from "../types";
+import type { EpicMonster } from "../utils/matchTimeline";
 import { rankTeam } from "./horseRanking";
 import type { Benchmarks, Dimension, HorseTier, RankedHorse } from "./horseRanking";
+import { strongestEvent } from "./matchEvents";
+import type { MatchEvent } from "./matchEvents";
 
 /** Games shorter than this are remakes or abandoned games whose statistics say nothing about play. */
 export const MIN_RANKED_MINUTES = 10;
@@ -16,6 +19,11 @@ export interface MatchReport {
   mock: boolean;
 }
 export interface MatchAnnouncement { speech: string; report: MatchReport }
+export interface AnnouncementOptions {
+  benchmarks?: Benchmarks;
+  /** Timeline moments from fetchMatchEvents; null or omitted keeps the statistics-only report. */
+  events?: readonly MatchEvent[] | null;
+}
 
 /** Keep names from turning into Discord mentions or spoken control-like text. */
 function readableName(name: string): string {
@@ -127,17 +135,57 @@ const ROAST_CLOSERS = [
 ] as const;
 const ROAST_GENERIC: Line = () => "五匹马里你跑在最后，马都嫌你慢。";
 
-function praise(horse: RankedHorse, minutes: number, won: boolean, choose: ReturnType<typeof chooser>): string {
+// Timeline moments name an enemy only by position, never by name or champion.
+const ENEMY_ROLE: Record<Position, string> = { TOP: "上单", JUNGLE: "打野", MIDDLE: "中单", BOTTOM: "下路", UTILITY: "辅助" };
+const MONSTER_NAME: Record<EpicMonster, string> = { BARON: "大龙", ELDER: "远古龙", DRAGON: "小龙", HERALD: "先锋" };
+const MULTI_KILL_NAME: Record<number, string> = { 3: "三杀", 4: "四杀", 5: "五杀" };
+const enemy = (position: Position | null) => `对面${position ? ENEMY_ROLE[position] : ""}`;
+/** The minute on the game clock, as players read it. */
+const minuteOf = (timestamp: number) => `第${Math.max(1, Math.floor(timestamp / 60_000))}分钟`;
+
+/** A timeline moment replaces the statistic line, so citing it never lengthens the report. */
+function praiseEventLine(event: MatchEvent): string | undefined {
+  const at = minuteOf(event.timestamp);
+  switch (event.kind) {
+    case "multiKill": return `${at}一波${MULTI_KILL_NAME[event.kills] ?? "多杀"}，对面排着队来给你送人头。`;
+    case "wonFight": return event.monster
+      ? `${at}${MONSTER_NAME[event.monster]}团你参与${event.takedowns}个击杀还全身而退，${MONSTER_NAME[event.monster]}顺手就收了。`
+      : `${at}那波团战你参与${event.takedowns}个击杀还全身而退，直接把对面打穿。`;
+    case "shutdown": return `${at}终结${enemy(event.enemy)}，一口吞下${event.bounty}赏金，这波饭真香。`;
+    case "firstBlood": return event.solo
+      ? `${at}单杀${enemy(event.enemy)}拿下一血，开局就把对面打懵了。`
+      : `${at}拿下${enemy(event.enemy)}的一血，开局就给全队定了调子。`;
+    default: return undefined;
+  }
+}
+
+function roastEventLine(event: MatchEvent): string | undefined {
+  const at = minuteOf(event.timestamp);
+  switch (event.kind) {
+    case "lostFightFirstDeath": return event.monster
+      ? `${at}${MONSTER_NAME[event.monster]}团你第一个倒下，对面转身就把${MONSTER_NAME[event.monster]}拿了。`
+      : `${at}那波团战你第一个倒下，队友只能四打五。`;
+    case "objectiveDeath": return `${at}${MONSTER_NAME[event.monster]}前你先倒下了，${MONSTER_NAME[event.monster]}就这么拱手送人。`;
+    case "shutdownGiven": return `${at}揣着${event.bounty}赏金被${enemy(event.enemy)}终结，这钱送得比外卖还准时。`;
+    case "firstBloodGiven": return `${at}就被${enemy(event.enemy)}拿走一血，开局先给对面发了个红包。`;
+    default: return undefined;
+  }
+}
+
+function praise(horse: RankedHorse, minutes: number, won: boolean, choose: ReturnType<typeof chooser>, events: AnnouncementOptions["events"]): string {
   const context = { name: displayName(horse), horse, minutes };
-  // Cite the strongest dimension that is genuinely good for this position and whose number sounds good out loud.
-  const detail = firstLine(horse.strengths.filter((dimension) => horse.dimensions[dimension]! >= 0.6), PRAISE_DETAILS, context);
+  const moment = strongestEvent(events, horse.participant.puuid, "praise");
+  // Otherwise cite the strongest dimension that is genuinely good for this position and whose number sounds good out loud.
+  const detail = (moment && praiseEventLine(moment))
+    ?? firstLine(horse.strengths.filter((dimension) => horse.dimensions[dimension]! >= 0.6), PRAISE_DETAILS, context);
   return [choose(PRAISE_OPENERS)(context), detail ?? PRAISE_GENERIC(context), won ? "" : "虽然输了，但这把锅跟你无关。", choose(PRAISE_CLOSERS)].join("");
 }
 
-function roast(horse: RankedHorse, minutes: number, won: boolean, choose: ReturnType<typeof chooser>): string {
+function roast(horse: RankedHorse, minutes: number, won: boolean, choose: ReturnType<typeof chooser>, events: AnnouncementOptions["events"]): string {
   const context = { name: displayName(horse), horse, minutes };
+  const moment = strongestEvent(events, horse.participant.puuid, "roast");
   const weakest = [...horse.strengths].reverse().filter((dimension) => horse.dimensions[dimension]! <= 0.4);
-  const detail = firstLine(weakest, ROAST_DETAILS, context);
+  const detail = (moment && roastEventLine(moment)) ?? firstLine(weakest, ROAST_DETAILS, context);
   return [choose(ROAST_OPENERS)(context), detail ?? ROAST_GENERIC(context), won ? "这把能赢，纯属被队友抬进了终点。" : "", choose(ROAST_CLOSERS)].join("");
 }
 
@@ -167,10 +215,12 @@ function validate(detail: MatchDetail): void {
 
 /**
  * Ranks the tracked player's five teammates from 特等马 to 没有马, praises the best and roasts the worst.
- * Speech and the channel report share the same ranking.
+ * Speech and the channel report share the same ranking. A timeline moment, when one qualifies, replaces the
+ * statistic in the praise or the roast.
  */
-export function buildMatchAnnouncement(detail: MatchDetail, trackedPuuid: string, mock: boolean, benchmarks?: Benchmarks): MatchAnnouncement {
+export function buildMatchAnnouncement(detail: MatchDetail, trackedPuuid: string, mock: boolean, options: AnnouncementOptions = {}): MatchAnnouncement {
   validate(detail);
+  const { benchmarks, events } = options;
   const ranking = rankTeam(detail, trackedPuuid, benchmarks);
   const tracked = ranking.horses.find((horse) => horse.participant.puuid === trackedPuuid)!;
   const minutes = Math.max(1, Math.round(ranking.durationMinutes));
@@ -200,8 +250,8 @@ export function buildMatchAnnouncement(detail: MatchDetail, trackedPuuid: string
   const worst = ranking.horses.at(-1)!;
   const summary = `${displayName(tracked)}这局${result}，打了${minutes}分钟。军师羽扇一挥，本局马匹鉴定如下。`;
   const roll = lines.map((line) => `${line.tier}，${line.champion}，${line.name}，${line.score.toFixed(1)}分。`).join("");
-  let praiseText = praise(best, ranking.durationMinutes, ranking.won, choose);
-  let roastText = worst === best ? "" : roast(worst, ranking.durationMinutes, ranking.won, choose);
+  let praiseText = praise(best, ranking.durationMinutes, ranking.won, choose, events);
+  let roastText = worst === best ? "" : roast(worst, ranking.durationMinutes, ranking.won, choose, events);
   if (best === tracked) praiseText += "召唤军师的人自己就是特等马，军师怀疑你在刷存在感。";
   if (worst === tracked && worst !== best) roastText += "最离谱的是，这匹没有马，正是召唤军师的本人。";
   const speech = [prefix, summary, roll, praiseText, roastText].join("");
