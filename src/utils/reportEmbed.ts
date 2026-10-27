@@ -1,11 +1,10 @@
 import { EmbedBuilder } from "discord.js";
-import championNames from "../data/championNamesZh.json";
 import { formatScore } from "../services/announcementText";
 import { HORSE_TIERS } from "../services/horseRanking";
 import type { MemberReport, ReportData } from "../services/reports";
 import type { HorseRecord } from "../store/horseRecordStore";
 import { PACIFIC_TIME_ZONE } from "./pacificTime";
-import { TIER_ICONS } from "./stableEmbed";
+import { TIER_ICONS, championLabel } from "./stableEmbed";
 
 /** The mentions of a report never ping anyone: members are shown as `<@id>` and nothing is allowed to notify. */
 export const REPORT_ALLOWED_MENTIONS = { parse: [], roles: [], users: [], repliedUser: false } as const;
@@ -25,11 +24,6 @@ export function pacificDateLabel(instant: number): string {
 export function periodLabel(data: Pick<ReportData, "kind" | "range">): string {
   if (data.kind === "day") return `${pacificDateLabel(data.range.start)} ${weekdayFormat.format(new Date(data.range.start))}`;
   return `${pacificDateLabel(data.range.start)} 至 ${pacificDateLabel(data.range.end - 1)}`;
-}
-
-function championLabel(record: HorseRecord): string {
-  const names = (championNames as { names: Record<string, string> }).names;
-  return names[String(record.championId)] ?? record.championName;
 }
 
 /** Deterministic, so the same period always reads the same. */
