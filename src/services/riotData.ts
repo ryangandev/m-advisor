@@ -1,5 +1,5 @@
 import { setTimeout as delay } from "node:timers/promises";
-import { buildMockMatch, buildMockProfile, buildMockTimeline } from "../fixtures/riotFixtures";
+import { buildMockActiveGame, buildMockMatch, buildMockProfile, buildMockTimeline } from "../fixtures/riotFixtures";
 import type { MockOutcome, MockProfile, RawMatch } from "../fixtures/riotFixtures";
 
 export type RiotMode = "mock" | "real";
@@ -68,6 +68,11 @@ const mockHistory = new Map<string, string[]>();
 const mockMatches = new Map<string, RawMatch>();
 /** Matches whose account simulates a missing timeline. */
 const mockTimelineMissing = new Set<string>();
+/** Mock games in progress (loading), each reserving the match ID that ending it with `simulateMockMatch` reuses. */
+interface MockGame { gameId: number; matchId: string; puuids: string[] }
+const mockGames = new Map<string, MockGame>();
+/** Mock game IDs are far above anything Riot issues, so a mock game can never be mistaken for a real one. */
+const MOCK_GAME_ID_BASE = 9_000_000_000;
 let mockSequence = 0;
 let mockEpoch = 0;
 /**
@@ -109,7 +114,10 @@ export function simulateMockMatch(puuid: string, outcome: MockOutcome): { matchI
   if (outcome !== "win" && outcome !== "loss") throw new RiotApiError("Mock outcome must be win or loss.", "bad_request");
   const profile = profileForPuuid(puuid);
   checkFixtureFailure(profile);
-  const matchId = `MOCK_${puuid}_${mockEpoch}_${++mockSequence}`;
+  // Ending a mock game that has this account keeps the ID reserved when it started, so the start and the end are one match.
+  const game = [...mockGames.values()].find((candidate) => candidate.puuids.includes(puuid));
+  if (game) mockGames.delete(game.matchId);
+  const matchId = game?.matchId ?? `MOCK_${puuid}_${mockEpoch}_${++mockSequence}`;
   mockMatches.set(matchId, buildMockMatch(profile, matchId, outcome));
   if (profile.timelineMissing) mockTimelineMissing.add(matchId);
   const history = [matchId, ...(mockHistory.get(puuid) ?? [])];
@@ -121,8 +129,31 @@ export function simulateMockMatch(puuid: string, outcome: MockOutcome): { matchI
   return { matchId, outcome };
 }
 
+/**
+ * Starts a labeled mock game that is still loading, with the given accounts (one to five) on team 100 and
+ * simulated allies and enemies around them. Spectator requests for those accounts answer with it until
+ * `simulateMockMatch` ends it for one of them, which reuses the returned `matchId`.
+ */
+export function simulateMockGameStart(puuids: string[]): { matchId: string; gameId: number } {
+  if (!isMockData()) throw new RiotApiError("Simulated games require RIOT_MODE=mock.", "mock_only");
+  if (puuids.length < 1 || puuids.length > 5 || new Set(puuids).size !== puuids.length || puuids.some((puuid) => !puuid.trim())) {
+    throw new RiotApiError("A mock game needs one to five distinct accounts.", "bad_request");
+  }
+  for (const puuid of puuids) {
+    checkFixtureFailure(profileForPuuid(puuid));
+    if ([...mockGames.values()].some((game) => game.puuids.includes(puuid))) {
+      throw new RiotApiError("An account is already in a mock game.", "bad_request");
+    }
+  }
+  const matchId = `MOCK_${puuids[0]}_${mockEpoch}_${++mockSequence}`;
+  const gameId = MOCK_GAME_ID_BASE + mockEpoch * 1_000_000 + mockSequence;
+  mockGames.set(matchId, { gameId, matchId, puuids: [...puuids] });
+  return { matchId, gameId };
+}
+
 export function resetMockData(): void {
   mockProfiles.clear();
+  mockGames.clear();
   mockHistory.clear();
   mockMatches.clear();
   mockTimelineMissing.clear();
@@ -151,6 +182,12 @@ function mockFetch<T>(url: string): T {
     const profile = profileForPuuid(path[5]);
     checkFixtureFailure(profile);
     return [...(mockHistory.get(profile.account.puuid) ?? [])] as T;
+  }
+  if (path.slice(0, 5).join("/") === "lol/spectator/v5/active-games/by-summoner" && path.length === 6) {
+    checkFixtureFailure(profileForPuuid(path[5]));
+    const game = [...mockGames.values()].find((candidate) => candidate.puuids.includes(path[5]));
+    if (!game) throw statusError(404, undefined, true);
+    return buildMockActiveGame(game.gameId, game.matchId, game.puuids) as T;
   }
   if (path.slice(0, 4).join("/") === "lol/match/v5/matches" && path.length === 5) {
     const match = mockMatches.get(path[4]);

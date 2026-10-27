@@ -82,3 +82,40 @@ Mock lookup failures and validation errors are also visibly labeled, and real-mo
 Profile icons use the official Data Dragon CDN with version `16.19.1`, verified against [the official versions endpoint](https://ddragon.leagueoflegends.com/api/versions.json) on 2026-10-02.
 Set `DDRAGON_VERSION` to a current published numeric version to update the CDN path without changing code.
 An invalid version or icon ID omits the thumbnail rather than breaking the reply.
+
+## Active games (spectator-v5)
+
+`getActiveGame(puuid)` in `src/utils/riotSpectatorApi.ts` asks `GET https://na1.api.riotgames.com/lol/spectator/v5/active-games/by-summoner/{puuid}` whether an account is in a game right now.
+Only the request layer exists so far; the watcher that polls it is a later change.
+
+Verified against Riot with the development key on 2026-10-27:
+
+- An account that is not in a game answers 404 with `{"httpStatus":404,"errorCode":"NOT_FOUND","message":"Not Found","implementationDetails":"filtered"}`, which `getActiveGame()` returns as `null`.
+- The app rate limit is `X-App-Rate-Limit: 100:120,20:1`, counted separately on na1 from americas.
+- The method limit is `3000:10,180000:600`.
+
+The 200 response shape is NOT yet verified: it follows Riot's documented `CurrentGameInfo` and is pending a capture of a real game.
+`tests/fixtures/spectator-active-game.documented.json` is built from that documentation and is not a capture; replace it with a capture when there is one.
+
+The parser requires `gameId` (a positive safe integer), `gameStartTime` (a non-negative integer, 0 while loading), `gameLength` (a finite number), `gameQueueConfigId`, `mapId`, `platformId`, and a non-empty `participants` array.
+Each participant needs `teamId` (100 or 200), `championId`, `spell1Id`, `spell2Id`, a boolean `bot`, and a non-empty string `puuid` unless it is a bot.
+A malformed body is an `invalid_response` error, never "not in a game".
+Everything else is ignored, and the participant `riotId` is never read: names come from stored bindings.
+
+`matchIdOf(game)` is `NA1_${gameId}`, the match-v5 ID the game will have once finished.
+`isLoading(game)` is true while `gameStartTime` is 0.
+Spectator has its own requester with one attempt, a 5 second timeout and no waiting, like the timeline requester.
+A spectator 429 therefore never sets the shared na1 cooldown that `/profile` and `/bind` honor, and its own cooldown fails fast.
+A 401 or 403 is thrown as a `RiotApiError`; `isSpectatorAuthError()` recognizes it so the watcher can disable itself without stopping match monitoring.
+
+### Mock active games
+
+`simulateMockGameStart(puuids)` starts a labeled mock game for one to five accounts and returns `{ matchId, gameId }`.
+The game is still loading (`gameStartTime` 0, `gameLength` 0) in queue 420 on Summoner's Rift.
+The given accounts take team 100 in order, `MOCK-ALLY-*` fill the rest of it, and team 200 is `MOCK-ENEMY-*`.
+Parsed mock games have `mock: true`, and their game ID is above 9 billion so it can never be a real one.
+Its match ID is reserved as `MOCK_<first puuid>_<epoch>_<sequence>`, and `matchIdOf()` returns it.
+`simulateMockMatch()` for an account in the game ends it for everyone in it and reuses that ID, so the start and the finished match are one match.
+`resetMockData()` clears mock games.
+With no mock game, the mock spectator endpoint answers a simulated 404.
+Mock accounts that simulate a failure fail the spectator request the same way, and starting a game for them is refused.

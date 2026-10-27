@@ -319,3 +319,32 @@ export function buildMockTimeline(match: RawMatch): RawTimeline {
     },
   };
 }
+
+/** A spectator-v5 CurrentGameInfo body, so mock games exercise the same parser as real ones. */
+export type RawActiveGame = Record<string, unknown>;
+
+// Champion, summoner spell 1 and spell 2 of the mock game: the same lineup as the mock match, with Smite (11) on the junior jungler.
+const MOCK_ALLY_LINEUP = [[103, 4, 14], [516, 4, 12], [64, 4, 11], [222, 4, 7], [412, 4, 3]] as const;
+const MOCK_ENEMY_LINEUP = [[238, 4, 14], [122, 4, 12], [121, 4, 11], [51, 4, 7], [89, 4, 3]] as const;
+
+/**
+ * A mock game that is still loading: start time 0, length 0, queue 420 on Summoner's Rift. The given PUUIDs take
+ * team 100 in order and `MOCK-ALLY-*` fill the rest; team 200 is all `MOCK-ENEMY-*`. `mockMatchId` is not a Riot
+ * field: it carries the match ID that the finished mock match reuses.
+ */
+export function buildMockActiveGame(gameId: number, mockMatchId: string, puuids: string[]): RawActiveGame {
+  const participant = (puuid: string, riotId: string, teamId: number, [championId, spell1Id, spell2Id]: readonly number[], index: number) => ({
+    puuid, riotId, teamId, championId, spell1Id, spell2Id, bot: false, profileIconId: 29 + index,
+    perks: { perkIds: [8005, 9111, 9104, 8014, 8139, 8135], perkStyle: 8000, perkSubStyle: 8100 },
+    gameCustomizationObjects: [],
+  });
+  const allies = MOCK_ALLY_LINEUP.map((lineup, index) =>
+    participant(puuids[index] ?? `MOCK-ALLY-${index + 1}`, `模拟队友${index + 1}#MOCK`, 100, lineup, index));
+  const enemies = MOCK_ENEMY_LINEUP.map((lineup, index) =>
+    participant(`MOCK-ENEMY-${index + 1}`, `模拟对手${index + 1}#MOCK`, 200, lineup, index));
+  return {
+    gameId, gameType: "MATCHED_GAME", gameStartTime: 0, mapId: 11, gameLength: 0, platformId: "NA1", gameMode: "CLASSIC",
+    bannedChampions: [], gameQueueConfigId: 420, observers: { encryptionKey: "MOCK" },
+    participants: [...allies, ...enemies], mockMatchId,
+  };
+}

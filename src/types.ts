@@ -119,6 +119,37 @@ export interface MatchDetail {
   };
 }
 
+/**
+ * One player of a game in progress, from spectator-v5. Riot's `riotId` is deliberately not kept: the bot only ever
+ * shows names from stored bindings. `puuid` is null only for a bot, which carries none.
+ */
+export interface ActiveGameParticipant {
+  puuid: string | null;
+  teamId: number;
+  championId: number;
+  /** Summoner spell IDs; Smite is 11. */
+  spell1Id: number;
+  spell2Id: number;
+  bot: boolean;
+}
+
+/** A game in progress (or loading) from spectator-v5, reduced to the fields the game-start watcher relies on. */
+export interface ActiveGame {
+  /** The numeric part of the match-v5 ID `NA1_<gameId>`. */
+  gameId: number;
+  /** Unix milliseconds when the game started; 0 while it is still loading. */
+  gameStartTime: number;
+  /** Seconds the game has run. */
+  gameLength: number;
+  gameQueueConfigId: number;
+  mapId: number;
+  platformId: string;
+  participants: ActiveGameParticipant[];
+  /** Simulated data: the game came from the mock provider and its match ID is `mockMatchId`. */
+  mock: boolean;
+  mockMatchId?: string;
+}
+
 declare module "discord.js" {
   interface Client {
     commands: Collection<string, BotCommand>;
