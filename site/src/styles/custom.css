@@ -20,3 +20,25 @@
   font-style: normal;
   font-weight: 600;
 }
+
+/* Feature cards: one red accent instead of Starlight's rotating palette. */
+.card {
+  --sl-card-border: var(--sl-color-accent);
+  --sl-card-bg: var(--sl-color-accent-low);
+}
+
+/* The command overview stays compact: short cells never wrap, so the table fits a phone. */
+.cmd-table th,
+.cmd-table td {
+  white-space: nowrap;
+}
+.cmd-table td:nth-child(2) {
+  white-space: normal;
+  min-width: 6em;
+}
+@media (max-width: 50rem) {
+  .cmd-table th,
+  .cmd-table td {
+    padding-inline: 0.5rem;
+  }
+}
