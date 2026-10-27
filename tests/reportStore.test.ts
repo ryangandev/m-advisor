@@ -149,13 +149,13 @@ function writeVersionThreeDatabase(filePath: string, extraSql = ""): void {
   assert.ok(existsSync(`${filePath}-wal`) && statSync(`${filePath}-wal`).size > 0, "the fixture must leave an uncheckpointed WAL");
 }
 
-test("a version 3 database upgrades to version 4 with a backup and keeps members, preferences and horse history", () => {
+test("a version 3 database upgrades to the current version with a backup and keeps members, preferences and horse history", () => {
   const filePath = join(directory, "v3.sqlite3");
   process.env.DATABASE_PATH = filePath;
   writeVersionThreeDatabase(filePath);
 
   assert.equal(getReportSettings("guild-one"), undefined);
-  assert.equal(getDatabase().pragma("user_version", { simple: true }), 4);
+  assert.equal(getDatabase().pragma("user_version", { simple: true }), 5);
   assert.deepEqual(listTrackedMembers("guild-one").map((member) => member.discordUserId), ["laowang", "xiaoli"]);
   assert.equal((getDatabase().prepare("SELECT voice_style FROM guild_preferences").get() as { voice_style: string }).voice_style, "sweet");
   const history = listHorseRecords("guild-one", { mock: false });
@@ -205,7 +205,7 @@ test("a failed version 4 step rolls back and leaves the version 3 database intac
 test("a fresh database has the report tables and is not backed up", () => {
   const filePath = process.env.DATABASE_PATH!;
   const db = getDatabase();
-  assert.equal(db.pragma("user_version", { simple: true }), 4);
+  assert.equal(db.pragma("user_version", { simple: true }), 5);
   assert.deepEqual(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'report_%' ORDER BY name").all(),
     [{ name: "report_marks" }, { name: "report_settings" }]);
   closeDatabase();

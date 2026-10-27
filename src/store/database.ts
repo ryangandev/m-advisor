@@ -124,6 +124,14 @@ const MIGRATIONS: readonly string[] = [
       PRIMARY KEY (guild_id, mock, kind)
     ) STRICT;
   `,
+  // 4 -> 5: the per-server switch for the pre-game voice line. No row means on, so every existing server keeps the default.
+  // Only a new table, so every existing row is untouched.
+  `
+    CREATE TABLE pregame_settings (
+      guild_id TEXT PRIMARY KEY CHECK(length(trim(guild_id)) > 0),
+      voice_enabled INTEGER NOT NULL CHECK(voice_enabled IN (0, 1))
+    ) STRICT;
+  `,
 ];
 const SCHEMA_VERSION = MIGRATIONS.length;
 let database: Database.Database | undefined;

@@ -8,7 +8,7 @@ import { MessageFlags, PermissionFlagsBits, VoiceChannel } from "discord.js";
 import type { BotCommand } from "../src/types";
 import { listTrackedMembers, setMemberAccounts } from "../src/store/bindingStore";
 import { closeDatabase, getDatabase } from "../src/store/database";
-import { setLastMatchId } from "../src/store/announcerStore";
+import { getAnnouncerState, getPregameVoiceEnabled, setLastMatchId } from "../src/store/announcerStore";
 import { getAccountByRiotId } from "../src/utils/riotApi";
 import { getLatestSRMatchId, getMatchDetail } from "../src/utils/riotMatchApi";
 import { resetMockData } from "../src/services/riotData";
@@ -155,7 +155,7 @@ afterEach(() => {
 });
 
 
-function interactionFixture(options: { admin?: boolean; voice?: boolean; permissions?: boolean; channelId?: string; riotId?: string; outcome?: string; style?: string; targetId?: string; count?: number } = {}) {
+function interactionFixture(options: { admin?: boolean; voice?: boolean; permissions?: boolean; channelId?: string; riotId?: string; outcome?: string; style?: string | null; pregameVoice?: boolean; targetId?: string; count?: number } = {}) {
   const channelId = options.channelId ?? "test-channel";
   const members = new Map<string, FakeMember>();
   const guild = {
@@ -191,7 +191,8 @@ function interactionFixture(options: { admin?: boolean; voice?: boolean; permiss
       // A required user option always has a value; /recent's optional one is set only when the test names a target.
       getUser: (_name: string, required?: boolean) => required || options.targetId
         ? { id: options.targetId ?? tracked.id, username: options.targetId ?? "tracked-name" } : null,
-      getString: (name: string) => ({ riotid: options.riotId ?? "MockWin#NA1", outcome: options.outcome ?? "win", style: options.style ?? "old" })[name],
+      getString: (name: string) => ({ riotid: options.riotId ?? "MockWin#NA1", outcome: options.outcome ?? "win", style: options.style === undefined ? "old" : options.style })[name],
+      getBoolean: (name: string) => (name === "pregame_voice" ? options.pregameVoice ?? null : null),
       getInteger: () => options.count ?? null,
     },
     deferReply: async (payload: unknown) => { deferred.push(payload); },
@@ -595,6 +596,53 @@ test("/bindings shows one field per member in bind order with the mention in the
     { name: "Tracked Member 2", value: "<@second-user>\n• MockLoss#NA1（模拟账号）\n• Alt#NA1", inline: false },
   ]);
   assert.deepEqual(reply.allowedMentions, { parse: [], roles: [], users: [], repliedUser: false });
+});
+
+test("/announcer pregame_voice alone changes only the switch and states both settings", async () => {
+  const style = interactionFixture({ style: "sweet" });
+  await commands.announcer.execute(style.interaction);
+  const off = interactionFixture({ style: null, pregameVoice: false });
+  await commands.announcer.execute(off.interaction);
+  const reply = off.replies.at(-1) as { flags: unknown; allowedMentions: unknown };
+  assert.equal(reply.flags, MessageFlags.Ephemeral);
+  assert.deepEqual(reply.allowedMentions, { parse: [] });
+  assert.match(replyText(reply), /Sweet Girl/);
+  assert.match(replyText(reply), /Pre-game voice line: off/);
+  closeDatabase();
+  assert.equal(getPregameVoiceEnabled(guildId), false);
+  assert.equal(getAnnouncerState(guildId).voiceStyle, "sweet");
+  const on = interactionFixture({ style: null, pregameVoice: true });
+  await commands.announcer.execute(on.interaction);
+  assert.match(replyText(on.replies.at(-1)), /Pre-game voice line: on/);
+  assert.equal(getPregameVoiceEnabled(guildId), true);
+});
+
+test("/announcer style alone leaves the pregame switch unchanged", async () => {
+  await commands.announcer.execute(interactionFixture({ style: null, pregameVoice: false }).interaction);
+  const f = interactionFixture({ style: "sweet" });
+  await commands.announcer.execute(f.interaction);
+  assert.equal(getPregameVoiceEnabled(guildId), false);
+  assert.equal(getAnnouncerState(guildId).voiceStyle, "sweet");
+  assert.match(replyText(f.replies.at(-1)), /Sweet Girl/);
+  assert.match(replyText(f.replies.at(-1)), /Pre-game voice line: off/);
+});
+
+test("/announcer with neither option is a private error and changes nothing", async () => {
+  const f = interactionFixture({ style: null });
+  await commands.announcer.execute(f.interaction);
+  const reply = f.replies.at(-1) as { flags: unknown; allowedMentions: unknown };
+  assert.equal(reply.flags, MessageFlags.Ephemeral);
+  assert.match(replyText(reply), /at least one/);
+  for (const table of ["guild_preferences", "pregame_settings"]) {
+    assert.equal((getDatabase().prepare(`SELECT count(*) AS n FROM ${table}`).get() as { n: number }).n, 0);
+  }
+});
+
+test("/announcer is open to non-admins as before", async () => {
+  const f = interactionFixture({ admin: false, style: null, pregameVoice: false });
+  await commands.announcer.execute(f.interaction);
+  assert.match(replyText(f.replies.at(-1)), /Pre-game voice line: off/);
+  assert.equal(getPregameVoiceEnabled(guildId), false);
 });
 
 test("/bindings labels even an empty mock server and restricts non-admins", async () => {

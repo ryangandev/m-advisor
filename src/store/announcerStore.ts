@@ -47,6 +47,28 @@ export function setVoiceStyle(guildId: string, style: VoiceStyle): void {
   state.voiceStyle = style;
 }
 
+/** Whether the pre-game voice line is spoken in this server. No saved row means on. */
+export function getPregameVoiceEnabled(guildId: string): boolean {
+  if (typeof guildId !== "string" || guildId.trim().length === 0) {
+    throw new TypeError("Guild ID must be a nonempty string.");
+  }
+  const row = getDatabase().prepare("SELECT voice_enabled FROM pregame_settings WHERE guild_id = ?").get(guildId) as { voice_enabled: number } | undefined;
+  return row === undefined ? true : row.voice_enabled === 1;
+}
+
+export function setPregameVoiceEnabled(guildId: string, enabled: boolean): void {
+  if (typeof guildId !== "string" || guildId.trim().length === 0) {
+    throw new TypeError("Guild ID must be a nonempty string.");
+  }
+  if (typeof enabled !== "boolean") {
+    throw new TypeError("The pre-game voice switch must be a boolean.");
+  }
+  getDatabase().prepare(`
+    INSERT INTO pregame_settings (guild_id, voice_enabled) VALUES (?, ?)
+    ON CONFLICT(guild_id) DO UPDATE SET voice_enabled = excluded.voice_enabled
+  `).run(guildId, enabled ? 1 : 0);
+}
+
 export function setPollingInterval(guildId: string, interval: NodeJS.Timeout | null): void {
   const state = getAnnouncerState(guildId);
   state.pollingInterval = interval;

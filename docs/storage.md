@@ -67,11 +67,13 @@ Shipped migrations are never edited; a new schema change appends a new entry.
 | 2 | `tracked_members`, `member_accounts`, `guild_preferences` |
 | 3 | The version 2 tables plus `horse_records` |
 | 4 | The version 3 tables plus `report_settings` and `report_marks` |
+| 5 | The version 4 tables plus `pregame_settings` |
 
 The 1 to 2 step copies each `guild_bindings` row into `tracked_members` at position 0 and each `bound_accounts` row into `member_accounts` with its account order, then drops the two old tables.
 `guild_preferences` is unchanged, so the voice choice carries over.
 The 2 to 3 step only creates `horse_records` and its indexes, so every existing row is untouched.
 The 3 to 4 step only creates `report_settings` and `report_marks`, so every existing row is untouched.
+The 4 to 5 step only creates `pregame_settings`, so every existing row is untouched.
 Migration happens in place, with no downgrade path, the first time any command opens an existing older database file.
 That includes `npm start`, `npm run dev`, `npm run doctor` (which only opens a file that already exists) and the `verify:*` scripts.
 `npm run register` does not open the database.
@@ -107,6 +109,14 @@ Only tracked members are stored: no teammate or enemy PUUID, name or champion ap
 A mark only moves forward, and mock and real marks are separate.
 `src/store/reportStore.ts` owns both tables, and [马报](ma-bao.md) describes how they are used.
 Neither table has a foreign key, so `/unbind` and `/stable-erase` never touch them.
+
+## Pre-game voice switch
+
+`pregame_settings` holds one row per server that ever changed the switch: `voice_enabled` is 1 (speak the pre-game line) or 0 (text only).
+A server without a row has the switch on.
+It is a separate table because `guild_preferences.voice_style` is `NOT NULL`, so a row there could not exist without a style.
+`getPregameVoiceEnabled(guildId)` and `setPregameVoiceEnabled(guildId, enabled)` in `src/store/announcerStore.ts` read and write it, and `/announcer pregame_voice` sets it.
+Nothing reads the switch during play yet.
 
 ## Durability and shutdown
 
