@@ -40,7 +40,7 @@ Remakes, games stopped without a result and games shorter than 10 minutes are no
 
 ## Recording a match
 
-The monitor records a match once its announcement has been played:
+The monitor records a match once its text report has been posted, before the voice plays (see [Announcements](announcements.md#text-first-timeline-and-马厩-records)):
 
 ```ts
 import { buildHorseRecords } from "./horseRecords";
@@ -52,7 +52,7 @@ recordHorseRecords(buildHorseRecords({
   tracked: listTrackedMembers(guildId).flatMap((member) =>
     member.accounts.map((account) => ({ discordUserId: member.discordUserId, puuid: account.puuid }))),
   mock: this.dependencies.mock(),
-  announcement: { announcement, perspectivePuuid: account.puuid, events },
+  announcement: { announcement, perspectivePuuid: speaker.puuid, events },
 }));
 ```
 

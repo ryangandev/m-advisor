@@ -12,11 +12,21 @@ import {
 import { getLatestSRMatchId, getMatchDetail } from "../utils/riotMatchApi";
 import { getRiotMode, RiotApiError } from "./riotData";
 import { buildMatchAnnouncement } from "./announcementText";
+import type { MatchAnnouncement } from "./announcementText";
+import { fetchMatchEvents } from "./matchEvents";
+import type { MatchEvent } from "./matchEvents";
+import { buildHorseRecords } from "./horseRecords";
+import { recordHorseRecords } from "../store/horseRecordStore";
+import type { HorseRecord } from "../store/horseRecordStore";
 import { buildHorseReportEmbed } from "../utils/embeds";
 import { AnnouncementCancelledError, announceTextToCurrentChannel } from "./voiceAnnouncements";
 import { logError, logInfo } from "../utils/log";
 
 export const POLL_INTERVAL_MS = 45_000;
+/** After this many failed voice attempts a match is consumed without voice; its text report was already posted. */
+export const MAX_VOICE_ATTEMPTS = 3;
+/** The monitor's own limit on the timeline, above its request timeout, so a stuck timeline never holds a report. */
+const TIMELINE_WAIT_MS = 8_000;
 export interface PollResult { announced: number; errors: number }
 
 /** What /recent shows about a guild's monitoring; the last error survives the session that raised it. */
@@ -38,6 +48,12 @@ export interface MonitorDependencies {
   /** A member's current voice channel if announcements may play there, otherwise null. */
   resolveChannel: (client: Client, guildId: string, userId: string) => VoiceChannel | null;
   announce: typeof announceTextToCurrentChannel;
+  /** Timeline moments for the praise and roast; null when the timeline is unavailable. */
+  events: (matchId: string, detail: MatchDetail) => Promise<readonly MatchEvent[] | null>;
+  /** Saves 马厩 records and returns how many were new; see recordHorseRecords. */
+  record: (records: readonly HorseRecord[]) => number;
+  /** How long a report waits for its timeline; TIMELINE_WAIT_MS by default. */
+  timelineWaitMs?: number;
   mock: () => boolean;
   log: (error: unknown) => void;
   /** Progress messages for the operator, such as a newly detected match. */
@@ -103,6 +119,27 @@ interface WaitingMatch {
 /** At most this many matches wait for a usable channel per session; the oldest is forgotten first. */
 const WAITING_LIMIT = 20;
 
+/**
+ * A match the session has started to announce: it had a usable channel at least once.
+ * Kept until the match is consumed, so a voice retry on a later poll reuses the detail and timeline,
+ * never posts the text report again and counts toward the attempt cap.
+ */
+interface MatchProgress {
+  detail: MatchDetail;
+  detectedAt: number;
+  /** Accounts that reported it; the entry is dropped once none of them is tracked any more. */
+  reporters: Set<string>;
+  /** Timeline moments, fetched once; null when unavailable, undefined until fetched. */
+  events?: readonly MatchEvent[] | null;
+  /** The text report was posted, and the 马厩 records were written with it. */
+  textPosted: boolean;
+  /** Voice attempts that failed; cancellations do not count. */
+  voiceFailures: number;
+}
+
+/** At most this many started matches are remembered per session; the oldest is forgotten first. */
+const PROGRESS_LIMIT = 50;
+
 interface MonitorSession {
   startedAt: number;
   lastPollAt?: number;
@@ -114,6 +151,7 @@ interface MonitorSession {
   announced: Set<string>;
   skippedMockAccounts: Set<string>;
   waiting: Map<string, WaitingMatch>;
+  progress: Map<string, MatchProgress>;
   /** The channel of the latest announcement, kept so ties do not bounce between channels. */
   lastChannelId?: string;
   inFlight?: Promise<PollResult>;
@@ -124,6 +162,10 @@ interface MonitorSession {
 
 function riotIds(accounts: RiotAccount[]): string {
   return accounts.map((account) => `${account.gameName}#${account.tagLine}`).join(", ");
+}
+
+function secondsSince(start: number): string {
+  return ((Date.now() - start) / 1000).toFixed(1);
 }
 
 function errorMessage(error: unknown): string {
@@ -186,6 +228,7 @@ export class GameMonitor {
         announced: new Set(),
         skippedMockAccounts: new Set(),
         waiting: new Map(),
+        progress: new Map(),
       };
       this.track(session, members);
       this.sessions.set(guildId, session);
@@ -300,9 +343,11 @@ export class GameMonitor {
     const dropped = [...session.accounts].filter(([puuid, state]) => owners.get(puuid) !== state.owner).map(([puuid]) => puuid);
     for (const puuid of dropped) session.accounts.delete(puuid);
     clearLastMatchIds(guildId, dropped);
-    for (const [matchId, waiting] of session.waiting) {
-      for (const puuid of dropped) waiting.reporters.delete(puuid);
-      if (waiting.reporters.size === 0) session.waiting.delete(matchId);
+    for (const cache of [session.waiting, session.progress]) {
+      for (const [matchId, entry] of cache) {
+        for (const puuid of dropped) entry.reporters.delete(puuid);
+        if (entry.reporters.size === 0) cache.delete(matchId);
+      }
     }
   }
 
@@ -479,14 +524,14 @@ export class GameMonitor {
       }
 
       // Phase B: fetch each pending match once, then announce the oldest first.
-      // A match still waiting for a usable channel reuses its detail and is not logged again.
+      // A match still waiting for a usable channel, or being retried, reuses its detail and is not logged again.
       const ready: PendingMatch[] = [];
       for (const match of pending.values()) {
-        const waiting = session.waiting.get(match.matchId);
-        if (waiting) {
-          match.detail = waiting.detail;
-          match.detectedAt = waiting.detectedAt;
-          for (const account of match.reporters) waiting.reporters.add(account.puuid);
+        const known = session.waiting.get(match.matchId) ?? session.progress.get(match.matchId);
+        if (known) {
+          match.detail = known.detail;
+          match.detectedAt = known.detectedAt;
+          for (const account of match.reporters) known.reporters.add(account.puuid);
           ready.push(match);
           continue;
         }
@@ -529,7 +574,11 @@ export class GameMonitor {
     return result;
   }
 
-  /** Speak one match and post its report. Returns false when no participant is in an allowed channel yet. */
+  /**
+   * Post one match's text report, then speak it. Returns false when no participant is in an allowed channel yet.
+   * The text goes out once per match, before speech generation starts. A failed voice attempt leaves the match for the
+   * next poll until MAX_VOICE_ATTEMPTS, after which it is consumed without voice.
+   */
   private async announce(
     client: Client,
     guildId: string,
@@ -540,8 +589,8 @@ export class GameMonitor {
   ): Promise<boolean> {
     const detail = match.detail!;
     const boundParticipants = this.boundParticipants(guildId, detail);
-    const initial = this.chooseChannel(client, guildId, this.liveParticipantIds(guildId, boundParticipants), session.lastChannelId);
-    if (!initial) {
+    const participantIds = () => this.liveParticipantIds(guildId, boundParticipants);
+    if (!this.chooseChannel(client, guildId, participantIds(), session.lastChannelId)) {
       // Not an error: the match waits, unconsumed, until a participant is in an allowed channel or its accounts stop being tracked.
       if (!session.waiting.has(match.matchId)) {
         session.waiting.set(match.matchId, {
@@ -552,15 +601,22 @@ export class GameMonitor {
       }
       return false;
     }
-    // A failure from here on is retried through the normal path, which fetches the match again.
     session.waiting.delete(match.matchId);
+    const progress = this.progressOf(session, match);
+    if (progress.events === undefined) {
+      progress.events = await this.timeline(match.matchId, detail);
+      if (!this.current(guildId, session)) throw new AnnouncementCancelledError();
+    }
+    // Chosen after the timeline request, which can take a few seconds.
+    const initial = this.chooseChannel(client, guildId, participantIds(), session.lastChannelId);
+    if (!initial) throw new AnnouncementCancelledError();
     const detected: DetectedMatch = { matchId: match.matchId, detail, boundParticipants, channelId: initial.id };
     // The speaker is fixed with the text; a later majority move changes only where it plays.
     const speaker = this.perspective(client, guildId, session, detected.boundParticipants, initial)!;
-    const { speech: text, report } = buildMatchAnnouncement(detail, speaker.puuid, this.dependencies.mock());
+    const announcement = buildMatchAnnouncement(detail, speaker.puuid, this.dependencies.mock(), { events: progress.events });
     let pick = initial.id;
     const resolveTarget = () => {
-      const chosen = this.chooseChannel(client, guildId, this.liveParticipantIds(guildId, boundParticipants), pick);
+      const chosen = this.chooseChannel(client, guildId, participantIds(), pick);
       if (!chosen) return null;
       pick = chosen.id;
       session.lastChannelId = chosen.id;
@@ -573,7 +629,11 @@ export class GameMonitor {
     let playing = false;
     const resolveForQueue = () => {
       const target = resolveTarget();
-      if (++queueResolves >= 2 && target) playing = true;
+      if (++queueResolves >= 2 && target && !playing) {
+        playing = true;
+        this.dependencies.info(`Match ${match.matchId} starts playing in voice channel ${(target as { name?: string }).name ?? target.id} `
+          + `${secondsSince(match.detectedAt!)} s after detection.`);
+      }
       return target;
     };
     // Rebinding or unbinding the speaker always cancels; an unrelated bind does not.
@@ -583,35 +643,127 @@ export class GameMonitor {
       && this.ownerOf(guildId, speaker.puuid) === speaker.memberId
       && (playing || session.present.has(speaker.memberId))
       && Boolean(resolveTarget());
-    const channel = await this.dependencies.announce(
-      guildId,
-      text,
-      getAnnouncerState(guildId).voiceStyle,
-      resolveForQueue,
-      canPlay,
-      session.controller.signal,
-    );
-    if (!this.current(guildId, session)) throw new AnnouncementCancelledError();
-    // Failed TTS/transport throws before this point and leaves every baseline untouched so the next poll retries.
-    session.announced.add(match.matchId);
-    if (session.announced.size > 200) session.announced.delete(session.announced.values().next().value!);
-    for (const account of match.reporters) {
-      if (session.accounts.get(account.puuid)?.baselined) setLastMatchId(guildId, account.puuid, match.matchId);
+    // The text goes out only when the voice is about to be queued, so a report that cannot play yet posts nothing.
+    if (!canPlay()) throw new AnnouncementCancelledError();
+    if (!progress.textPosted) {
+      await this.postReport(guildId, initial, boundParticipants, progress, announcement, speaker.puuid, result);
+      if (!this.current(guildId, session)) throw new AnnouncementCancelledError();
     }
-    this.dependencies.info(`Announced match ${match.matchId} in voice ${Math.round((Date.now() - match.detectedAt!) / 1000)} s after detection.`);
+    try {
+      await this.dependencies.announce(
+        guildId,
+        announcement.speech,
+        getAnnouncerState(guildId).voiceStyle,
+        resolveForQueue,
+        canPlay,
+        session.controller.signal,
+      );
+    } catch (error) {
+      if (error instanceof AnnouncementCancelledError || !this.current(guildId, session)) throw error;
+      // Failed TTS or transport leaves every baseline untouched so the next poll retries, up to the cap.
+      if (++progress.voiceFailures >= MAX_VOICE_ATTEMPTS) {
+        this.consume(guildId, session, match);
+        this.dependencies.info(`Gave up on the voice report of match ${match.matchId} after ${progress.voiceFailures} failed attempts; `
+          + `${progress.textPosted ? "its text report was posted" : "its text report could not be posted either"}, and it is not retried.`);
+      }
+      throw error;
+    }
+    if (!this.current(guildId, session)) throw new AnnouncementCancelledError();
+    this.consume(guildId, session, match);
+    this.dependencies.info(`Announced match ${match.matchId} in voice ${secondsSince(match.detectedAt!)} s after detection.`);
+    return true;
+  }
+
+  /** The match's progress entry, created when it first gets a usable channel. */
+  private progressOf(session: MonitorSession, match: PendingMatch): MatchProgress {
+    let progress = session.progress.get(match.matchId);
+    if (!progress) {
+      progress = { detail: match.detail!, detectedAt: match.detectedAt!, reporters: new Set(), textPosted: false, voiceFailures: 0 };
+      session.progress.set(match.matchId, progress);
+      if (session.progress.size > PROGRESS_LIMIT) session.progress.delete(session.progress.keys().next().value!);
+    }
+    for (const account of match.reporters) progress.reporters.add(account.puuid);
+    return progress;
+  }
+
+  /** Timeline moments, or null when they fail or take too long; the report then uses statistics only. */
+  private async timeline(matchId: string, detail: MatchDetail): Promise<readonly MatchEvent[] | null> {
+    let timer: NodeJS.Timeout | undefined;
+    const waitMs = this.dependencies.timelineWaitMs ?? TIMELINE_WAIT_MS;
+    try {
+      const request = this.dependencies.events(matchId, detail);
+      request.catch(() => undefined);
+      const expired = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`no answer after ${(waitMs / 1000).toFixed(1)} s`)), waitMs);
+      });
+      return await Promise.race([request, expired]);
+    } catch (error) {
+      this.dependencies.info(`Timeline for match ${matchId} is unavailable (${errorMessage(error)}); `
+        + "the report uses end-of-game statistics only.");
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
+   * Post the text report to the voice channel's chat, mentioning the match's tracked players who are in that channel,
+   * then write the 马厩 records of the announcement it shows. A failed post counts as an error but does not stop the voice.
+   */
+  private async postReport(
+    guildId: string,
+    channel: VoiceChannel,
+    boundParticipants: BoundParticipant[],
+    progress: MatchProgress,
+    announcement: MatchAnnouncement,
+    perspectivePuuid: string,
+    result: PollResult,
+  ): Promise<void> {
     const mentions = this.liveParticipantIds(guildId, boundParticipants).filter((memberId) => channel.members.has(memberId));
     try {
       await channel.send({
         ...(mentions.length > 0 ? { content: mentions.map((memberId) => `<@${memberId}>`).join(" ") } : {}),
-        embeds: [buildHorseReportEmbed(report)],
+        embeds: [buildHorseReportEmbed(announcement.report)],
         allowedMentions: { parse: [], roles: [], users: mentions, repliedUser: false },
       });
     } catch (error) {
-      // Audio has already succeeded; retrying the match would repeat the voice announcement.
+      // Tried again only if the voice also fails and the match is retried.
       result.errors++;
       this.report(guildId, error);
+      return;
     }
-    return true;
+    progress.textPosted = true;
+    this.recordHorses(guildId, progress, announcement, perspectivePuuid);
+  }
+
+  /** Writes the posted announcement's 马厩 records; a failure is logged and never affects the announcement. */
+  private recordHorses(guildId: string, progress: MatchProgress, announcement: MatchAnnouncement, perspectivePuuid: string): void {
+    const matchId = progress.detail.metadata.matchId;
+    try {
+      // Read just before the write, so a member unbound during the report is simply absent.
+      const tracked = this.dependencies.members(guildId).flatMap((member) =>
+        member.accounts.map((account) => ({ discordUserId: member.discordUserId, puuid: account.puuid })));
+      const saved = this.dependencies.record(buildHorseRecords({
+        guildId,
+        detail: progress.detail,
+        tracked,
+        mock: this.dependencies.mock(),
+        announcement: { announcement, perspectivePuuid, events: progress.events },
+      }));
+      if (saved > 0) this.dependencies.info(`Saved ${saved} 马厩 record${saved === 1 ? "" : "s"} for match ${matchId}.`);
+    } catch (error) {
+      this.dependencies.log(new Error(`The 马厩 records of match ${matchId} were not saved: ${errorMessage(error)}`));
+    }
+  }
+
+  /** The match is done: it is never announced again in this session, and the accounts that reported it move past it. */
+  private consume(guildId: string, session: MonitorSession, match: PendingMatch): void {
+    session.announced.add(match.matchId);
+    if (session.announced.size > 200) session.announced.delete(session.announced.values().next().value!);
+    session.progress.delete(match.matchId);
+    for (const account of match.reporters) {
+      if (session.accounts.get(account.puuid)?.baselined) setLastMatchId(guildId, account.puuid, match.matchId);
+    }
   }
 }
 
@@ -632,6 +784,8 @@ const monitor = new GameMonitor({
   members: listTrackedMembers,
   resolveChannel: resolveMonitoredVoiceChannel,
   announce: announceTextToCurrentChannel,
+  events: (matchId, detail) => fetchMatchEvents(matchId, detail),
+  record: recordHorseRecords,
   mock: () => getRiotMode() === "mock",
   log: (error) => logError(`Match monitoring failed: ${errorMessage(error)}`),
   info: logInfo,

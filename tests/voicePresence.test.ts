@@ -62,6 +62,8 @@ function presence(guildId: string) {
       return channelId ? ({ id: channelId, guild: { id: guildId }, members: new Map() } as unknown as VoiceChannel) : null;
     },
     announce: async () => { throw new Error("No speech in presence tests."); },
+    events: async () => null,
+    record: () => 0,
     mock: () => true,
     log: (error) => { throw error; },
     info: () => {},
