@@ -13,11 +13,13 @@ The default setup uses mock Riot data and the installed offline Qwen3-TTS model,
 | `/stable user` | Everyone, public reply | Show a friend's 马厩 profile: tier counts and rates, average score, streaks, strongest and weakest dimension and recent games (default: you) |
 | `/stable-erase user confirm` | Administrator, private reply | Erase one member's whole 马厩 history; without `confirm` it only counts the records |
 | `/why user match` | Everyone, public reply | Explain a horse verdict with a radar image: the costliest dimensions for the position, the gap to the neighbouring tiers and what the 军师 said, with an 上诉 button only the member can press (default: your latest game) |
+| `/report day` and `/report week` | Everyone, public reply | Show the 马报 of the day or week in progress (or the previous one with `when`): who was 特等马 and 没有马, the leaderboard and the best and worst game |
+| `/report-settings` | Administrator, private reply | Choose the channel for the automatic daily and weekly 马报, switch each on or off and optionally manage the 本周特等马 and 本周没有马 roles |
 | `/announcer style` | Everyone | Choose Serena (`sweet`) or Uncle_Fu (`old`, the default) |
 | `/testvoice` | Administrator, configured test server | Play a short announcement in the caller's voice channel |
 | `/simulate outcome` | Administrator, configured test server, mock mode | Run a simulated win or loss through the match announcement pipeline |
 
-Bindings, voice preferences and each tracked member's 马厩 history persist in SQLite, and `/unbind` keeps the history.
+Bindings, voice preferences, each tracked member's 马厩 history and the 马报 settings persist in SQLite, and `/unbind` keeps the history.
 Each server tracks one Discord member with multiple LoL accounts.
 Real profiles currently use the North America region.
 New monitoring sessions establish a baseline, so starting the bot does not replay old games.

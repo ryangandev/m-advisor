@@ -57,7 +57,7 @@ npm start
 Alternatively, double-click `scripts/launch.command` on this Mac.
 The launcher enters the repository, locates Node through PATH or an existing nvm installation, builds and starts the bot.
 Wait for `Speech provider ready.` before testing audio.
-Ctrl+C or SIGTERM stops monitoring and closes voice connections, the Discord client, the speech worker and SQLite.
+Ctrl+C or SIGTERM stops the 马报 scheduler, then monitoring, and closes voice connections, the Discord client, the speech worker and SQLite.
 Starting again restores saved bindings and checks whether the tracked members are already in voice.
 In real mode, startup warns about each saved mock account; `/bind` with a real Riot ID removes them.
 
@@ -77,6 +77,7 @@ The bot requests the standard Guilds and GuildVoiceStates intents.
 Its current commands do not require privileged Presence or Server Members gateway intents.
 The bot needs View Channel, Connect and Speak permissions in the voice channel.
 Optional match messages in the voice channel chat also need Send Messages.
+The 马报 channel needs View Channel, Send Messages and Embed Links, and the optional weekly roles need Manage Roles with the bot's role above the managed roles; see [马报](ma-bao.md).
 Invite the application with the `bot` and `applications.commands` scopes.
 The avatar is `assets/m-advisor-avatar.png` (1024 x 1024), rendered from `assets/m-advisor-avatar.svg`.
 The Bot page icon and the General Information app icon are separate settings; both use this image since 2026-10-04.
