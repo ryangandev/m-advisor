@@ -69,6 +69,29 @@ export function setPregameVoiceEnabled(guildId: string, enabled: boolean): void 
   `).run(guildId, enabled ? 1 : 0);
 }
 
+/** Save a style and/or the pre-game voice switch in one transaction; the in-memory style changes only after it commits. */
+export function saveAnnouncerSettings(guildId: string, settings: { style?: VoiceStyle; pregameVoice?: boolean }): void {
+  const { style, pregameVoice } = settings;
+  if (style !== undefined && style !== "sweet" && style !== "old") {
+    throw new TypeError("Voice style must be sweet or old.");
+  }
+  if (pregameVoice !== undefined && typeof pregameVoice !== "boolean") {
+    throw new TypeError("The pre-game voice switch must be a boolean.");
+  }
+  const state = getAnnouncerState(guildId);
+  const database = getDatabase();
+  database.transaction(() => {
+    if (style !== undefined) {
+      database.prepare(`
+        INSERT INTO guild_preferences (guild_id, voice_style) VALUES (?, ?)
+        ON CONFLICT(guild_id) DO UPDATE SET voice_style = excluded.voice_style
+      `).run(guildId, style);
+    }
+    if (pregameVoice !== undefined) setPregameVoiceEnabled(guildId, pregameVoice);
+  })();
+  if (style !== undefined) state.voiceStyle = style;
+}
+
 export function setPollingInterval(guildId: string, interval: NodeJS.Timeout | null): void {
   const state = getAnnouncerState(guildId);
   state.pollingInterval = interval;

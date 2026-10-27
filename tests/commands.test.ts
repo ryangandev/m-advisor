@@ -610,7 +610,7 @@ test("/announcer pregame_voice alone changes only the switch and states both set
   assert.match(replyText(reply), /Pre-game voice line: off/);
   closeDatabase();
   assert.equal(getPregameVoiceEnabled(guildId), false);
-  assert.equal(getAnnouncerState(guildId).voiceStyle, "sweet");
+  assert.deepEqual(getDatabase().prepare("SELECT voice_style FROM guild_preferences WHERE guild_id = ?").get(guildId), { voice_style: "sweet" });
   const on = interactionFixture({ style: null, pregameVoice: true });
   await commands.announcer.execute(on.interaction);
   assert.match(replyText(on.replies.at(-1)), /Pre-game voice line: on/);
@@ -638,11 +638,35 @@ test("/announcer with neither option is a private error and changes nothing", as
   }
 });
 
-test("/announcer is open to non-admins as before", async () => {
-  const f = interactionFixture({ admin: false, style: null, pregameVoice: false });
+test("/announcer rejects a non-admin toggle, even with a style, and writes nothing", async () => {
+  for (const style of [null, "sweet"]) {
+    const f = interactionFixture({ admin: false, style, pregameVoice: false });
+    await commands.announcer.execute(f.interaction);
+    const reply = f.replies.at(-1) as { flags: unknown; allowedMentions: unknown };
+    assert.equal(reply.flags, MessageFlags.Ephemeral);
+    assert.deepEqual(reply.allowedMentions, { parse: [] });
+    assert.match(replyText(reply), /Administrator/);
+  }
+  for (const table of ["guild_preferences", "pregame_settings"]) {
+    assert.equal((getDatabase().prepare(`SELECT count(*) AS n FROM ${table}`).get() as { n: number }).n, 0);
+  }
+  assert.equal(getAnnouncerState(guildId).voiceStyle, "old");
+});
+
+test("/announcer still lets a non-admin change the style", async () => {
+  const f = interactionFixture({ admin: false, style: "sweet" });
   await commands.announcer.execute(f.interaction);
-  assert.match(replyText(f.replies.at(-1)), /Pre-game voice line: off/);
+  assert.match(replyText(f.replies.at(-1)), /Sweet Girl/);
+  assert.equal(getAnnouncerState(guildId).voiceStyle, "sweet");
+  assert.equal(getPregameVoiceEnabled(guildId), true);
+});
+
+test("/announcer lets an admin toggle the switch together with the style", async () => {
+  const f = interactionFixture({ style: "sweet", pregameVoice: false });
+  await commands.announcer.execute(f.interaction);
+  closeDatabase();
   assert.equal(getPregameVoiceEnabled(guildId), false);
+  assert.deepEqual(getDatabase().prepare("SELECT voice_style FROM guild_preferences WHERE guild_id = ?").get(guildId), { voice_style: "sweet" });
 });
 
 test("/bindings labels even an empty mock server and restricts non-admins", async () => {
