@@ -20,8 +20,10 @@ export const IN_GAME_RECHECK_TICKS = 6;
 export const GAME_START_WINDOW_MS = 90_000;
 /** A game seen by an account whose previous check found no game is announced while it has run at most this long. */
 export const FRESH_GAME_SECONDS = 60;
-/** At most this many games are remembered per session; the oldest is forgotten first. */
+/** At most this many games are remembered per session, and per guild across sessions; the oldest is forgotten first. */
 const GAME_STARTS_LIMIT = 50;
+/** A guild remembers a game whose 锦囊 went out this long, far past any loading screen. */
+export const ANNOUNCED_MEMORY_MS = 15 * 60_000;
 /** Records read per teammate; the brief uses the latest ten and the champion history among them. */
 const RECORDS_PER_TEAMMATE = 200;
 const SMITE = 11;
@@ -61,6 +63,23 @@ export interface GameStartHost {
   /** The channel of the latest announcement, so ties do not bounce between channels. */
   lastChannelId: () => string | undefined;
   rememberChannel: (channelId: string) => void;
+  /** The guild's memory, kept by the monitor across sessions. */
+  memory: GameStartMemory;
+}
+
+/**
+ * What a guild remembers about game starts across monitoring sessions, so a member who leaves and rejoins voice
+ * during loading neither hears the 锦囊 twice nor makes the watcher exceed its request budget.
+ */
+export interface GameStartMemory {
+  /** Games whose 锦囊 went out (its text was attempted), by match ID, with the time; forgotten after ANNOUNCED_MEMORY_MS. */
+  announced: Map<string, number>;
+  /** When each account was last asked, by PUUID; an account is asked at most once per GAME_START_INTERVAL_MS. */
+  checked: Map<string, number>;
+}
+
+export function createGameStartMemory(): GameStartMemory {
+  return { announced: new Map(), checked: new Map() };
 }
 
 /** Where an account stands in the current presence of its member. */
@@ -228,17 +247,44 @@ export class GameStartWatcher {
     };
   }
 
-  /** Logs an error once per session and kind, so a Riot outage does not repeat every 20 seconds. */
+  /** Logs an error once per kind until a check works again, so a Riot outage does not repeat every 20 seconds. */
   private logOnce(error: unknown, context: string): void {
     const key = errorKey(error);
     if (this.loggedErrors.has(key)) return;
     this.loggedErrors.add(key);
-    this.dependencies.log(new Error(`${context}: ${errorMessage(error)} (logged once per monitoring session)`));
+    this.dependencies.log(new Error(`${context}: ${errorMessage(error)} (logged once until a check works again)`));
   }
 
+  /** A check answered after failures were logged: say so once, so a stuck watcher and a recovered one look different. */
+  private recovered(): void {
+    if (this.loggedErrors.size === 0) return;
+    this.dependencies.info(`Game start checks work again after ${[...this.loggedErrors].join(", ")} failures.`);
+    this.loggedErrors.clear();
+  }
+
+  /** One tick. It never rejects: the timer fires it without waiting, so anything unexpected is logged and counted instead. */
   private async run(requiredChannelId?: string): Promise<GameStartTickResult> {
     const result: GameStartTickResult = { started: 0, posted: 0, errors: 0 };
+    try {
+      await this.check(result, requiredChannelId);
+    } catch (error) {
+      result.errors++;
+      if (this.live()) this.logOnce(error, "A game start check broke off");
+    }
+    return result;
+  }
+
+  /** Drops what the guild's memory no longer needs: check times past the interval, and 锦囊 older than the memory. */
+  private forget(now: number): void {
+    const { checked, announced } = this.host.memory;
+    for (const [puuid, at] of checked) if (now - at >= GAME_START_INTERVAL_MS) checked.delete(puuid);
+    for (const [matchId, at] of announced) if (now - at >= ANNOUNCED_MEMORY_MS) announced.delete(matchId);
+  }
+
+  private async check(result: GameStartTickResult, requiredChannelId?: string): Promise<void> {
     const tick = ++this.ticks;
+    const startedAt = this.now();
+    this.forget(startedAt);
     const members = this.dependencies.members(this.host.guildId);
     this.prune(members);
     const mock = this.dependencies.mock();
@@ -256,7 +302,7 @@ export class GameStartWatcher {
     // Games found in this tick by the accounts they contain, so a premade costs one request.
     const seen = new Map<string, ActiveGame>();
     for (const { puuid, owner } of accounts) {
-      if (!this.live()) return result;
+      if (!this.live()) return;
       let presence = this.accounts.get(puuid);
       if (!presence) {
         presence = { owner, state: { kind: "unknown" } };
@@ -269,27 +315,33 @@ export class GameStartWatcher {
       }
       const { state } = presence;
       if (state.kind === "inGame" && tick - state.checkedTick < IN_GAME_RECHECK_TICKS) continue;
+      // The hard budget: an account is asked at most once per interval, counted across sessions of the guild,
+      // so an early check for a member who joins, leaves and rejoins never adds requests.
+      const asked = this.host.memory.checked.get(puuid);
+      if (asked !== undefined && startedAt - asked < GAME_START_INTERVAL_MS) continue;
+      this.host.memory.checked.set(puuid, startedAt);
       let game: ActiveGame | null;
       try {
         game = await this.dependencies.activeGame(puuid);
       } catch (error) {
-        if (!this.live()) return result;
+        if (!this.live()) return;
         if (isSpectatorAuthError(error)) {
           // The key cannot use spectator: stop asking for this session. Match monitoring goes on.
           this.disabled = true;
           this.stop();
           result.errors++;
-          this.dependencies.log(new Error(`Game start checks are off for this monitoring session: Riot rejected the key for spectator `
-            + `(${errorMessage(error)}). Finished matches are still announced.`));
-          return result;
+          this.dependencies.log(new Error(`Riot rejected the key for spectator (${errorMessage(error)}), so game start checks are off `
+            + "for this monitoring session. Finished matches are still announced."));
+          return;
         }
         // A rate limit only skips this account for this tick; it is expected and stays quiet.
         if (error instanceof RiotApiError && error.code === "rate_limited") continue;
         // Anything else, including a 404 that is not "not in a game", is a failed check: the state stays as it was.
         result.errors++;
-        this.logOnce(error, "A game start check failed");
+        this.logOnce(error, "Riot did not say whether an account is in a game");
         continue;
       }
+      this.recovered();
       // The member may have left, rejoined or been unbound while Riot answered.
       if (!this.live() || this.accounts.get(puuid) !== presence) continue;
       if (!game) {
@@ -300,7 +352,6 @@ export class GameStartWatcher {
       if (this.observe(presence, game, tick, requiredChannelId)) result.started++;
     }
     await this.deliverPending(result, requiredChannelId);
-    return result;
   }
 
   /**
@@ -316,7 +367,8 @@ export class GameStartWatcher {
     const fresh = isLoading(game) || (previous === "notInGame" && game.gameLength <= FRESH_GAME_SECONDS);
     const reason = !isAnnouncedGame(game) ? `queue ${game.gameQueueConfigId ?? "unknown"} on map ${game.mapId ?? "unknown"} is not announced`
       : this.host.finished(matchId) ? "it has already finished"
-        : !fresh ? `it was already ${Math.max(0, Math.round(game.gameLength))} s in` : null;
+        : this.host.memory.announced.has(matchId) ? "its 锦囊 already went out in an earlier monitoring session"
+          : !fresh ? `it was already ${Math.max(0, Math.round(game.gameLength))} s in` : null;
     if (reason) {
       if (!known) {
         this.remember({ matchId, status: "skipped", game, detectedAt: this.now(), voice: "dropped" });
@@ -387,6 +439,11 @@ export class GameStartWatcher {
       if (!speaker) return;
       entry.teamId = speaker.teamId;
       entry.brief = this.buildBrief(entry, members, participants, speaker.teamId);
+      // From here the 锦囊 is out for this guild: a later session (someone left and rejoined voice) must not repeat it.
+      const { announced } = this.host.memory;
+      announced.delete(entry.matchId);
+      announced.set(entry.matchId, this.now());
+      if (announced.size > GAME_STARTS_LIMIT) announced.delete(announced.keys().next().value!);
       if (entry.brief.pick) {
         entry.pickMemberId = entry.brief.pick.memberId;
         entry.pickPuuid = participants.find((participant) => participant.memberId === entry.brief!.pick!.memberId

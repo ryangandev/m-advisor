@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { afterEach, beforeEach, mock, test } from "node:test";
 import type { Client, MessageCreateOptions, VoiceChannel } from "discord.js";
 import type { ActiveGame, ActiveGameParticipant, MatchDetail, TrackedMember } from "../src/types";
-import { GameMonitor, type MonitorDependencies } from "../src/services/gameMonitor";
+import { GameMonitor, logGameStartFailure, type MonitorDependencies } from "../src/services/gameMonitor";
 import { GAME_START_INTERVAL_MS, GAME_START_WINDOW_MS } from "../src/services/gameStartWatcher";
 import { VoiceAnnouncementService, type VoiceAnnouncementDependencies } from "../src/services/voiceAnnouncements";
 import { MOCK_PREGAME_PREFIX, OTHER_SIDE_NOTE } from "../src/services/pregameBrief";
@@ -116,7 +116,7 @@ interface FakeChannel { id: string; name: string; guild: { id: string }; members
  * A guild with tracked members in fake voice channels, the real monitor, watcher and voice queue,
  * and fake spectator, speech and Discord. Real mode unless `mock` is set.
  */
-function harness(specs: MemberSpec[], options: { mock?: boolean; realSpectator?: boolean } = {}) {
+function harness(specs: MemberSpec[], options: { mock?: boolean; realSpectator?: boolean; watcherLog?: string[] } = {}) {
   let members: TrackedMember[] = specs.map((spec) => ({
     discordUserId: spec.id,
     accounts: spec.puuids.map((puuid, index) => ({ puuid, gameName: spec.names?.[index] ?? `Stored-${puuid}`, tagLine: "NA1" })),
@@ -159,7 +159,7 @@ function harness(specs: MemberSpec[], options: { mock?: boolean; realSpectator?:
   const played: string[] = [];
   const errors: string[] = [];
   const infos: string[] = [];
-  const settings = { voice: true };
+  const settings = { voice: true, failMembers: false };
   let generate = async (text: string): Promise<string> => { generated.push(text); order.push(`voice:${text}`); return `audio-${generated.length}.wav`; };
   let play: VoiceAnnouncementDependencies["play"] = async (target) => { played.push(target.id); };
   const service = new VoiceAnnouncementService({
@@ -175,7 +175,7 @@ function harness(specs: MemberSpec[], options: { mock?: boolean; realSpectator?:
       if (!detail) throw new Error(`no match ${matchId}`);
       return detail;
     },
-    members: () => members,
+    members: () => { if (settings.failMembers) throw new Error("SQLITE_BUSY: database is locked"); return members; },
     resolveChannel: (_client, _guildId, userId) => {
       const channelId = location.get(userId);
       return channelId && !blocked.has(channelId) ? channel(channelId) as unknown as VoiceChannel : null;
@@ -198,6 +198,7 @@ function harness(specs: MemberSpec[], options: { mock?: boolean; realSpectator?:
       pregameVoice: () => settings.voice,
       voiceStyle: () => "old",
       now: () => clock,
+      ...(options.watcherLog ? { log: (error: unknown) => { options.watcherLog!.push(error instanceof Error ? error.message : String(error)); } } : {}),
     },
   };
   const monitor = new GameMonitor(dependencies);
@@ -225,8 +226,8 @@ function harness(specs: MemberSpec[], options: { mock?: boolean; realSpectator?:
       monitor.sync(client, GUILD, inVoice());
       return (await monitor.pollGameStart(GUILD)).tick;
     },
-    /** One more check, as the 20 second timer would run it. */
-    tick: async () => (await monitor.pollGameStart(GUILD)).tick,
+    /** One more check, as the 20 second timer would run it: the clock moves on by the interval first. */
+    tick: async () => { clock += GAME_START_INTERVAL_MS; return (await monitor.pollGameStart(GUILD)).tick; },
     /** Holds the guild's voice queue with a running report until released. */
     holdQueue: () => {
       const gate = deferred();
@@ -476,6 +477,8 @@ test("a member who leaves and comes back starts a new presence and is checked at
   bot.leaveGame(running);
   bot.enter(spectatorGame(5026, [{ puuid: "acct-a", teamId: 100, championId: AHRI }]));
   const before = bot.requests.length;
+  // Away for a while: each account is asked at most once per interval.
+  bot.advance(GAME_START_INTERVAL_MS);
   bot.move(A, "voice-1");
   // Their return alone triggers a check, long before the next 20 second tick.
   bot.sync();
@@ -625,7 +628,7 @@ test("a spectator 403 turns off only the watcher; finished matches are still ann
   bot.games.set("acct-a", new RiotApiError("Riot API rejected the key.", "forbidden", 403));
   const first = await bot.start();
   assert.equal(first.errors, 1);
-  assert.equal(bot.errors.filter((line) => line.includes("Game start checks are off")).length, 1);
+  assert.equal(bot.errors.filter((line) => line.includes("game start checks are off")).length, 1);
   await bot.tick();
   await bot.tick();
   assert.deepEqual(bot.requests, ["acct-a"], "no more spectator requests in this session");
@@ -658,6 +661,7 @@ test("ten accounts cost at most 60 spectator requests in two minutes, and a game
   bot.sync();
   await flush();
   for (let elapsed = GAME_START_INTERVAL_MS; elapsed < 120_000; elapsed += GAME_START_INTERVAL_MS) {
+    bot.advance(GAME_START_INTERVAL_MS);
     mock.timers.tick(GAME_START_INTERVAL_MS);
     await flush();
   }
@@ -668,12 +672,186 @@ test("ten accounts cost at most 60 spectator requests in two minutes, and a game
   bot.enter(game);
   bot.requests.length = 0;
   for (let elapsed = 0; elapsed < 120_000; elapsed += GAME_START_INTERVAL_MS) {
+    bot.advance(GAME_START_INTERVAL_MS);
     mock.timers.tick(GAME_START_INTERVAL_MS);
     await flush();
   }
   assert.deepEqual(bot.requests, ["acct-0"], "one request finds the game, then nobody is asked for five ticks");
+  bot.advance(GAME_START_INTERVAL_MS);
   mock.timers.tick(GAME_START_INTERVAL_MS);
   await flush();
   assert.deepEqual(bot.requests, ["acct-0", "acct-0"], "the sixth tick rechecks once");
   assert.equal(bot.sent.length, 0, "a game already running is not announced");
+});
+
+test("the only member leaving and rejoining voice during loading gets one 锦囊, not two", async () => {
+  const bot = harness([{ id: A, puuids: ["acct-a"], channel: "voice-1" }]);
+  bot.enter(spectatorGame(7001, [{ puuid: "acct-a", teamId: 100, championId: AHRI }]));
+  await bot.start();
+  await until(() => bot.played.length === 1, "the first line");
+  // Leaving stops the session; rejoining starts a new one whose first check sees the same game still loading.
+  bot.move(A, null);
+  bot.sync();
+  assert.equal(bot.monitor.status(GUILD).active, false);
+  bot.advance(GAME_START_INTERVAL_MS);
+  bot.move(A, "voice-1");
+  await bot.start();
+  await bot.tick();
+  await delay(30);
+  assert.equal(bot.requests.length, 2, "the new session did ask");
+  assert.equal(bot.sent.length, 1);
+  assert.equal(bot.played.length, 1);
+  assert.ok(bot.infos.some((line) => line.includes("NA1_7001 is not announced at its start: its 锦囊 already went out in an earlier monitoring session")));
+});
+
+test("the guild forgets a 锦囊 15 minutes after it went out", async () => {
+  const bot = harness([{ id: A, puuids: ["acct-a"], channel: "voice-1" }]);
+  bot.settings.voice = false;
+  bot.enter(spectatorGame(8100, [{ puuid: "acct-a", teamId: 100, championId: AHRI }]));
+  /** The only member is back after a while: a new session, whose first check asks again. */
+  const rejoin = async (awayMs: number) => {
+    bot.move(A, null);
+    bot.sync();
+    bot.advance(awayMs);
+    bot.move(A, "voice-1");
+    await bot.start();
+  };
+  await bot.start();
+  await rejoin(14 * 60_000);
+  assert.equal(bot.sent.length, 1, "still remembered after 14 minutes");
+  await rejoin(60_000);
+  assert.equal(bot.sent.length, 2, "forgotten at 15 minutes");
+});
+
+test("the guild remembers at most 50 锦囊, forgetting the oldest first", async () => {
+  // Fifty-one members, each loading into their own game; the last one joins voice a moment later.
+  const specs = Array.from({ length: 51 }, (_, index) => ({
+    id: `3000000000000000${String(index).padStart(2, "0")}`, puuids: [`acct-${index}`], channel: index < 50 ? "voice-1" : null,
+  }));
+  const bot = harness(specs);
+  bot.settings.voice = false;
+  for (const [index, spec] of specs.entries()) bot.enter(spectatorGame(8200 + index, [{ puuid: spec.puuids[0], teamId: 100, championId: AHRI }]));
+  await bot.start();
+  assert.equal(bot.sent.length, 50);
+  bot.move(specs[50].id, "voice-1");
+  bot.sync();
+  await until(() => bot.sent.length === 51, "the fifty-first 锦囊");
+  // Everyone leaves; the first member comes back while their game still loads. Their 锦囊 was the oldest, so it is forgotten.
+  for (const spec of specs) bot.move(spec.id, null);
+  bot.sync();
+  bot.advance(GAME_START_INTERVAL_MS);
+  bot.move(specs[0].id, "voice-1");
+  await bot.start();
+  assert.equal(bot.sent.length, 52);
+  assert.equal(bot.sent[51].message.content, `<@${specs[0].id}>`);
+  // Remembering the first again pushed out the second; the third is still among the newest 50.
+  bot.move(specs[2].id, "voice-1");
+  bot.sync();
+  await bot.monitor.pollGameStart(GUILD);
+  await delay(20);
+  assert.equal(bot.sent.length, 52);
+});
+
+test("a failure inside a tick is logged once and counted; the watcher never rejects", async () => {
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown) => { unhandled.push(reason); };
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    const bot = harness([{ id: A, puuids: ["acct-a"], channel: "voice-1" }]);
+    await bot.start();
+    bot.settings.failMembers = true;
+    assert.deepEqual(await bot.tick(), { started: 0, posted: 0, errors: 1 });
+    assert.deepEqual(await bot.tick(), { started: 0, posted: 0, errors: 1 });
+    assert.equal(bot.errors.length, 1);
+    assert.match(bot.errors[0], /A game start check broke off: SQLITE_BUSY/);
+    // The timer fires the tick without waiting for it: nothing may escape that path either.
+    bot.settings.failMembers = false;
+    bot.move(A, null);
+    bot.sync();
+    mock.timers.enable({ apis: ["setInterval"] });
+    bot.move(A, "voice-1");
+    bot.sync();
+    await flush();
+    bot.settings.failMembers = true;
+    for (let tick = 0; tick < 3; tick++) {
+      bot.advance(GAME_START_INTERVAL_MS);
+      mock.timers.tick(GAME_START_INTERVAL_MS);
+      await flush();
+    }
+    await delay(20);
+    assert.deepEqual(unhandled, []);
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
+});
+
+test("after logged failures, the first check that works says so once", async () => {
+  const bot = harness([{ id: A, puuids: ["acct-a"], channel: "voice-1" }]);
+  bot.games.set("acct-a", new RiotApiError("Riot API returned an invalid active game.", "invalid_response"));
+  await bot.start();
+  await bot.tick();
+  assert.equal(bot.errors.length, 1);
+  bot.games.delete("acct-a");
+  await bot.tick();
+  await bot.tick();
+  assert.equal(bot.infos.filter((line) => line.includes("Game start checks work again after invalid_response")).length, 1);
+  // A failure after the recovery is logged again.
+  bot.games.set("acct-a", new RiotApiError("Riot API returned an invalid active game.", "invalid_response"));
+  await bot.tick();
+  assert.equal(bot.errors.length, 2);
+});
+
+test("the watcher's errors go to its own log, not the match monitor's", async () => {
+  const watcherLog: string[] = [];
+  const bot = harness([{ id: A, puuids: ["acct-a"], channel: "voice-1" }], { watcherLog });
+  bot.games.set("acct-a", new RiotApiError("Riot API rejected the key.", "forbidden", 403));
+  await bot.start();
+  assert.equal(watcherLog.length, 1);
+  assert.match(watcherLog[0], /game start checks are off/);
+  assert.deepEqual(bot.errors, []);
+});
+
+test("the watcher logs with its own prefix, never as a failed match poll", () => {
+  const lines: string[] = [];
+  const original = console.error;
+  console.error = (line: string) => { lines.push(line); };
+  try {
+    logGameStartFailure(new Error("Riot rejected the key for spectator (403), so game start checks are off for this monitoring session."));
+  } finally {
+    console.error = original;
+  }
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /Game start check failed: Riot rejected the key/);
+  assert.doesNotMatch(lines[0], /Match monitoring failed/);
+});
+
+test("a member flapping in and out of voice never pushes an account past six requests in two minutes", async () => {
+  mock.timers.enable({ apis: ["setInterval"] });
+  // B stays, so the session lives and every return of A is an early check.
+  const bot = harness([{ id: A, puuids: ["acct-a"], channel: "voice-1" }, { id: B, puuids: ["acct-b"], channel: "voice-1" }]);
+  bot.sync();
+  await flush();
+  for (let step = 1; step < 60; step++) {
+    // Every 2 seconds A leaves or comes back.
+    bot.advance(2_000);
+    mock.timers.tick(2_000);
+    bot.move(A, step % 2 === 0 ? "voice-1" : null);
+    bot.sync();
+    await flush();
+  }
+  const count = (puuid: string) => bot.requests.filter((request) => request === puuid).length;
+  assert.ok(count("acct-a") <= 6, `acct-a asked ${count("acct-a")} times`);
+  assert.ok(count("acct-b") <= 6, `acct-b asked ${count("acct-b")} times`);
+
+  // The only member flapping: every return starts a new session that checks at once.
+  const solo = harness([{ id: C, puuids: ["acct-c"], channel: null }]);
+  for (let step = 0; step < 60; step++) {
+    solo.advance(2_000);
+    mock.timers.tick(2_000);
+    solo.move(C, step % 2 === 0 ? "voice-1" : null);
+    solo.sync();
+    await flush();
+  }
+  assert.ok(solo.requests.length <= 6, `acct-c asked ${solo.requests.length} times`);
+  assert.ok(solo.requests.length >= 5, "but it is still checked about every 20 seconds");
 });
