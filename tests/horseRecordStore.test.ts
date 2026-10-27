@@ -6,7 +6,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
 import Database from "better-sqlite3";
 import { getTrackedMember, listTrackedMembers, removeTrackedMember, setMemberAccounts } from "../src/store/bindingStore";
-import { closeDatabase, getDatabase } from "../src/store/database";
+import { SCHEMA_VERSION, closeDatabase, getDatabase } from "../src/store/database";
 import {
   countMemberHorseRecords,
   eraseMemberHorseRecords,
@@ -107,7 +107,7 @@ test("a version 2 database upgrades through version 3 to the current version wit
   writeVersionTwoDatabase(filePath);
 
   const members = listTrackedMembers("guild-one");
-  assert.equal(getDatabase().pragma("user_version", { simple: true }), 6);
+  assert.equal(getDatabase().pragma("user_version", { simple: true }), SCHEMA_VERSION);
   assert.deepEqual(members.map((member) => [member.discordUserId, member.accounts.map((account) => account.puuid)]), [
     ["laowang", ["puuid-w1", "puuid-w2"]],
     ["xiaoli", ["puuid-l"]],
@@ -134,7 +134,7 @@ test("a version 2 database upgrades through version 3 to the current version wit
   // The upgraded file takes records, and a second open adds neither a backup nor a change.
   assert.equal(recordHorseRecords([makeHorseRecord({ guildId: "guild-one", discordUserId: "laowang", puuid: "puuid-w1" })]), 1);
   closeDatabase();
-  assert.equal(getDatabase().pragma("user_version", { simple: true }), 6);
+  assert.equal(getDatabase().pragma("user_version", { simple: true }), SCHEMA_VERSION);
   assert.equal(listHorseRecords("guild-one", { mock: false }).length, 1);
   assert.deepEqual(backupFiles(filePath), ["v2.sqlite3.v2.bak"]);
 });
@@ -160,7 +160,7 @@ test("a failed version 3 step rolls back and leaves the version 2 database intac
 test("a fresh database creates the horse table with its indexes and is not backed up", () => {
   const filePath = process.env.DATABASE_PATH!;
   const db = getDatabase();
-  assert.equal(db.pragma("user_version", { simple: true }), 6);
+  assert.equal(db.pragma("user_version", { simple: true }), SCHEMA_VERSION);
   assert.deepEqual(db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'horse_records' AND name NOT LIKE 'sqlite_%' ORDER BY name").all(), [
     { name: "horse_records_by_match" },
     { name: "horse_records_by_member" },

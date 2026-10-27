@@ -147,7 +147,8 @@ const MIGRATIONS: readonly string[] = [
     CREATE INDEX appeal_cases_by_time ON appeal_cases(closed_at);
   `,
 ];
-const SCHEMA_VERSION = MIGRATIONS.length;
+/** The schema version of this bot: a database at this version needs no migration. */
+export const SCHEMA_VERSION = MIGRATIONS.length;
 let database: Database.Database | undefined;
 
 /** Resolved lazily so importing a store does not create a database. */
