@@ -1,6 +1,6 @@
 import { EmbedBuilder } from "discord.js";
 import { formatScore } from "../services/announcementText";
-import { COLD_START_LINE, OTHER_SIDE_NOTE, positionLabel } from "../services/pregameBrief";
+import { COLD_START_LINE, NO_PICK_LINE, OTHER_SIDE_NOTE, isSnowflake, positionLabel } from "../services/pregameBrief";
 import type { PregameBrief, PregameLine } from "../services/pregameBrief";
 import { TIER_ICONS } from "./stableEmbed";
 
@@ -8,23 +8,26 @@ const TREND_ARROW = { up: "↑", down: "↓", flat: "→" } as const;
 const FIELD_LIMIT = 1024;
 const DESCRIPTION_LIMIT = 4096;
 
+/** Real Discord user IDs only, once each; anything else could never be a bound member and is dropped. */
+const snowflakes = (userIds: readonly string[]): string[] => [...new Set(userIds)].filter(isSnowflake);
+
 /**
  * The only users a pregame message may notify: the bound members the caller names, nobody else.
  * Duplicates collapse, and no role, everyone or reply mention is ever allowed.
  */
 export function pregameAllowedMentions(userIds: readonly string[]): { parse: []; roles: []; users: string[]; repliedUser: false } {
-  return { parse: [], roles: [], users: [...new Set(userIds)], repliedUser: false };
+  return { parse: [], roles: [], users: snowflakes(userIds), repliedUser: false };
 }
 
 /** The message content that carries the mentions, so the members hear about the game. Empty without members. */
 export function pregameMentionContent(userIds: readonly string[]): string {
-  return [...new Set(userIds)].map((id) => `<@${id}>`).join(" ");
+  return snowflakes(userIds).map((id) => `<@${id}>`).join(" ");
 }
 
 function teammateLine(line: PregameLine): string {
   const who = `<@${line.memberId}>`;
   if (line.isNew) return `${who} · ${line.champion} · 🆕 新马，军师还没见过，不评`;
-  const parts = [who, line.champion, line.recentTiers.map((tier) => TIER_ICONS[tier]).join("")];
+  const parts = [who, line.champion, line.recentTiers.map((tier) => TIER_ICONS[tier]).join(" ")];
   if (line.recentAverage !== null) {
     const trend = line.trend && line.previousAverage !== null
       ? ` ${TREND_ARROW[line.trend]}（前5局 ${formatScore(line.previousAverage)}）`
@@ -33,8 +36,7 @@ function teammateLine(line: PregameLine): string {
   }
   if (line.championRecord) {
     const { games, top, none } = line.championRecord;
-    const tiers = [top > 0 ? `${TIER_ICONS["特等马"]}${top}` : "", none > 0 ? `${TIER_ICONS["没有马"]}${none}` : ""].filter(Boolean);
-    parts.push(`这英雄 ${games} 局${tiers.length > 0 ? `：${tiers.join(" ")}` : ""}`);
+    parts.push(`本英雄 ${games} 局：${TIER_ICONS["特等马"]}${top} ${TIER_ICONS["没有马"]}${none}`);
   }
   if (line.position) parts.push(positionLabel(line.position));
   if (line.hotStreak > 0) parts.push(`🔥 连${line.hotStreak}局特等马`);
@@ -68,7 +70,7 @@ export function buildPregameEmbed(brief: PregameBrief): EmbedBuilder {
       name: "军师之选",
       value: picked
         ? `<@${picked.memberId}> · ${picked.reason}（近${picked.games}局均 ${formatScore(picked.average)}）`
-        : "暂无，军师还没看到谁的底细。",
+        : brief.coldStart ? "暂无，军师还没看到谁的底细。" : NO_PICK_LINE,
     },
     { name: "军师指令", value: clip(brief.instruction.text, FIELD_LIMIT) },
   );

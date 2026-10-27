@@ -122,10 +122,12 @@ For each teammate it uses the latest 10 records of the current data mode and sho
 - the record on the champion in the game when there are at least 2 games, and the likely position, which is 打野 with Smite and otherwise the most common position on that champion;
 - 🔥 for a run of at least 2 特等马 and 🥶 for a run of at least 2 没有马.
 
-军师之选 is the teammate with the highest last-5 average, plus up to 2 points for the share of 特等马 on this champion once there are at least 3 games on it.
-Ties go to the earlier bound member.
-军师指令 aims at the strongest negative signal in the team, in this order: a champion that ended as 没有马 in at least 2 games and 30% of at least 3, then the longest cold run, then the biggest fall in form.
-Without a negative signal it is a playful order to the pick.
+军师之选 is the teammate with the highest last-5 average among those with at least 3 recorded games, plus up to 2 points when the champion in the game is a signature champion (拿手英雄).
+A champion is a signature champion with at least 2 games as 特等马 in at least half of at least 3 games on it, and more 特等马 than 没有马.
+Ties go to the earlier bound member, and when nobody has 3 games nobody is picked and the line says `底细还不够，军师先不押人。` before the order.
+The reason spoken after the pick's name is one of: `阿狸是他的拿手英雄`, `连着N局特等马`, `近况最旺` (average 6.5 or more and the highest raw average), `状态最稳` (4.5 or more), or else `N个里先挑他`, which is `先押他了` with one teammate.
+军师指令 aims at the strongest negative signal in the team, never at the pick and never at a signature champion: a champion that ended as 没有马 in at least 2 games and 30% of at least 3, then the longest cold run, then the biggest fall in form.
+Without a negative signal it is a playful order to the pick, which names the pick again so the sentence makes sense heard alone.
 The wording is fixed phrases about play, chosen with `seededChooser` seeded by `pregame:` and the game ID, so the same game always gets the same brief.
 
 The spoken line is at most two sentences and 75 characters, the mock label included, and starts with `模拟锦囊，` in mock mode.
@@ -141,8 +143,10 @@ Enemies, strangers and a tracked member on the other team are never passed to th
 Strangers appear only as `还有 N 位路人队友` in the footer, and the footer always says `对面不评`.
 A bound member on the other side is acknowledged by `对面也有自家人，军师两边不站`, without a name, a mention or a rating.
 The card shows bound teammates by `<@id>` mention, never by a Riot name, and the speech sanitizes names like the announcement does.
+The spoken name is `storedGameName`, which must come from the stored binding and never from spectator or match data about the live game.
+The builder throws for a `memberId` that is not a Discord snowflake (17 to 20 digits) and for a repeated `memberId`, so a caller bug fails loudly instead of printing a PUUID or a name into a mention.
 Mock and real records are never mixed: the builder refuses a record whose kind differs from the brief, and mock cards carry `模拟数据 · 军师赛前锦囊` and the mock footer.
-`pregameAllowedMentions(userIds)` gives the `allowedMentions` for the message: no parse, no roles and only the members named.
+`pregameAllowedMentions(userIds)` gives the `allowedMentions` for the message: no parse, no roles and only the named members, and it drops anything that is not a snowflake.
 
 ## Verification
 

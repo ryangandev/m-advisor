@@ -10,6 +10,7 @@ import type { HorseRecord } from "../store/horseRecordStore";
 export const MAX_PREGAME_SPEECH_CHARACTERS = 75;
 export const MOCK_PREGAME_PREFIX = "模拟锦囊，";
 export const COLD_START_LINE = "马厩里还没有各位的底细，军师掐指一算……";
+export const NO_PICK_LINE = "底细还不够，军师先不押人。";
 export const OTHER_SIDE_NOTE = "对面也有自家人，军师两边不站";
 
 /** Games of the recent form window that make up "the last five" and "the five before". */
@@ -23,20 +24,34 @@ const EPSILON = 1e-9;
 const MIN_CHAMPION_GAMES = 3;
 /** A champion is a bad one for a member when at least this share of its games, and two of them, were 没有马. */
 const CHAMPION_NONE_SHARE = 0.3;
-/** A champion is a regular 特等马 for a member at this share of its games. */
-const CHAMPION_TOP_SHARE = 0.3;
+/**
+ * A champion is a signature champion (拿手英雄) when the member was 特等马 on it in at least this many games,
+ * in at least this share of them, and more often than 没有马.
+ */
+const SIGNATURE_MIN_TOP = 2;
+const SIGNATURE_MIN_SHARE = 0.5;
+/** 军师之选 needs this many recorded games, or one lucky game would beat a veteran. */
+const MIN_PICK_RECORDS = 3;
+/** The average that justifies calling a pick's form the hottest, and the one for a steady form. */
+const HOT_FORM = 6.5;
+const STEADY_FORM = 4.5;
+/** A snowflake: what a real Discord user ID looks like. Anything else is a bug upstream and is refused. */
+const SNOWFLAKE = /^\d{17,20}$/;
+export const isSnowflake = (value: unknown): value is string => typeof value === "string" && SNOWFLAKE.test(value);
 /** The pick gains up to this many score points for being a 特等马 regularly on this champion. */
 const CHAMPION_TOP_BONUS = 2;
-/** A pick whose last-five average is below this is described as the best of a modest lot. */
-const STRONG_FORM = 6.5;
 /** Champion records in the line need at least this many games. */
 const MIN_CHAMPION_LINE_GAMES = 2;
 
 /** One bound member on the perspective team. Enemies, strangers and members on the other team never get here. */
 export interface PregameTeammate {
+  /** The Discord user ID of the bound member. Must be a snowflake; duplicates are refused. */
   memberId: string;
-  /** The stored Riot game name of the account that is in the game. */
-  name: string;
+  /**
+   * The game name stored with the member's binding, shown and spoken as is after sanitizing.
+   * It must come from our own stored binding, never from spectator or match data about the live game.
+   */
+  storedGameName: string;
   championId: number;
   /** Whether the player took Smite, which means jungle. */
   smite: boolean;
@@ -109,10 +124,12 @@ interface Analysis {
   champion: string;
   profile: HorseProfile;
   line: PregameLine;
-  /** Share of 特等马 and 没有马 on this champion; zero below three games. */
+  /** Share of 特等马 on this champion when it is a signature champion (拿手英雄), otherwise zero. */
   championTopShare: number;
+  /** Share and count of 没有马 on this champion; zero below three games. */
   championNoneShare: number;
   championNoneCount: number;
+  recordCount: number;
 }
 
 const POSITION_LABEL: Record<Position, string> = { TOP: "上单", JUNGLE: "打野", MIDDLE: "中单", BOTTOM: "下路", UTILITY: "辅助" };
@@ -159,18 +176,20 @@ function analyze(teammate: PregameTeammate, mock: boolean): Analysis {
   const top = onChampion.filter((record) => record.tier === "特等马").length;
   const none = onChampion.filter((record) => record.tier === "没有马").length;
   const enough = onChampion.length >= MIN_CHAMPION_GAMES;
+  const signature = enough && top >= SIGNATURE_MIN_TOP && top / onChampion.length >= SIGNATURE_MIN_SHARE - EPSILON && top > none;
   const position = teammate.smite ? "JUNGLE" : mostCommonPosition(onChampion);
   const champion = championLabel({ championId: teammate.championId, championName: readableName(onChampion[0]?.championName || "神秘英雄") });
   return {
     teammate,
     champion,
     profile,
-    championTopShare: enough ? top / onChampion.length : 0,
+    championTopShare: signature ? top / onChampion.length : 0,
     championNoneShare: enough ? none / onChampion.length : 0,
     championNoneCount: enough ? none : 0,
+    recordCount: records.length,
     line: {
       memberId: teammate.memberId,
-      name: readableName(teammate.name),
+      name: readableName(teammate.storedGameName),
       champion,
       isNew: records.length === 0,
       recentTiers: last.map((record) => record.tier),
@@ -190,8 +209,8 @@ type Phrase = (who: string, context: PhraseContext) => string;
 
 /** All instructions talk about play only. */
 const CHAMPION_BAD: readonly Phrase[] = [
-  (who, { champion }) => `${who}的${champion}一向翻车，这把稳着点，先保命再说。`,
-  (who, { champion }) => `${who}这匹${champion}总是跑不动，这把别硬拼，跟着队友走。`,
+  (who, { champion }) => `${who}的${champion}翻过好几次车，这把稳着点，先保命再说。`,
+  (who, { champion }) => `${who}这匹${champion}跑得不太顺，这把别硬拼，跟着队友走。`,
 ];
 const COLD_STREAK: readonly Phrase[] = [
   (who) => `${who}连着没跑出来，这把先稳住，少送人头。`,
@@ -203,11 +222,13 @@ const DOWN_TREND: readonly Phrase[] = [
   (who) => `${who}状态有点下滑，这把先找回节奏。`,
 ];
 const PICK_HOT: readonly Phrase[] = [
-  (who) => `${who}手感正热，这把大胆去抓。`,
+  (who) => `${who}手感正热，这把放开打。`,
   (who) => `${who}正在兴头上，这把继续带队打节奏。`,
 ];
+/** Grabbing is a jungle job, so this one is offered to a Smite player only. */
+const PICK_HOT_JUNGLE: Phrase = (who) => `${who}手感正热，这把大胆去抓。`;
 const PICK_ORDER: readonly Phrase[] = [
-  (who) => `${who}这把就看你了，别让军师白押。`,
+  (who) => `${who}，这把就看你了，别让军师白押。`,
   (who) => `${who}扛起旗来，这把带着队友打出节奏。`,
 ];
 const GENERIC_ORDER: readonly string[] = [
@@ -224,14 +245,18 @@ function speechName(name: string, limit: number): string {
 /** Longest names first; the form phrase goes before the names are cut further. */
 const NAME_LIMITS = [32, 10, 6, 4, 2, 1] as const;
 
-interface PickCandidate { analysis: Analysis; score: number; bonus: number }
+interface PickCandidate { analysis: Analysis; score: number }
 
-function pickReason(candidate: PickCandidate): string {
-  const { line } = candidate.analysis;
-  if (candidate.analysis.championTopShare >= CHAMPION_TOP_SHARE) return "这英雄是看家马";
+/** Why this teammate, in a phrase that follows the name and is true of the pick. Each tier names only what the data shows. */
+function pickReason(candidate: PickCandidate, qualified: readonly Analysis[]): string {
+  const { line, champion } = candidate.analysis;
+  if (candidate.analysis.championTopShare > 0) return `${champion}是他的拿手英雄`;
   if (line.hotStreak > 0) return `连着${line.hotStreak}局特等马`;
-  if ((line.recentAverage ?? 0) >= STRONG_FORM) return "近况最旺";
-  return "矮子里拔将军";
+  const average = line.recentAverage ?? 0;
+  const highest = qualified.every((other) => (other.line.recentAverage ?? 0) <= average + EPSILON);
+  if (average >= HOT_FORM - EPSILON && highest) return "近况最旺";
+  if (average >= STEADY_FORM - EPSILON) return "状态最稳";
+  return qualified.length > 1 ? `${qualified.length}个里先挑他` : "先押他了";
 }
 
 /**
@@ -245,18 +270,25 @@ export function buildPregameBrief(input: PregameBriefInput): PregameBrief {
   if (teammates.length === 0) throw new TypeError("A pregame brief needs at least one bound teammate.");
   if (!Number.isSafeInteger(input.strangerCount) || input.strangerCount < 0) throw new TypeError("strangerCount must be a non-negative integer.");
 
+  const seen = new Set<string>();
+  for (const teammate of teammates) {
+    if (!isSnowflake(teammate.memberId)) throw new TypeError("A pregame teammate needs a Discord user ID as memberId.");
+    if (seen.has(teammate.memberId)) throw new TypeError("A pregame teammate may appear only once.");
+    seen.add(teammate.memberId);
+  }
   const analyses = teammates.map((teammate) => analyze(teammate, mock));
   const rated = analyses.filter((analysis) => !analysis.line.isNew);
   const coldStart = rated.length === 0;
   const choose = seededChooser(`pregame:${matchId}`);
   const prefix = mock ? MOCK_PREGAME_PREFIX : "";
 
-  // 军师之选: best recent form, plus a bonus for being a regular 特等马 on this champion. Bind order breaks ties.
+  // 军师之选: best recent form among teammates with at least three games, plus a bonus for a signature champion.
+  // Bind order breaks ties. Without three games of history nobody is picked.
+  const qualified = rated.filter((analysis) => analysis.recordCount >= MIN_PICK_RECORDS);
   let pick: PickCandidate | null = null;
-  for (const analysis of rated) {
-    const bonus = analysis.championTopShare * CHAMPION_TOP_BONUS;
-    const score = (analysis.line.recentAverage ?? 0) + bonus;
-    if (!pick || score > pick.score + EPSILON) pick = { analysis, score, bonus };
+  for (const analysis of qualified) {
+    const score = (analysis.line.recentAverage ?? 0) + analysis.championTopShare * CHAMPION_TOP_BONUS;
+    if (!pick || score > pick.score + EPSILON) pick = { analysis, score };
   }
 
   // 军师指令: the strongest negative signal in the team, a champion first, then a cold run, then a falling form.
@@ -266,7 +298,9 @@ export function buildPregameBrief(input: PregameBriefInput): PregameBrief {
   };
   for (const analysis of rated) {
     const { line } = analysis;
-    if (analysis.championNoneCount >= 2 && analysis.championNoneShare >= CHAMPION_NONE_SHARE - EPSILON) {
+    // The pick is never the target of a negative instruction, and a signature champion is never called a bad one.
+    if (analysis === pick?.analysis) continue;
+    if (analysis.championTopShare === 0 && analysis.championNoneCount >= 2 && analysis.championNoneShare >= CHAMPION_NONE_SHARE - EPSILON) {
       consider(analysis, 300 + analysis.championNoneShare, CHAMPION_BAD);
     } else if (line.coldStreak > 0) {
       consider(analysis, 200 + line.coldStreak, COLD_STREAK);
@@ -283,37 +317,45 @@ export function buildPregameBrief(input: PregameBriefInput): PregameBrief {
   let render: (nameLimit: number, withForm: boolean) => string;
   let pickForm = "";
 
+  const named = (analysis: Analysis, nameLimit: number) => speechName(analysis.teammate.storedGameName, nameLimit);
   if (coldStart) {
     const generic = choose(GENERIC_ORDER);
     instruction = { memberId: null, text: generic };
     render = () => `${COLD_START_LINE}${generic}`;
   } else {
-    const picked = pick!;
-    pickForm = pickReason(picked);
+    const picked = pick?.analysis ?? null;
+    pickForm = pick ? pickReason(pick, qualified) : "";
     const opener = choose(openers);
-    let phrase: Phrase;
-    let subject: Analysis;
-    // An order to the pick follows the sentence that just named them, so the speech does not repeat the name.
-    let nameSecondTime = true;
-    if (target) {
-      const chosen = target as { analysis: Analysis; phrases: readonly Phrase[] };
+    const chosen = target as { analysis: Analysis; phrases: readonly Phrase[] } | null;
+    let phrase: Phrase | null = null;
+    let subject: Analysis | null = null;
+    if (chosen) {
       subject = chosen.analysis;
       // The dimension variant needs a named weak spot.
       phrase = choose(subject.profile.weakest ? chosen.phrases : chosen.phrases.filter((candidate) => candidate !== COLD_STREAK[2]));
-    } else {
-      subject = picked.analysis;
-      phrase = choose(picked.analysis.line.hotStreak > 0 ? PICK_HOT : PICK_ORDER);
-      nameSecondTime = false;
+    } else if (picked) {
+      subject = picked;
+      const hot = picked.line.hotStreak > 0;
+      phrase = choose(hot ? (picked.teammate.smite ? [...PICK_HOT, PICK_HOT_JUNGLE] : PICK_HOT) : PICK_ORDER);
     }
-    const context: PhraseContext = {
-      champion: subject.champion,
-      dimension: subject.profile.weakest ? DIMENSION_LABELS[subject.profile.weakest.dimension] : null,
-    };
-    instruction = { memberId: subject.teammate.memberId, text: phrase(`<@${subject.teammate.memberId}>`, context) };
-    render = (nameLimit, withForm) => {
-      const first = `${opener(speechName(picked.analysis.teammate.name, nameLimit))}${withForm ? `，${pickForm}` : ""}。`;
-      return `${first}${phrase(nameSecondTime ? speechName(subject.teammate.name, nameLimit) : "", context)}`;
-    };
+    if (subject && phrase) {
+      const context: PhraseContext = {
+        champion: subject.champion,
+        dimension: subject.profile.weakest ? DIMENSION_LABELS[subject.profile.weakest.dimension] : null,
+      };
+      const say = phrase;
+      const who = subject;
+      instruction = { memberId: who.teammate.memberId, text: say(`<@${who.teammate.memberId}>`, context) };
+      render = (nameLimit, withForm) => {
+        const first = picked ? `${opener(named(picked, nameLimit))}${withForm ? `，${pickForm}` : ""}。` : NO_PICK_LINE;
+        return `${first}${say(named(who, nameLimit), context)}`;
+      };
+    } else {
+      // Nobody has three games and nothing is wrong: a generic order after saying why no one is picked.
+      const generic = choose(GENERIC_ORDER);
+      instruction = { memberId: null, text: generic };
+      render = () => `${NO_PICK_LINE}${generic}`;
+    }
   }
 
   let speech: string | null = null;
