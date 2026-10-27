@@ -31,7 +31,7 @@ export function formatScore(score: number): string {
 }
 
 /** Keep names from turning into Discord mentions or spoken control-like text. */
-function readableName(name: string): string {
+export function readableName(name: string): string {
   return (typeof name === "string" ? name : "").replace(/[@<>`*_~|\\\r\n]/g, " ").replace(/\s+/g, " ").trim().slice(0, 32) || "无名氏";
 }
 
@@ -41,7 +41,7 @@ export function championLabel(participant: MatchParticipant): string {
 }
 
 /** Deterministic per-match choices keep a report reproducible while varying between matches. */
-function chooser(seed: string): <T>(options: readonly T[]) => T {
+export function seededChooser(seed: string): <T>(options: readonly T[]) => T {
   let state = 2166136261;
   for (const character of seed) state = Math.imul(state ^ character.charCodeAt(0), 16777619);
   return (options) => {
@@ -183,7 +183,7 @@ function roastEventLine(event: MatchEvent): string | undefined {
   }
 }
 
-function praise(horse: RankedHorse, minutes: number, won: boolean, choose: ReturnType<typeof chooser>, events: AnnouncementOptions["events"]): string {
+function praise(horse: RankedHorse, minutes: number, won: boolean, choose: ReturnType<typeof seededChooser>, events: AnnouncementOptions["events"]): string {
   const context = { name: displayName(horse), horse, minutes };
   const moment = strongestEvent(events, horse.participant.puuid, "praise");
   // Otherwise cite the strongest dimension that is genuinely good for this position and whose number sounds good out loud.
@@ -192,7 +192,7 @@ function praise(horse: RankedHorse, minutes: number, won: boolean, choose: Retur
   return [choose(PRAISE_OPENERS)(context), detail ?? PRAISE_GENERIC(context), won ? "" : "虽然输了，但这把锅跟你无关。", choose(PRAISE_CLOSERS)].join("");
 }
 
-function roast(horse: RankedHorse, minutes: number, won: boolean, choose: ReturnType<typeof chooser>, events: AnnouncementOptions["events"]): string {
+function roast(horse: RankedHorse, minutes: number, won: boolean, choose: ReturnType<typeof seededChooser>, events: AnnouncementOptions["events"]): string {
   const context = { name: displayName(horse), horse, minutes };
   const moment = strongestEvent(events, horse.participant.puuid, "roast");
   const weakest = [...horse.strengths].reverse().filter((dimension) => horse.dimensions[dimension]! <= 0.4);
@@ -256,7 +256,7 @@ export function buildMatchAnnouncement(detail: MatchDetail, trackedPuuid: string
     return { speech: `${prefix}${summary}`, report: { title, summary, lines: [], mock } };
   }
 
-  const choose = chooser(ranking.matchId);
+  const choose = seededChooser(ranking.matchId);
   const best = ranking.horses[0];
   const worst = ranking.horses.at(-1)!;
   const summary = `${displayName(tracked)}这局${result}，打了${minutes}分钟。军师羽扇一挥，本局马匹鉴定如下。`;
