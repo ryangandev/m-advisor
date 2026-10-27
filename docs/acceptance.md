@@ -133,6 +133,7 @@ A server administrator should join the configured channel and run these commands
 4. Confirm the bot joins, speaks audibly and leaves; repeat with `Old Man`.
 5. `/simulate outcome:胜利`, then `/simulate outcome:失败`.
 6. Confirm both outcomes and mock labels are correct, no old game is replayed and no duplicate announcement appears on the next poll.
+   Then run `/simulate outcome:开局（赛前锦囊）` and confirm the `模拟数据 · 军师赛前锦囊` card is posted before the `模拟锦囊，` line plays.
 7. Stop with Ctrl+C, launch again and confirm `/bindings` and the chosen voice persist.
 8. Leave voice, move out of the permitted test channel or `/unbind`, and confirm stale work does not play there.
 

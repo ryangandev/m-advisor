@@ -86,7 +86,7 @@ An invalid version or icon ID omits the thumbnail rather than breaking the reply
 ## Active games (spectator-v5)
 
 `getActiveGame(puuid)` in `src/utils/riotSpectatorApi.ts` asks `GET https://na1.api.riotgames.com/lol/spectator/v5/active-games/by-summoner/{puuid}` whether an account is in a game right now.
-Only the request layer exists so far; the watcher that polls it is a later change.
+The game start watcher polls it; see [Game start](announcements.md#game-start).
 
 Verified against Riot with the development key on 2026-10-27:
 
