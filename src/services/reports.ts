@@ -1,6 +1,7 @@
 import { listTrackedMembers } from "../store/bindingStore";
 import { listHorseRecords } from "../store/horseRecordStore";
 import type { HorseRecord } from "../store/horseRecordStore";
+import { markReportHandled } from "../store/reportStore";
 import type { ReportKind } from "../store/reportStore";
 import { pacificDay, pacificWeek } from "../utils/pacificTime";
 import type { TimeRange } from "../utils/pacificTime";
@@ -153,4 +154,15 @@ export function loadReport(guildId: string, kind: ReportKind, range: TimeRange, 
   const memberIds = listTrackedMembers(guildId).map((member) => member.discordUserId);
   const records = listHorseRecords(guildId, { mock, from: range.start, to: range.end });
   return buildReportData({ kind, range, mock, records, memberIds });
+}
+
+/**
+ * Marks every period that has already finished as handled, for both data modes.
+ * Called when a channel is first set or a kind is switched on, so turning reports on posts from the next period
+ * onward instead of replaying yesterday. `/report` can still show any finished period on demand.
+ */
+export function skipFinishedPeriods(guildId: string, kinds: readonly ReportKind[], now: number): void {
+  for (const kind of kinds) {
+    for (const mock of [false, true]) markReportHandled(guildId, mock, kind, latestDuePeriod(kind, now).start, now);
+  }
 }

@@ -14,9 +14,11 @@ import {
   latestDuePeriod,
   loadReport,
   nextReportDueAt,
+  skipFinishedPeriods,
 } from "../src/services/reports";
 import { pacificDay, pacificWeek } from "../src/utils/pacificTime";
 import { buildReportEmbed, periodLabel } from "../src/utils/reportEmbed";
+import { getReportMark, markReportHandled } from "../src/store/reportStore";
 import { makeHorseRecord, recordTracked } from "./helpers/horseRecords";
 
 const utc = (iso: string) => Date.parse(iso);
@@ -242,4 +244,18 @@ test("a full ten-member week stays inside Discord's field limits", () => {
 test("period labels use Pacific dates, even when UTC is already the next day", () => {
   assert.equal(periodLabel({ kind: "day", range: pacificDay(utc("2026-10-28T03:00:00Z")) }), "2026-10-27 周二");
   assert.equal(periodLabel({ kind: "week", range: pacificWeek(utc("2026-11-02T09:00:00Z")) }), "2026-11-02 至 2026-11-08");
+});
+
+test("switching reports on skips the finished periods in both data modes and never moves a mark back", () => {
+  const now = utc("2026-10-28T19:00:00Z");
+  skipFinishedPeriods(GUILD, ["day"], now);
+  for (const mock of [false, true]) {
+    assert.equal(getReportMark(GUILD, mock, "day"), pacificDay(utc("2026-10-27T19:00:00Z")).start);
+    assert.equal(getReportMark(GUILD, mock, "week"), undefined, "only the requested kind is touched");
+  }
+  skipFinishedPeriods(GUILD, ["week"], now);
+  assert.equal(getReportMark(GUILD, false, "week"), pacificWeek(utc("2026-10-21T19:00:00Z")).start);
+  markReportHandled(GUILD, false, "day", pacificDay(utc("2026-11-20T19:00:00Z")).start, 1);
+  skipFinishedPeriods(GUILD, ["day"], now);
+  assert.equal(getReportMark(GUILD, false, "day"), pacificDay(utc("2026-11-20T19:00:00Z")).start);
 });
