@@ -91,7 +91,7 @@ OpusScript provides the supported portable Opus encoder without the deprecated n
 Node's native AES-256-GCM supplies transport encryption on this Mac.
 FFmpeg is installed through `ffmpeg-static` and must be verified as an executable, not merely as a package.
 SQLite uses better-sqlite3.
-The `/why` radar image is rasterized by `@resvg/resvg-js`, pinned at 2.6.2, which ships prebuilt binaries and has no install script; it draws Chinese with a system CJK font and bundles none (see [/why](why.md#fonts)).
+The `/why` radar image is rasterized by `@resvg/resvg-js`, pinned at 2.6.2, which ships prebuilt binaries and has no install script; it draws Chinese with the Noto Sans SC subset bundled in `assets/fonts` and falls back to system CJK fonts (see [/why](why.md#fonts)).
 
 Keep `.env`, `.data`, audio output and model weights outside source history.
 Installing dependencies and compiling never proves that someone heard audio in Discord.
