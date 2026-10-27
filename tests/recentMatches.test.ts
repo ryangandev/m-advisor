@@ -105,6 +105,37 @@ test("a stopped session with a member in voice says monitoring stopped", () => {
   assert.match(embed.description!, /^⚪ 没在监听：有成员在语音频道里，但监听已停止。/);
 });
 
+function embedLength(embed: ReturnType<ReturnType<typeof buildRecentMatchesEmbed>["toJSON"]>): number {
+  return (embed.title?.length ?? 0) + (embed.description?.length ?? 0) + (embed.footer?.text.length ?? 0)
+    + (embed.fields ?? []).reduce((total, field) => total + field.name.length + field.value.length, 0);
+}
+
+test("ten members with ten matches each stay within Discord's 6000-character embed total", () => {
+  const members = Array.from({ length: 10 }, (_, index) => ({
+    memberId: `10000000000000000${index}`, order: index + 1, voiceChannelId: `20000000000000000${index}`, monitored: true,
+  }));
+  const tenMatches = Array.from({ length: 10 }, (_, index) => ({ ...account().matches[index % 3], matchId: `NA1_${100 - index}` }));
+  const accounts = members.map((member) => ({ ...account(), memberOrder: member.order, riotId: `LongerRiotName${member.order}#NA1`, matches: tenMatches }));
+  const embed = buildRecentMatchesEmbed(view({ members, accounts, status: {
+    active: true, startedAt: ENDED, lastPollAt: ENDED, announced: new Set(), presentMemberIds: members.map((member) => member.memberId),
+    lastError: { message: "x".repeat(400), at: ENDED },
+  } })).toJSON();
+  assert.ok(embedLength(embed) <= 6000, `embed total is ${embedLength(embed)}`);
+  assert.equal(embed.fields!.length, 10);
+  for (const field of embed.fields!) {
+    const shown = field.value.split("\n");
+    assert.match(shown[0], /^✅ 胜 · 阿狸/, "the newest row is always kept");
+    assert.equal(shown.at(-1), "…", "dropped rows are marked");
+    assert.ok(shown.length < 11);
+  }
+});
+
+test("a short list keeps every row without a marker", () => {
+  const embed = buildRecentMatchesEmbed(view()).toJSON();
+  assert.equal(embed.fields![0].value.split("\n").length, 5);
+  assert.doesNotMatch(embed.fields![0].value, /…/);
+});
+
 test("the 25-field cap counts accounts across every member", () => {
   const accounts = Array.from({ length: 30 }, (_, index) => ({ ...account(), memberOrder: Math.floor(index / 3) + 1, riotId: `Player${index}#NA1` }));
   const embed = buildRecentMatchesEmbed(view({ accounts })).toJSON();
