@@ -146,6 +146,37 @@ const MIGRATIONS: readonly string[] = [
     ) STRICT;
     CREATE INDEX appeal_cases_by_time ON appeal_cases(closed_at);
   `,
+  // 6 -> 7: the LP result of each tracked member in each ranked match, written once when the member's 段位变化 row is final.
+  // LP history cannot be backfilled later. Deliberately no foreign key, like horse_records: /unbind keeps history, and only /stable-erase removes it.
+  // Only a new table, so every existing row is untouched. Pending, stale and unavailable outcomes are never stored.
+  `
+    CREATE TABLE rank_results (
+      guild_id TEXT NOT NULL CHECK(length(trim(guild_id)) > 0),
+      discord_user_id TEXT NOT NULL CHECK(length(trim(discord_user_id)) > 0),
+      match_id TEXT NOT NULL CHECK(length(trim(match_id)) > 0),
+      mock INTEGER NOT NULL CHECK(mock IN (0, 1)),
+      puuid TEXT NOT NULL CHECK(length(trim(puuid)) > 0),
+      queue_type TEXT NOT NULL CHECK(queue_type IN ('solo', 'flex')),
+      played_at INTEGER NOT NULL,
+      recorded_at INTEGER NOT NULL,
+      kind TEXT NOT NULL CHECK(kind IN ('change', 'promoted', 'demoted', 'placed', 'unattributable')),
+      tier TEXT NOT NULL CHECK(length(trim(tier)) > 0),
+      division TEXT CHECK(division IS NULL OR division IN ('I', 'II', 'III', 'IV')),
+      league_points INTEGER NOT NULL CHECK(league_points >= 0),
+      lp_delta INTEGER,
+      before_tier TEXT CHECK(before_tier IS NULL OR length(trim(before_tier)) > 0),
+      before_division TEXT CHECK(before_division IS NULL OR before_division IN ('I', 'II', 'III', 'IV')),
+      before_league_points INTEGER CHECK(before_league_points IS NULL OR before_league_points >= 0),
+      CHECK((before_tier IS NULL) = (before_league_points IS NULL)),
+      CHECK(before_division IS NULL OR before_tier IS NOT NULL),
+      CHECK(kind NOT IN ('change', 'promoted', 'demoted') OR before_tier IS NOT NULL),
+      CHECK(kind NOT IN ('change', 'promoted') OR lp_delta IS NOT NULL),
+      CHECK(kind NOT IN ('placed', 'unattributable') OR lp_delta IS NULL),
+      CHECK(kind <> 'placed' OR before_tier IS NULL),
+      PRIMARY KEY (guild_id, discord_user_id, match_id, mock)
+    ) STRICT;
+    CREATE INDEX rank_results_by_member ON rank_results(guild_id, discord_user_id, mock, played_at);
+  `,
 ];
 /** The schema version of this bot: a database at this version needs no migration. */
 export const SCHEMA_VERSION = MIGRATIONS.length;
