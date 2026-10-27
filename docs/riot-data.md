@@ -26,6 +26,7 @@ Their allied support has no kills but strong vision and protection, and their al
 
 Each mock match also has a match-v5 timeline body, built on request by `buildMockTimeline()` and passed through the same parser as a real timeline.
 Hand-written key moments sit between filler kills, and every player's kills, deaths and assists and each team's dragons, barons and heralds match the match detail.
+Scripted objective fights happen at the monster's pit; filler deaths happen in the victim's lane, away from both pits and at least 29 seconds apart, so they never form a fight.
 In both outcomes the support carries a won objective fight and the feeding ADC is the first to fall in a lost one, so mock reports cite a moment for both the 特等马 and the 没有马.
 
 Other Riot IDs receive deterministic synthetic profiles, and previously persisted bindings can be tested in mock mode.
@@ -54,12 +55,16 @@ Response parsers normalize omitted zero statistics and reject malformed profile,
 `parseMatchDetail()` keeps each participant's position (team position, falling back to individual position), champion, K/D/A, result and the scoring statistics, plus team objective counts, the game end time when present, whether the game was a remake, and whether it was aborted without a winner (`endOfGameResult` other than `GameComplete`).
 Optional scoring statistics that are missing or non-numeric are omitted rather than treated as zero.
 
-`getMatchTimeline()` reads `/lol/match/v5/matches/{matchId}/timeline` on the Americas host with the same requester, retries and errors as match detail.
-`parseMatchTimeline()` in `src/utils/matchTimeline.ts` keeps only champion kills, multi-kills and epic monster kills, maps participant IDs to PUUIDs from `info.participants` (falling back to the order of `metadata.participants`), and skips malformed events instead of rejecting the timeline.
+`getMatchTimeline()` reads `/lol/match/v5/matches/{matchId}/timeline` on the Americas host with its own requester.
+That requester makes one attempt, aborts the request after 5 seconds, never retries, and fails at once during its own 429 cooldown instead of waiting.
+A 429 on a timeline therefore never sets the shared cooldown that profile and match requests honor.
+`parseMatchTimeline()` in `src/utils/matchTimeline.ts` keeps only champion kills with their positions, first blood and multi-kill awards, and epic monster kills.
+It maps participant IDs to PUUIDs from `info.participants`, falling back to the order of `metadata.participants`, and skips malformed events instead of rejecting the timeline.
+Voidgrubs (`HORDE`) and other monsters are ignored.
 Timelines are not cached, because each finished match is announced once.
-The timeline is optional flavor for the report: `fetchMatchEvents()` returns null and logs a warning when it fails, is malformed or takes longer than 5 seconds, and the report then uses statistics only.
+The timeline is optional flavor for the report: `fetchMatchEvents()` returns null and logs a warning when the request fails, times out or returns a malformed body, and the report then uses statistics only.
 It never falls back to a mock timeline, and it skips the request for remakes, aborted games and games shorter than 10 minutes.
-The parser follows Riot's documented TimelineDto and has not yet been checked against a real timeline.
+The fields it reads (`position`, `shutdownBounty`, `KILL_FIRST_BLOOD`, `KILL_MULTI` with `multiKillLength`, `killerTeamId`, `monsterSubType` and `info.participants`) were confirmed on a real NA timeline on 2026-10-07.
 
 The latest match lookup checks up to 20 matches for supported Summoner's Rift queues and caches at most 200 immutable match details.
 Supported queues are 400, 420, 430, 440, 480, and 490; this includes Swiftplay and Quickplay and preserves Blind Pick for older history.

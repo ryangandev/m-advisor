@@ -119,6 +119,12 @@ Because those percentiles are position-relative but the lines quote absolute num
 If the first dimension's number misses its bar, the next qualifying dimension is tried; if none qualifies, a general compliment or jab is used.
 On the reference sample that fallback happened in 2.5% of praises and 5.3% of roasts.
 Extra lines call out a losing 特等马, a winning 没有马, and the summoner when they are 特等马 or 没有马 themselves.
+Roasts stay about in-game play; they never target identity, appearance or family.
+Phrase choices are seeded by the match ID, so the same match always produces the same report.
+Mock reports start with `模拟战报` and carry a mock title and footer.
+Names are stripped of mention and Markdown characters before use.
+On the reference sample, speech ran 268 to 377 characters with a median of 317.
+The 271-character mock report produced 52.6 seconds of Serena audio, so a typical report lasts about one minute.
 
 ### Timeline moments
 
@@ -126,36 +132,38 @@ When the match-v5 timeline is available, a concrete moment can replace the stati
 It replaces that one line rather than adding one, so the report does not grow; the openers, closers and phrase choices stay the same.
 At most one moment is cited for the 特等马 and one for the 没有马, and without a qualifying moment the line is the statistic as before.
 `src/services/matchEvents.ts` extracts the moments and `announcementText.ts` words them.
+On the `MockWin` and `MockLoss` baseline reports, citing timeline moments changed speech from 287 to 283 and from 275 to 281 characters.
 
-A fight is a run of at least 3 deaths, each no more than 15 seconds after the previous one.
-An epic monster (baron, elder dragon, dragon or herald) belongs to a fight or a death when a team takes it from the first death until 45 seconds after the last.
+Every claim in a line must be true of the timeline, so moments are grouped by place as well as time:
+
+- A death joins a fight when it is at most 15 seconds after the fight's previous death, at most 60 seconds after its first death, and within 3000 map units of the previous death or the fight's centroid.
+- A fight counts from 3 deaths, and a death without a position never joins one.
+- A fight is named after a monster (小龙团, 大龙团) only when its centroid is within 3500 units of that monster's pit and the team took the monster between the first death and 45 seconds after the last.
+  Otherwise it is 那波团战.
+- The pits are fixed: baron and herald at (5007, 10471), dragon and elder at (9866, 4414).
+- "小龙前你先倒下了" goes only to the first teammate who died within 3500 units of that pit in the 45 seconds before the enemy took the monster, and only when no teammate died at that pit in the 45 seconds before them.
+- First blood comes from Riot's `KILL_FIRST_BLOOD` award, which skips executions; the victim comes from the champion kill it was awarded for.
+
 The strongest qualifying moment is cited, in this order:
 
 | Praise for 特等马 | Rule | Example |
 | --- | --- | --- |
-| Multi-kill | Triple kill or more from Riot's multi-kill event | 第24分钟一波三杀，对面排着队来给你送人头。 |
-| Won objective fight | Survived a fight the team won on deaths, took part in at least 3 of its kills, and the team took an epic monster | 第24分钟大龙团你参与4个击杀还全身而退，大龙顺手就收了。 |
-| Shutdown | Killed an enemy with a shutdown bounty of at least 400 gold | 第26分钟终结对面中单，一口吞下700赏金，这波饭真香。 |
-| Won fight | The same fight without an epic monster | 第18分钟那波团战你参与3个击杀还全身而退，直接把对面打穿。 |
-| First blood | Made the first kill of the game, solo or with help | 第3分钟单杀对面上单拿下一血，开局就把对面打懵了。 |
+| Multi-kill | Triple kill or more from Riot's multi-kill event | 24分钟一波三杀，对面排着队来给你送人头。 |
+| Won objective fight | Survived a fight at a pit that the team won on deaths, took part in at least 3 of its kills, and the team took that monster | 24分钟大龙团你参与4个击杀还全身而退，大龙顺手就收了。 |
+| Shutdown | Killed an enemy with a shutdown bounty of at least 400 gold | 26分钟终结对面中单，一口吞下700赏金，这波饭真香。 |
+| Won fight | The same fight anywhere else, or without the monster | 18分钟那波团战你参与3个击杀还全身而退，直接把对面打穿。 |
+| First blood | Riot's first blood award, solo or with help | 3分钟单杀对面上单拿下一血，开局就把对面打懵了。 |
 
 | Roast for 没有马 | Rule | Example |
 | --- | --- | --- |
-| First to fall in a lost objective fight | First death of a fight the team did not win on deaths, and the enemy took an epic monster | 第22分钟大龙团你第一个倒下，对面转身就把大龙拿了。 |
-| Death before an objective | The enemy took an epic monster within 45 seconds of the death | 第17分钟小龙前你先倒下了，小龙就这么拱手送人。 |
-| First to fall in a lost fight | The same fight without an epic monster | 第20分钟那波团战你第一个倒下，队友只能四打五。 |
-| Shutdown given | Was killed with a shutdown bounty of at least 400 gold | 第20分钟揣着700赏金被对面中单终结，这钱送得比外卖还准时。 |
-| First blood given | Died first in the game to an enemy champion | 第3分钟就被对面打野拿走一血，开局先给对面发了个红包。 |
+| First to fall in a lost objective fight | First death of a fight at a pit that the team did not win on deaths, and the enemy took that monster | 22分钟大龙团你第一个倒下，对面转身就把大龙拿了。 |
+| First down before an objective | First teammate down at the pit before the enemy took the monster, as above | 17分钟小龙前你先倒下了，小龙就这么拱手送人。 |
+| First to fall in a lost fight | The same fight anywhere else, or without the monster | 20分钟那波团战你第一个倒下，队友只能四打五。 |
+| Shutdown given | Was killed with a shutdown bounty of at least 400 gold | 20分钟揣着700赏金被对面中单终结，这钱送得比外卖还准时。 |
+| First blood given | The victim of Riot's first blood award | 3分钟就被对面打野拿走一血，开局先给对面发了个红包。 |
 
 Ties go to the bigger monster (baron, elder, dragon, herald), then the bigger number, then the earlier moment.
-An execution by a turret or minion is a death but never first blood.
-Minutes are read from the game clock, so 22:40 is 第22分钟.
-An enemy appears only as a position such as 对面打野; a moment never carries an enemy's name, PUUID or champion.
-The thresholds are first estimates from Riot's documented event fields and are not yet calibrated on a real timeline sample.
-Roasts stay about in-game play; they never target identity, appearance or family.
-Phrase choices are seeded by the match ID, so the same match always produces the same report.
-Mock reports start with `模拟战报` and carry a mock title and footer.
-Names are stripped of mention and Markdown characters before use.
-On the reference sample, speech ran 268 to 377 characters with a median of 317.
-On the `MockWin` and `MockLoss` baseline reports, citing timeline moments changed speech from 287 to 285 and from 275 to 283 characters.
-The 271-character mock report produced 52.6 seconds of Serena audio, so a typical report lasts about one minute.
+Minutes follow the game clock as players say them, so 22:40 is 22分钟, and a moment in the first minute is 1分钟不到.
+First blood at 5 minutes or later drops the 开局 wording, for example 7分钟拿下对面中单的一血，全场第一滴血归你。
+An enemy appears only as a position such as 对面打野, or 对面一人 when the position is unknown; a moment never carries an enemy's name, PUUID or champion.
+The thresholds are first estimates and are not yet calibrated on a real timeline sample.
