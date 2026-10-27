@@ -73,7 +73,7 @@ Mock profiles carry the 模拟数据 title and footer.
 ## Unbinding and erasing
 
 History does not belong to the binding.
-`/unbind` removes the member's accounts and stops monitoring, and keeps the history, because it is the group's history.
+`/unbind` removes the member's accounts and stops monitoring them, and keeps the history, because it is the group's history.
 `horse_records` has no foreign key to `tracked_members`, so nothing cascades.
 Binding the same member again continues the same history, and `/stable` still shows an unbound member, with a note that no new games are recorded.
 

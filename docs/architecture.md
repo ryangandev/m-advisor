@@ -27,7 +27,7 @@
 ## Scope
 
 The approved first delivery is local, on-demand hosting with NA profiles and game-end announcements.
-Each server tracks one Discord member with multiple LoL accounts.
+Each server can track several Discord members, with at most 10 LoL accounts across them.
 Free conversation, STT, LLM commentary and cloud deployment are later extensions.
 The local speech model replaces the cloud synthesis step; the Node bot still owns Discord connections.
 
@@ -65,7 +65,7 @@ SIGINT and SIGTERM close monitoring, voice connections, the client, speech and S
 Explicit registration is separate from startup and is limited to the configured test server.
 
 `/testvoice` uses the same speech and playback queue as game announcements.
-`/simulate` establishes a baseline, creates one mock result and verifies that this exact match was announced.
+`/simulate` uses the earliest-bound tracked member who is in the test channel, establishes a baseline, creates one mock result on that member's first account and verifies that this exact match was announced.
 Concurrent simulations for the same server are rejected until the first finishes.
 Both test commands require an administrator in the configured server and permitted voice channel.
 See [Acceptance](acceptance.md) for verification procedures and external prerequisites.
