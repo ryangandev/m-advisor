@@ -7,6 +7,7 @@ import { AnnouncementQueueFullError, VoiceAnnouncementService, type VoiceAnnounc
 import { resetMockData, RiotApiError, simulateMockMatch } from "../src/services/riotData";
 import { buildMatchAnnouncement } from "../src/services/announcementText";
 import { buildHorseRecords } from "../src/services/horseRecords";
+import { rankTeam } from "../src/services/horseRanking";
 import type { MatchEvent } from "../src/services/matchEvents";
 import { getAnnouncerState, getLastMatchId } from "../src/store/announcerStore";
 import { setMemberAccounts } from "../src/store/bindingStore";
@@ -1420,4 +1421,135 @@ test("after a restart, a member with a saved mock binding who joins a running mo
   const { matchId } = simulateMockMatch("MOCK-restart-bob", "win");
   assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
   assert.equal(getLastMatchId(bot.guildId, "MOCK-restart-bob"), matchId);
+});
+
+// 车队内战: bound friends on one team ranked among themselves.
+
+/** The embeds of a posted report as plain JSON. */
+function postedEmbeds(message: MessageCreateOptions): Array<{ title?: string; fields?: Array<{ name: string; value: string }> }> {
+  return (message.embeds ?? []).map((embed) => ("toJSON" in embed ? embed.toJSON() : embed)) as never;
+}
+/** The mentions in the party ranking field, top to bottom. */
+const rankedMentions = (embed: ReturnType<typeof postedEmbeds>[number]) =>
+  embed.fields!.find((field) => field.name === "车队内部排名")!.value.split("\n").map((row) => row.match(/<@([^>]+)>/)![1]);
+
+test("two friends on one team get a 车队内战 embed right after the report and one more spoken sentence", async () => {
+  const bot = harness("party-two-guild", [
+    { id: "alice-id", puuids: ["alice"], channel: "x" },
+    { id: "bob-id", puuids: ["bob"], channel: "x" },
+  ]);
+  await bot.start();
+  const detail = match("duo", ["alice", "bob", "cara", "dan", "eve"]);
+  bot.matches.set("duo", detail);
+  bot.latestIds.set("alice", "duo");
+  bot.latestIds.set("bob", "duo");
+  assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
+
+  const order = rankTeam(detail, "alice").horses.map((horse) => horse.participant.puuid).filter((puuid) => puuid === "alice" || puuid === "bob");
+  const [report, party, ...rest] = postedEmbeds(bot.messages[0]);
+  assert.equal(rest.length, 0);
+  assert.match(report.title!, /本局马匹鉴定/);
+  assert.equal(party.title, "模拟战报 · 车队内战", "labeled like the mock report");
+  assert.deepEqual(rankedMentions(party), order.map((puuid) => `${puuid}-id`));
+  assert.ok(party.fields![1].value.startsWith(`<@${order[0]}-id>`), "the best friend is 车队 MVP");
+  assert.ok(party.fields![2].value.startsWith(`<@${order[1]}-id>`), "the lowest friend takes the 背锅");
+
+  const expected = buildMatchAnnouncement(detail, "alice", true, { party: [{ memberId: "alice-id", puuid: "alice" }, { memberId: "bob-id", puuid: "bob" }] });
+  assert.equal(bot.generated[0], expected.speech);
+  assert.match(bot.generated[0], new RegExp(`车队内战，${order[0]}(最好|领跑|夺魁)，${order[1]}[^。]*背锅。$`));
+  assert.equal(bot.messages[0].content, "<@alice-id> <@bob-id>");
+  assert.deepEqual(bot.messages[0].allowedMentions, { parse: [], roles: [], users: ["alice-id", "bob-id"], repliedUser: false });
+});
+
+test("three friends are all ranked, and one who is not in voice is shown but never pinged", async () => {
+  const bot = harness("party-three-guild", [
+    { id: "alice-id", puuids: ["alice"], channel: "x" },
+    { id: "bob-id", puuids: ["bob"], channel: "x" },
+    { id: "cara-id", puuids: ["cara"], channel: null },
+  ]);
+  await bot.start();
+  const detail = match("trio", ["alice", "bob", "cara", "dan", "eve"]);
+  bot.matches.set("trio", detail);
+  for (const puuid of ["alice", "bob", "cara"]) bot.latestIds.set(puuid, "trio");
+  assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
+
+  const order = rankTeam(detail, "alice").horses.map((horse) => horse.participant.puuid).filter((puuid) => ["alice", "bob", "cara"].includes(puuid));
+  const party = postedEmbeds(bot.messages[0])[1];
+  assert.deepEqual(rankedMentions(party), order.map((puuid) => `${puuid}-id`));
+  assert.ok(JSON.stringify(party).includes("<@cara-id>"), "the absent friend is ranked");
+  assert.equal(bot.messages[0].content, "<@alice-id> <@bob-id>");
+  assert.deepEqual(bot.messages[0].allowedMentions?.users, ["alice-id", "bob-id"], "the embed pings nobody extra");
+  assert.match(bot.generated[0], new RegExp(`车队内战，${order[0]}[^，]*，${order[2]}[^。]*背锅。$`));
+});
+
+test("one friend on the team leaves the report and the speech exactly as before", async () => {
+  const bot = harness("party-one-guild");
+  await bot.start();
+  const detail = match("solo", ["tracked", "bob", "cara", "dan", "eve"]);
+  bot.matches.set("solo", detail);
+  bot.latestIds.set("tracked", "solo");
+  assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
+  assert.equal(postedEmbeds(bot.messages[0]).length, 1);
+  assert.doesNotMatch(JSON.stringify(bot.messages[0].embeds), /车队内战/);
+  assert.doesNotMatch(bot.generated[0], /车队内战/);
+  assert.equal(bot.generated[0], buildMatchAnnouncement(detail, "tracked", true).speech);
+});
+
+test("a friend on the other team is not in the ranking, the speech or the embed but is still mentioned", async () => {
+  const bot = harness("party-enemy-guild", [
+    { id: "alice-id", puuids: ["alice"], channel: "x" },
+    { id: "bob-id", puuids: ["bob"], channel: "x" },
+    { id: "zed-id", puuids: ["zed"], channel: "x" },
+  ]);
+  await bot.start();
+  const detail = match("split", ["alice", "bob", "cara", "dan", "eve"], ["zed"]);
+  bot.matches.set("split", detail);
+  for (const puuid of ["alice", "bob", "zed"]) bot.latestIds.set(puuid, "split");
+  assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
+  const embeds = postedEmbeds(bot.messages[0]);
+  assert.equal(embeds.length, 2);
+  assert.equal(rankedMentions(embeds[1]).length, 2);
+  assert.doesNotMatch(JSON.stringify(embeds), /zed/);
+  assert.doesNotMatch(bot.generated[0], /zed/);
+  assert.equal(bot.messages[0].content, "<@alice-id> <@bob-id> <@zed-id>");
+  assert.deepEqual(bot.messages[0].allowedMentions?.users, ["alice-id", "bob-id", "zed-id"]);
+});
+
+test("two friends who played against each other have no party", async () => {
+  const bot = harness("party-rivals-guild", [
+    { id: "alice-id", puuids: ["alice"], channel: "x" },
+    { id: "zed-id", puuids: ["zed"], channel: "x" },
+  ]);
+  await bot.start();
+  const detail = match("rivals-only", ["alice", "bob", "cara", "dan", "eve"], ["zed"]);
+  bot.matches.set("rivals-only", detail);
+  bot.latestIds.set("alice", "rivals-only");
+  bot.latestIds.set("zed", "rivals-only");
+  assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
+  assert.equal(postedEmbeds(bot.messages[0]).length, 1);
+  assert.doesNotMatch(bot.generated[0], /车队内战|zed/);
+});
+
+test("a voice retry posts the 车队内战 once and speaks it on the retry", async () => {
+  const bot = harness("party-retry-guild", [
+    { id: "alice-id", puuids: ["alice"], channel: "x" },
+    { id: "bob-id", puuids: ["bob"], channel: "x" },
+  ]);
+  await bot.start();
+  bot.matches.set("again", match("again", ["alice", "bob", "cara", "dan", "eve"]));
+  bot.latestIds.set("alice", "again");
+  bot.latestIds.set("bob", "again");
+  let failures = 2;
+  bot.generate = async (text) => {
+    bot.generated.push(text);
+    if (failures-- > 0) throw new Error("speech failed");
+    return "mock-audio.wav";
+  };
+  assert.equal((await bot.poll()).announced, 0);
+  assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
+  assert.equal(bot.sent.length, 1, "the text report, with its 车队内战, went out once");
+  assert.equal(postedEmbeds(bot.messages[0]).length, 2);
+  assert.equal(bot.generated.length, 3);
+  assert.equal(bot.generated[0], bot.generated[2]);
+  assert.match(bot.generated[2], /车队内战，/);
 });

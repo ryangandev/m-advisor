@@ -284,7 +284,7 @@ export function buildMatchAnnouncement(detail: MatchDetail, trackedPuuid: string
     party: options.party,
     mock,
     // Its own seed, so the party wording never shifts the choices of the report itself.
-    choose: chooser(`${ranking.matchId}:party`),
+    choose: seededChooser(`${ranking.matchId}:party`),
   });
   const speech = [prefix, summary, roll, praiseText, roastText, party?.sentence ?? ""].join("");
   return { speech, report: { title, summary, lines, praise: praiseText, roast: roastText || undefined, mock }, ...(party ? { party } : {}) };
