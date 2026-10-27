@@ -100,6 +100,30 @@ const MIGRATIONS: readonly string[] = [
     CREATE INDEX horse_records_by_time ON horse_records(guild_id, mock, played_at);
     CREATE INDEX horse_records_by_match ON horse_records(guild_id, match_id);
   `,
+  // 3 -> 4: per-server 马报 settings (channel, daily/weekly switches, optional weekly roles) and which periods were already posted.
+  // Only new tables, so every existing row is untouched.
+  `
+    CREATE TABLE report_settings (
+      guild_id TEXT PRIMARY KEY CHECK(length(trim(guild_id)) > 0),
+      channel_id TEXT CHECK(channel_id IS NULL OR length(trim(channel_id)) > 0),
+      daily_enabled INTEGER NOT NULL DEFAULT 1 CHECK(daily_enabled IN (0, 1)),
+      weekly_enabled INTEGER NOT NULL DEFAULT 1 CHECK(weekly_enabled IN (0, 1)),
+      roles_enabled INTEGER NOT NULL DEFAULT 0 CHECK(roles_enabled IN (0, 1)),
+      top_role_id TEXT CHECK(top_role_id IS NULL OR length(trim(top_role_id)) > 0),
+      none_role_id TEXT CHECK(none_role_id IS NULL OR length(trim(none_role_id)) > 0),
+      top_holder_ids TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(top_holder_ids)),
+      none_holder_ids TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(none_holder_ids)),
+      CHECK(roles_enabled = 0 OR (top_role_id IS NOT NULL AND none_role_id IS NOT NULL))
+    ) STRICT;
+    CREATE TABLE report_marks (
+      guild_id TEXT NOT NULL CHECK(length(trim(guild_id)) > 0),
+      mock INTEGER NOT NULL CHECK(mock IN (0, 1)),
+      kind TEXT NOT NULL CHECK(kind IN ('day', 'week')),
+      period_start INTEGER NOT NULL,
+      handled_at INTEGER NOT NULL,
+      PRIMARY KEY (guild_id, mock, kind)
+    ) STRICT;
+  `,
 ];
 const SCHEMA_VERSION = MIGRATIONS.length;
 let database: Database.Database | undefined;
