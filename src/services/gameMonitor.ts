@@ -108,20 +108,22 @@ interface RankCast {
   client: Client;
   guildId: string;
   session: MonitorSession;
-  /** Where the report was posted, and where the message goes. */
+  /** Where the report text was posted, and where the messages go; refreshed when the report text actually posts. */
   channel: VoiceChannel;
   detail: MatchDetail;
+  /** The reported team's bound members, refreshed with the channel. */
   party: readonly RankMember[];
   /** The poll's channel guard, copied: a /simulate poll pins the authorized channel. */
   requiredTargets: ReadonlySet<string>;
-  /** The message was sent (or tried) once; it is never sent again for this match. */
-  decided: boolean;
-  /** The spoken line, set with the message. */
-  line?: string;
-  /** The report's own voice has finished: the line is never queued before. */
-  reportVoiceDone: boolean;
-  /** One attempt: the line was handed to the voice queue. */
-  voiceStarted: boolean;
+  /** Members already announced in this match: nobody is announced twice. */
+  announced: Set<string>;
+  /** Voice lines waiting for the report's voice, flushed in order once it has finished. */
+  pendingLines: string[];
+  /**
+   * The report's own voice: a line is queued only when it is `done`; `given_up` (the report's voice hit its attempt cap)
+   * and `dropped` (the report's text never posted) leave every line text only.
+   */
+  reportVoice: "pending" | "done" | "given_up" | "dropped";
 }
 
 /**
@@ -692,6 +694,7 @@ export class GameMonitor {
       // up to the cap.
       if (++progress.voiceFailures >= MAX_VOICE_ATTEMPTS) {
         this.consume(guildId, session, match);
+        if (progress.rankCast) this.finishRankVoice(progress.rankCast, progress.textPosted ? "given_up" : "dropped");
         this.dependencies.info(`Gave up on the voice report of match ${match.matchId} after ${progress.voiceFailures} failed attempts; `
           + `${progress.textPosted ? "its text report was posted" : "its text report was not posted"}, and it is not retried.`);
       }
@@ -769,7 +772,7 @@ export class GameMonitor {
     if (!progress.rankCast && this.dependencies.rank) {
       progress.rankCast = {
         matchId: match.matchId, client, guildId, session, channel: initial, detail, party,
-        requiredTargets: new Set(requiredTargets), decided: false, reportVoiceDone: false, voiceStarted: false,
+        requiredTargets: new Set(requiredTargets), announced: new Set(), pendingLines: [], reportVoice: "pending",
       };
     }
     if (!progress.textPosted) {
@@ -786,14 +789,12 @@ export class GameMonitor {
       session.controller.signal,
     );
     if (!this.current(guildId, session)) throw new AnnouncementCancelledError();
-    // Only now may the 段位播报 line be queued, behind nothing: it never plays before or over the report.
-    if (progress.rankCast) {
-      progress.rankCast.reportVoiceDone = true;
-      this.speakRank(progress.rankCast);
-    }
     // The text could not be posted, for example without Send Messages, but the voice was heard: record what it said.
     if (!progress.textPosted) this.recordHorses(guildId, progress, announcement, speaker.puuid);
     this.consume(guildId, session, match);
+    // Only now may a 段位播报 line be queued, behind nothing: it never plays before or over the report. This comes after
+    // consume and cannot throw, so a rank failure can never replay the report or count as a voice failure.
+    if (progress.rankCast) this.finishRankVoice(progress.rankCast, progress.textPosted ? "done" : "dropped");
     this.dependencies.info(`Announced match ${match.matchId} in voice ${secondsSince(match.detectedAt!)} s after detection.`);
     return true;
   }
@@ -893,6 +894,11 @@ export class GameMonitor {
     }
     progress.textPosted = true;
     progress.reportMessage = posted;
+    // A retry may post in another channel, or for another team: the 段位播报 follows the report that was actually posted.
+    if (cast) {
+      cast.channel = channel;
+      cast.party = party;
+    }
     // A promotion or demotion the first reads already show goes out right after the report's text.
     if (cast) void this.castRank(cast);
     if (rows.pending) this.editRankLater(progress, matchId, party, message, cast);
@@ -1043,43 +1049,71 @@ export class GameMonitor {
   }
 
   /**
-   * Sends the match's 段位播报 once: one embed with a line for every announced member, in the report's channel, then its
-   * voice line when the report's voice is already done. Whatever the first reads or the late update show, a match
-   * announces once; a member whose row settles later than that is not announced (the 段位变化 field still shows it).
+   * Announces the promotions and demotions of the match that were not announced yet: one embed with a line for each such
+   * member, in the report's channel, then their voice line. Nobody is announced twice, but a member whose row only
+   * settles later, with the late update, gets their own follow-up.
    * It never rejects: a failure is logged and changes nothing else.
    */
   private async castRank(cast: RankCast): Promise<void> {
     try {
-      if (cast.decided || this.closed) return;
-      const moves = this.rankMoves(cast.matchId, cast.party);
+      if (this.closed || cast.reportVoice === "dropped") return;
+      const moves = this.rankMoves(cast.matchId, cast.party).filter((move) => !cast.announced.has(move.puuid));
       const lines = moves.flatMap((move) => rankMoveText(move.memberId, move) ?? []);
       if (lines.length === 0) return;
-      cast.decided = true;
+      // Marked before anything is awaited, so the first reads and the late update can never announce the same member.
+      for (const move of moves) cast.announced.add(move.puuid);
       const mock = this.dependencies.mock();
       const spoken: RankVoiceMove[] = moves.map((move) => ({
         ...move,
         name: cast.detail.info.participants.find((participant) => participant.puuid === move.puuid)?.riotIdGameName ?? "",
       }));
-      cast.line = buildRankVoiceLine({ matchId: cast.matchId, mock, moves: spoken }) || undefined;
+      const line = buildRankVoiceLine({ matchId: cast.matchId, mock, moves: spoken });
       try {
         await cast.channel.send({ embeds: [buildRankAnnouncementEmbed(lines, mock)], allowedMentions: NO_MENTIONS });
         this.dependencies.info(`Posted the 段位播报 of match ${cast.matchId}.`);
       } catch (error) {
         this.dependencies.log(new Error(`The 段位播报 of match ${cast.matchId} was not posted: ${errorMessage(error)}`));
       }
-      this.speakRank(cast);
+      if (line) cast.pendingLines.push(line);
+      this.flushRank(cast);
     } catch (error) {
       this.dependencies.log(new Error(`The LP 段位播报 of match ${cast.matchId} failed: ${errorMessage(error)}`));
     }
   }
 
+  /** The report's voice is over (or never will be): lines waiting for it are queued now, or stay text only. Never throws. */
+  private finishRankVoice(cast: RankCast, state: "done" | "given_up" | "dropped"): void {
+    cast.reportVoice = state;
+    try {
+      if (state === "dropped") {
+        this.dependencies.info(`The 段位播报 of match ${cast.matchId} was dropped: the report's text was not posted.`);
+      }
+    } catch {
+      // A failing log sink must not reach the report.
+    }
+    this.flushRank(cast);
+  }
+
   /**
-   * Queues the 段位播报 voice line: one plain job in the guild's voice queue, one attempt, no retry. It needs the line,
-   * a finished report voice, a live session and a member of the reported team who is still in a usable voice channel;
-   * otherwise the announcement stays text only. A failure here is logged and never counts toward the report's attempts.
+   * Queues the waiting 段位播报 voice lines, each one plain job in the guild's voice queue with one attempt and no retry.
+   * A line needs a finished report voice, a live session and a member of the reported team who is still in a usable voice
+   * channel; otherwise it stays text only. Nothing here throws, and a failure never counts toward the report's attempts.
    */
-  private speakRank(cast: RankCast): void {
-    if (!cast.line || !cast.reportVoiceDone || cast.voiceStarted || this.closed) return;
+  private flushRank(cast: RankCast): void {
+    try {
+      if (cast.pendingLines.length === 0 || cast.reportVoice === "pending" || this.closed) return;
+      const lines = cast.pendingLines.splice(0);
+      if (cast.reportVoice !== "done") {
+        this.dependencies.info(`The 段位播报 of match ${cast.matchId} is text only: the report's voice was not completed.`);
+        return;
+      }
+      for (const line of lines) this.speakRank(cast, line);
+    } catch (error) {
+      this.dependencies.log(new Error(`The LP 段位播报 voice of match ${cast.matchId} failed: ${errorMessage(error)}`));
+    }
+  }
+
+  private speakRank(cast: RankCast, line: string): void {
     const { client, guildId, session } = cast;
     if (!this.current(guildId, session)) return;
     let pick: string | undefined;
@@ -1097,9 +1131,8 @@ export class GameMonitor {
       this.dependencies.info(`The 段位播报 of match ${cast.matchId} is text only: nobody of the team is in a voice channel announcements can use.`);
       return;
     }
-    cast.voiceStarted = true;
     void Promise.resolve()
-      .then(() => this.dependencies.announce(guildId, cast.line!, getAnnouncerState(guildId).voiceStyle, resolveTarget, canPlay, session.controller.signal))
+      .then(() => this.dependencies.announce(guildId, line, getAnnouncerState(guildId).voiceStyle, resolveTarget, canPlay, session.controller.signal))
       .then(() => {
         this.dependencies.info(`Spoke the 段位播报 of match ${cast.matchId}.`);
       }, (error: unknown) => {

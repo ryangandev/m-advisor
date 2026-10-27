@@ -1952,7 +1952,7 @@ test("a late 段位播报 is text only when nobody of the reported team is still
   assert.equal(bot.errors.length, 0);
 });
 
-test("a match announces its 段位播报 once, even when the late update shows more", async () => {
+test("a member whose move only the late update shows gets their own follow-up, and nobody is announced twice", async () => {
   const { bot, rank } = await rankedTrio("cast-once-guild", { retryFloorMs: 30 });
   const queued = recordAnnouncements(bot);
   // Alice's promotion is in the first reads; Bob's read has not caught up.
@@ -1961,12 +1961,134 @@ test("a match announces its 段位播报 once, even when the late update shows m
   await until(() => castsOf(bot).length === 1, "the first 段位播报");
   rank.league.set("bob", [ranked("SILVER", "II", 80, 10, 11)]);
   rank.league.set("zed", [ranked("PLATINUM", "III", 71, 11, 10)]);
-  await until(() => bot.edits.length === 1, "the late edit");
+  await until(() => castsOf(bot).length === 2, "Bob's follow-up");
+  await until(() => queued.length === 3, "both voice lines");
   await delay(WATCH);
-  assert.equal(castsOf(bot).length, 1, "one message per match");
-  assert.equal(embedDescription(castsOf(bot)[0]), "<@alice-id> 单双排 晋级：黄金 II → 铂金 IV · 7 LP");
-  assert.equal(queued.length, 2, "one voice line per match");
+  assert.deepEqual(castsOf(bot).map(embedDescription), [
+    "<@alice-id> 单双排 晋级：黄金 II → 铂金 IV · 7 LP",
+    "<@bob-id> 单双排 掉段：白银 I → 白银 II · 80 LP",
+  ], "each member once, in the order their rows settled");
+  assert.equal(queued.length, 3, "the report and one line for each message");
+  assert.match(queued[1], /alice/);
+  assert.doesNotMatch(queued[1], /bob/);
+  assert.match(queued[2], /bob/);
+  assert.doesNotMatch(queued[2], /alice/);
   assert.match(rankFieldOf(bot.edits[0].options)!, /白银 II · 80 LP · 本局掉段/, "the 段位变化 field still shows Bob");
+  // The follow-up message listed only Bob, so nothing is announced twice however often the rows are read.
+  await bot.poll();
+  await delay(WATCH);
+  assert.equal(castsOf(bot).length, 2);
+});
+
+test("follow-up lines wait in a queue until the report's voice has finished, then play in order", async () => {
+  const { bot, rank } = await rankedTrio("cast-queue-guild", { retryFloorMs: 30 });
+  const queued = recordAnnouncements(bot);
+  const held = heldPlayback(bot);
+  rank.league.set("alice", [ranked("PLATINUM", "IV", 7, 11, 10)]);
+  const polling = bot.poll();
+  await held.nextStart();
+  await until(() => castsOf(bot).length === 1, "Alice's 段位播报");
+  // Bob's late move lands while the report is still playing.
+  rank.league.set("bob", [ranked("SILVER", "II", 80, 10, 11)]);
+  rank.league.set("zed", [ranked("PLATINUM", "III", 71, 11, 10)]);
+  await until(() => castsOf(bot).length === 2, "Bob's follow-up text");
+  await delay(WATCH);
+  assert.equal(queued.length, 1, "no line is queued while the report plays");
+  held.release();
+  assert.deepEqual(await polling, { announced: 1, errors: 0 });
+  await until(() => queued.length === 3, "both lines flushed");
+  assert.match(queued[1], /alice/);
+  assert.match(queued[2], /bob/);
+});
+
+test("a failure on the rank voice path never replays the report or counts as a voice failure", async () => {
+  const { bot, rank } = await rankedTrio("cast-throw-guild");
+  const announce = bot.dependencies.announce;
+  let breakMembers = false;
+  // The flag turns on the moment the report's voice has finished, before the monitor goes on to the 段位播报 line.
+  bot.dependencies.announce = (guildId, text, ...rest) => {
+    const playing = announce(guildId, text, ...rest);
+    if (!text.startsWith("模拟段位播报，")) void playing.then(() => { breakMembers = true; }, () => undefined);
+    return playing;
+  };
+  const members = bot.dependencies.members;
+  bot.dependencies.members = (guildId) => {
+    if (breakMembers) throw new Error("member store down");
+    return members(guildId);
+  };
+  rank.league.set("alice", [ranked("PLATINUM", "IV", 7, 11, 10)]);
+  rank.league.set("bob", [ranked("SILVER", "I", 12, 10, 11)]);
+  rank.league.set("zed", [ranked("PLATINUM", "III", 71, 11, 10)]);
+  assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
+  await until(() => bot.errors.some((error) => /段位播报 voice of match ranked-trio failed: member store down/.test((error as Error).message)), "the rank failure being logged");
+  breakMembers = false;
+  await bot.poll();
+  await bot.poll();
+  await delay(WATCH);
+  assert.equal(bot.generated.length, 1, "the report was spoken once and never replayed");
+  assert.equal(bot.messages.filter((message) => postedEmbeds(message)[0].title?.includes("本局马匹鉴定")).length, 1, "and posted once");
+  assert.ok(!bot.infos.some((line) => /Gave up on the voice report/.test(line)));
+  assert.equal(bot.errors.length, 1, "nothing but the rank failure is an error");
+});
+
+test("the 段位播报 follows a report that is posted on a retry in another channel", async () => {
+  const { bot, rank } = await rankedTrio("cast-retry-guild");
+  const queued = recordAnnouncements(bot);
+  rank.league.set("alice", [ranked("PLATINUM", "IV", 7, 11, 10)]);
+  rank.league.set("bob", [ranked("SILVER", "I", 12, 10, 11)]);
+  rank.league.set("zed", [ranked("PLATINUM", "III", 71, 11, 10)]);
+  // The first attempt fails twice over: the text cannot be posted in x and the speech fails.
+  const send = bot.channel("x").send;
+  bot.channel("x").send = async () => { throw new Error("Missing Permissions"); };
+  let failures = 0;
+  bot.generate = async (text) => {
+    if (failures < 2) { failures++; throw new Error("speech worker down"); }
+    bot.generated.push(text);
+    return "mock-audio.wav";
+  };
+  const first = await bot.poll();
+  assert.equal(first.announced, 0);
+  assert.equal(castsOf(bot).length, 0);
+  // Everyone moves to y and x works again, but the retry posts in y.
+  bot.channel("x").send = send;
+  for (const id of ["alice-id", "bob-id", "zed-id"]) bot.move(id, "y");
+  assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
+  await until(() => castsOf(bot).length === 1, "the 段位播报");
+  const report = bot.sent.find((entry) => postedEmbeds(entry.message)[0].title?.includes("本局马匹鉴定"))!;
+  const cast = bot.sent.find((entry) => postedEmbeds(entry.message)[0].title?.endsWith("段位播报"))!;
+  assert.equal(report.channelId, "y");
+  assert.equal(cast.channelId, "y", "the 段位播报 goes where the report was posted");
+  // The failed attempt queued the report once; the retry queues it again, and only then the line.
+  await until(() => queued.length === 3, "the line");
+  assert.match(queued[2], /^模拟段位播报，/);
+  assert.ok(!queued[1].startsWith("模拟段位播报，"));
+});
+
+test("a 段位播报 says plainly when it stays text only because the report's text never posted or its voice was given up", async () => {
+  // The report text never posts, but its voice is heard: the 段位播报 is dropped with a line.
+  const silent = harness("cast-drop-guild", [{ id: "alice-id", puuids: ["alice"], channel: "x" }, { id: "bob-id", puuids: ["bob"], channel: "x" }]);
+  const dropRank = withRank(silent);
+  dropRank.league.set("alice", [ranked("GOLD", "II", 64)]);
+  await silent.start();
+  await until(() => dropRank.reads.length >= 1, "the baseline snapshot");
+  silent.channel("x").send = async () => { throw new Error("Missing Permissions"); };
+  silent.matches.set("drop", match("drop", ["alice", "bob", "cara", "dan", "eve"]));
+  silent.latestIds.set("alice", "drop");
+  dropRank.league.set("alice", [ranked("PLATINUM", "IV", 7, 11, 10)]);
+  await silent.poll();
+  assert.ok(silent.infos.includes("The 段位播报 of match drop was dropped: the report's text was not posted."), silent.infos.join("\n"));
+  assert.equal(castsOf(silent).length, 0);
+
+  // The text posts, but the report's voice fails until the cap: the line is text only, and says so.
+  const { bot, rank } = await rankedTrio("cast-cap-guild");
+  rank.league.set("alice", [ranked("PLATINUM", "IV", 7, 11, 10)]);
+  rank.league.set("bob", [ranked("SILVER", "I", 12, 10, 11)]);
+  rank.league.set("zed", [ranked("PLATINUM", "III", 71, 11, 10)]);
+  bot.generate = async () => { throw new Error("speech worker down"); };
+  for (let attempt = 0; attempt < MAX_VOICE_ATTEMPTS; attempt++) await bot.poll();
+  await until(() => castsOf(bot).length === 1, "the 段位播报 text");
+  await until(() => bot.infos.includes("The 段位播报 of match ranked-trio is text only: the report's voice was not completed."), "the text only line");
+  assert.equal(bot.generated.length, 0);
 });
 
 test("a failed 段位播报 voice line is tried once, never retried, and never counts against the report", async () => {
