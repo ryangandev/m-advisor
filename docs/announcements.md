@@ -15,7 +15,10 @@ The first tracked member in voice starts the session, which immediately reads ea
 The baseline is recorded without speaking, including a valid empty history.
 A member who joins an existing session gets their own baseline the same way, without speech, while everyone else keeps theirs.
 If a poll is already running when someone joins, a follow-up poll runs right after it.
-An account added to a member who is already in voice also gets a fresh baseline before anything is announced.
+That first lookup can wait behind a long report, so for a member who joined a running session the bot reads the latest match's end time.
+A latest match that ended after the member joined is announced instead of becoming the baseline; one that ended before they joined, or without an end time, is the baseline.
+An account added to a member who is already in voice also gets a fresh baseline before anything is announced, counted from when it was added.
+Accounts present when the session starts, at the first join or after a bot restart, take their latest match as the baseline without that check, so nothing is replayed.
 A member who leaves voice or is unbound drops out of the session, and their accounts' baselines are cleared with `clearLastMatchIds`.
 When they return, they get a new baseline, so a match they finished while away is never replayed.
 An account that moves to another member or is removed from its member loses its baseline the same way.
@@ -59,17 +62,25 @@ Only channels a member may be announced in count, so the `TEST_*` restrictions a
 
 If none of a match's players is in a usable channel, the match is neither announced nor consumed in that poll and adds no error.
 It is logged once and waits until a player is in a usable channel; if its players leave voice instead, their baselines are dropped with them.
+A waiting match keeps its fetched detail for the session, so later polls neither fetch it again nor log it as newly detected.
+It is forgotten once none of the accounts that reported it is tracked any more, and at most 20 matches wait per session, the oldest forgotten first.
 
-The report speaks for one tracked player, chosen when the match is queued.
-It uses the team with the most of the match's tracked players in the chosen channel, on a tie the earliest-bound member's team, and then that team's earliest-bound member.
+The report speaks for one tracked player, the speaker, chosen when the match is queued.
+It uses the team with the most of the match's tracked players in the chosen channel, on a tie the earliest-bound member's team, and then that team's earliest-bound member, preferring members the session covers.
 A tracked member on the other team counts as an enemy: they are neither scored nor named, but they are still mentioned if they are in the channel.
 The speech text is fixed before generation, so a later move changes only where it plays.
+The speaker stays the one picked for the first channel even when a majority move takes the report to another channel whose players are on the other team.
 
-After generation the channel is chosen again, keeping the current pick on a tie.
+Only tracked players who still own the account they played on count, read again at every check, so a player unbound during the report neither counts for the channel nor is mentioned.
+Once the first two chunks are ready the channel is chosen again, keeping the current pick on a tie.
 A move during generation is followed when another channel now has strictly more of the match's players.
 During playback the channel is checked every 100 milliseconds the same way.
 A tie, such as one player leaving, keeps playing; a channel with strictly more players aborts playback without consuming the match, and the next poll plays it there.
-Rebinding or unbinding the member whose view the report uses cancels it, and the match stays pending for the other players still in voice; an unrelated `/bind` does not cancel it.
+
+The speaker must still be in voice before each chunk generated ahead of joining and when the bot joins.
+If they leave before that, the report is cancelled without being consumed, and the next poll picks a new speaker among the players still in voice.
+Once playback has started, the speaker leaving does not stop it, so a teammate who played the same game and stays hears the whole report, and the match is not replayed.
+Rebinding or unbinding the speaker cancels the report at any point, and the match stays pending for the other players still in voice; an unrelated `/bind` does not cancel it.
 
 Several matches go through the guild's shared voice queue one after another, and a full queue is an error that the next poll retries.
 Internally each queued match is a `DetectedMatch` with its detail, every tracked player of it and the chosen channel, which later features build on.
@@ -94,7 +105,7 @@ Riot names cannot trigger mentions of other Discord members or `@everyone`.
 The bot logs to the terminal and its daily log file, described in [Runtime](runtime.md#logs).
 It logs when monitoring starts, with each present member's Riot IDs and voice channel, and when it stops, with the reason.
 It logs when a member joins or leaves an existing session.
-It logs each account's baseline match, after which finished matches are announced.
+It logs each account's baseline match, after which finished matches are announced, or that a joining member's latest match ended after they joined and is announced.
 It logs each newly detected match with the reporting Riot IDs, how many seconds have passed since the game ended, the queue and the length.
 It logs once when a match waits because none of its players is in a usable voice channel.
 After playback it logs how many seconds speech generation and playback took after detection.
@@ -135,7 +146,8 @@ Eligibility is checked before each chunk is generated and again before connectin
 
 Automatic reports use `announceTextToCurrentChannel(guildId, text, style, resolveChannel, canPlay?, signal?)`.
 Its resolver repeats the channel choice after the first two chunks are generated, allowing a majority move while the model is speaking the first sentences to file.
-A session abort, or the departure or rebind of the member the report speaks for, cancels the handoff before joining and stops any further chunk from starting.
+A session abort, the speaker leaving voice, or the speaker's rebind cancels the handoff before joining and stops any further chunk from starting.
+After joining, only a session abort, the speaker's rebind or a different channel choice stops it.
 During playback, channel eligibility is checked every 100 milliseconds and a different choice aborts the transport.
 A cancelled announcement cancels the chunk request in progress instead of waiting for it, never joins a channel afterward and reports `AnnouncementCancelledError`.
 Audio from a cancelled request that still arrives is deleted.
