@@ -1,0 +1,292 @@
+{
+  "gameId": 5310000001,
+  "gameType": "MATCHED_GAME",
+  "gameStartTime": 1795800000000,
+  "mapId": 11,
+  "gameLength": 125,
+  "platformId": "NA1",
+  "gameMode": "CLASSIC",
+  "bannedChampions": [
+    {
+      "championId": 157,
+      "teamId": 100,
+      "pickTurn": 1
+    },
+    {
+      "championId": -1,
+      "teamId": 100,
+      "pickTurn": 2
+    },
+    {
+      "championId": 238,
+      "teamId": 200,
+      "pickTurn": 6
+    }
+  ],
+  "gameQueueConfigId": 420,
+  "observers": {
+    "encryptionKey": "fixture-observer-key"
+  },
+  "participants": [
+    {
+      "puuid": "fixture-puuid-01",
+      "teamId": 100,
+      "championId": 103,
+      "spell1Id": 4,
+      "spell2Id": 14,
+      "bot": false,
+      "riotId": "FixturePlayer1#NA1",
+      "profileIconId": 29,
+      "perks": {
+        "perkIds": [
+          8005,
+          9111,
+          9104,
+          8014,
+          8139,
+          8135,
+          5008,
+          5008,
+          5002
+        ],
+        "perkStyle": 8000,
+        "perkSubStyle": 8100
+      },
+      "gameCustomizationObjects": []
+    },
+    {
+      "puuid": "fixture-puuid-02",
+      "teamId": 100,
+      "championId": 516,
+      "spell1Id": 4,
+      "spell2Id": 12,
+      "bot": false,
+      "riotId": "FixturePlayer2#NA1",
+      "profileIconId": 30,
+      "perks": {
+        "perkIds": [
+          8005,
+          9111,
+          9104,
+          8014,
+          8139,
+          8135,
+          5008,
+          5008,
+          5002
+        ],
+        "perkStyle": 8000,
+        "perkSubStyle": 8100
+      },
+      "gameCustomizationObjects": []
+    },
+    {
+      "puuid": "fixture-puuid-03",
+      "teamId": 100,
+      "championId": 64,
+      "spell1Id": 4,
+      "spell2Id": 11,
+      "bot": false,
+      "riotId": "FixturePlayer3#NA1",
+      "profileIconId": 31,
+      "perks": {
+        "perkIds": [
+          8005,
+          9111,
+          9104,
+          8014,
+          8139,
+          8135,
+          5008,
+          5008,
+          5002
+        ],
+        "perkStyle": 8000,
+        "perkSubStyle": 8100
+      },
+      "gameCustomizationObjects": []
+    },
+    {
+      "puuid": "fixture-puuid-04",
+      "teamId": 100,
+      "championId": 222,
+      "spell1Id": 4,
+      "spell2Id": 7,
+      "bot": false,
+      "riotId": "FixturePlayer4#NA1",
+      "profileIconId": 32,
+      "perks": {
+        "perkIds": [
+          8005,
+          9111,
+          9104,
+          8014,
+          8139,
+          8135,
+          5008,
+          5008,
+          5002
+        ],
+        "perkStyle": 8000,
+        "perkSubStyle": 8100
+      },
+      "gameCustomizationObjects": []
+    },
+    {
+      "puuid": "fixture-puuid-05",
+      "teamId": 100,
+      "championId": 412,
+      "spell1Id": 4,
+      "spell2Id": 3,
+      "bot": false,
+      "riotId": "FixturePlayer5#NA1",
+      "profileIconId": 33,
+      "perks": {
+        "perkIds": [
+          8005,
+          9111,
+          9104,
+          8014,
+          8139,
+          8135,
+          5008,
+          5008,
+          5002
+        ],
+        "perkStyle": 8000,
+        "perkSubStyle": 8100
+      },
+      "gameCustomizationObjects": []
+    },
+    {
+      "puuid": "fixture-puuid-06",
+      "teamId": 200,
+      "championId": 238,
+      "spell1Id": 4,
+      "spell2Id": 14,
+      "bot": false,
+      "riotId": "FixturePlayer6#NA1",
+      "profileIconId": 34,
+      "perks": {
+        "perkIds": [
+          8005,
+          9111,
+          9104,
+          8014,
+          8139,
+          8135,
+          5008,
+          5008,
+          5002
+        ],
+        "perkStyle": 8000,
+        "perkSubStyle": 8100
+      },
+      "gameCustomizationObjects": []
+    },
+    {
+      "puuid": "fixture-puuid-07",
+      "teamId": 200,
+      "championId": 122,
+      "spell1Id": 4,
+      "spell2Id": 12,
+      "bot": false,
+      "riotId": "FixturePlayer7#NA1",
+      "profileIconId": 35,
+      "perks": {
+        "perkIds": [
+          8005,
+          9111,
+          9104,
+          8014,
+          8139,
+          8135,
+          5008,
+          5008,
+          5002
+        ],
+        "perkStyle": 8000,
+        "perkSubStyle": 8100
+      },
+      "gameCustomizationObjects": []
+    },
+    {
+      "puuid": "fixture-puuid-08",
+      "teamId": 200,
+      "championId": 121,
+      "spell1Id": 4,
+      "spell2Id": 11,
+      "bot": false,
+      "riotId": "FixturePlayer8#NA1",
+      "profileIconId": 36,
+      "perks": {
+        "perkIds": [
+          8005,
+          9111,
+          9104,
+          8014,
+          8139,
+          8135,
+          5008,
+          5008,
+          5002
+        ],
+        "perkStyle": 8000,
+        "perkSubStyle": 8100
+      },
+      "gameCustomizationObjects": []
+    },
+    {
+      "puuid": "fixture-puuid-09",
+      "teamId": 200,
+      "championId": 51,
+      "spell1Id": 4,
+      "spell2Id": 7,
+      "bot": false,
+      "riotId": "FixturePlayer9#NA1",
+      "profileIconId": 37,
+      "perks": {
+        "perkIds": [
+          8005,
+          9111,
+          9104,
+          8014,
+          8139,
+          8135,
+          5008,
+          5008,
+          5002
+        ],
+        "perkStyle": 8000,
+        "perkSubStyle": 8100
+      },
+      "gameCustomizationObjects": []
+    },
+    {
+      "puuid": "fixture-puuid-10",
+      "teamId": 200,
+      "championId": 89,
+      "spell1Id": 4,
+      "spell2Id": 3,
+      "bot": false,
+      "riotId": "FixturePlayer10#NA1",
+      "profileIconId": 38,
+      "perks": {
+        "perkIds": [
+          8005,
+          9111,
+          9104,
+          8014,
+          8139,
+          8135,
+          5008,
+          5008,
+          5002
+        ],
+        "perkStyle": 8000,
+        "perkSubStyle": 8100
+      },
+      "gameCustomizationObjects": []
+    }
+  ]
+}
