@@ -4,6 +4,7 @@ import { MAX_RANK_READS, RANK_RETRY_FLOOR_MS, RankTracker } from "../src/service
 import type { RankRow, RankRowState, RankTrackerDependencies } from "../src/services/rankTracker";
 import { queueLabel, rankName, rankRowText, spokenRankName } from "../src/services/rankText";
 import { RiotApiError } from "../src/services/riotData";
+import { rankTracker, stopAllPolling } from "../src/services/gameMonitor";
 import type { RankedEntry } from "../src/types";
 
 afterEach(() => { mock.timers.reset(); });
@@ -48,7 +49,7 @@ function setup(overrides: Partial<RankTrackerDependencies> = {}) {
     tracker.snapshot([puuid]);
     await flush();
     league.set(puuid, after);
-    tracker.matchFinished({ matchId, queueId, gameEndTimestamp: Date.now() - 30_000, accounts: [{ puuid, label: `${puuid}#NA1` }] });
+    tracker.matchFinished({ matchId, queueId, gameEndTimestamp: Date.now(), accounts: [{ puuid, label: `${puuid}#NA1` }] });
     await tracker.firstReads(matchId);
     return tracker.row(matchId, puuid);
   };
@@ -62,7 +63,7 @@ test("a ranked win is a change row with the game's LP, and the after-read is the
   const first = await play("NA1_1", "acct", [entry("GOLD", "II", 64)], [entry("GOLD", "II", 86, 11, 10)]);
   assert.equal(first?.state.kind, "change");
   assert.equal(text(first), `<@${MEMBER}> 单双排 黄金 II · 86 LP · 本局 +22`);
-  assert.ok(infos.some((line) => /^LP of match NA1_1 for acct#NA1: league-v4 caught up 30 s after game end \(read 1\)\.$/.test(line)), infos.join("\n"));
+  assert.ok(infos.some((line) => /^LP of match NA1_1 for acct#NA1: league-v4 caught up \d+ s after game end \(read 1\)\.$/.test(line)), infos.join("\n"));
 
   // No game-start read this time: the next match compares with the after-read of NA1_1, not with GOLD II 64.
   league.set("acct", [entry("GOLD", "I", 8, 12, 10)]);
@@ -74,12 +75,12 @@ test("a ranked win is a change row with the game's LP, and the after-read is the
   assert.ok(infos.some((line) => line.includes("caught up at an unknown time after game end (read 1)")));
 });
 
-test("a demotion shows the new rank without an LP number; flex rows say 灵活组排", async () => {
+test("a demotion shows the new rank and its LP without a change; flex rows say 灵活组排", async () => {
   const { play } = setup();
   const row = await play("NA1_3", "acct", [entry("GOLD", "IV", 5)], [entry("SILVER", "I", 86, 10, 11)]);
   assert.equal(row?.state.kind, "demoted");
-  assert.equal(text(row), `<@${MEMBER}> 单双排 白银 I · 本局掉段`);
-  assert.doesNotMatch(text(row)!, /LP|-\d|\d+ ?分/);
+  assert.equal(text(row), `<@${MEMBER}> 单双排 白银 I · 86 LP · 本局掉段`);
+  assert.doesNotMatch(text(row)!, /本局 [-+±]|-\d/, "no change: the ladder distance is not what Riot took");
 
   const flex = await play("NA1_4", "flexer", [entry("SILVER", "I", 31, 5, 5, FLEX)], [entry("SILVER", "I", 12, 5, 6, FLEX)], 440);
   assert.equal(text(flex), `<@${MEMBER}> 灵活组排 白银 I · 12 LP · 本局 -19`);
@@ -336,6 +337,146 @@ test("other failures show 段位暂时查不到, are logged once per kind, and a
   tracker.snapshot(["d"]);
   await flush();
   assert.equal(logs.length, 2, "a thrown non-Riot error is logged and never escapes");
+});
+
+test("a next game's start read before the poll detects the last game is not that game's before-value", async () => {
+  let clock = 1_900_000_000_000;
+  const { tracker, league, infos } = setup({ now: () => clock });
+  const accounts = [{ puuid: "acct", label: "acct#NA1" }];
+  league.set("acct", [entry("GOLD", "II", 64)]);
+  tracker.snapshot(["acct"]);
+  await flush();
+  // Game 1 ends and league-v4 updates; the player requeues, and game 2 loads before the poll detects game 1.
+  clock += 30 * 60_000;
+  const firstEnd = clock;
+  league.set("acct", [entry("GOLD", "II", 86, 11, 10)]);
+  clock += 3 * 60_000;
+  tracker.snapshot(["acct"]);
+  await flush();
+  clock += 60_000;
+  tracker.matchFinished({ matchId: "NA1_40", queueId: 420, gameEndTimestamp: firstEnd, accounts });
+  await tracker.firstReads("NA1_40");
+  assert.equal(text(tracker.row("NA1_40", "acct")), `<@${MEMBER}> 单双排 黄金 II · 86 LP · 本局 +22`);
+  assert.ok(infos.includes("LP of match NA1_40 for acct#NA1: league-v4 caught up 240 s after game end (read 1)."), infos.join("\n"));
+  assert.ok(!infos.some((line) => line.includes("had not caught up")), "no false lag line");
+
+  // Game 2 compares with the newest read from before it ended, which already holds game 1.
+  clock += 25 * 60_000;
+  const secondEnd = clock;
+  league.set("acct", [entry("GOLD", "I", 8, 12, 10)]);
+  clock += 30_000;
+  tracker.matchFinished({ matchId: "NA1_41", queueId: 420, gameEndTimestamp: secondEnd, accounts });
+  await tracker.firstReads("NA1_41");
+  assert.equal(text(tracker.row("NA1_41", "acct")), `<@${MEMBER}> 单双排 黄金 I · 8 LP · 本局 +22 · 晋级！`);
+
+  // A read sent after the game ended is never its before-value, so with nothing older there is no row.
+  clock += 5 * 60_000;
+  const lateEnd = clock - 60_000;
+  league.set("late", [entry("GOLD", "II", 86, 11, 10)]);
+  tracker.snapshot(["late"]);
+  await flush();
+  clock += 60_000;
+  tracker.matchFinished({ matchId: "NA1_42", queueId: 420, gameEndTimestamp: lateEnd, accounts: [{ puuid: "late", label: "late#NA1" }] });
+  await tracker.firstReads("NA1_42");
+  assert.equal(tracker.row("NA1_42", "late"), undefined);
+});
+
+test("snapshot reads are capped at one per floor per account, failed reads included; only a first after-read is sooner", async () => {
+  mock.timers.enable({ apis: ["setTimeout", "Date"], now: 1_900_000_000_000 });
+  const { tracker, league, reads, logs } = setup();
+  league.set("acct", new RiotApiError("Riot API error 503: service unavailable.", "unavailable", 503));
+  tracker.snapshot(["acct"]);
+  await flush();
+  tracker.snapshot(["acct"]);
+  mock.timers.tick(RANK_RETRY_FLOOR_MS - 1);
+  tracker.snapshot(["acct"]);
+  await flush();
+  assert.equal(reads.length, 1, "a failed read still counts for the floor");
+  mock.timers.tick(1);
+  tracker.snapshot(["acct"]);
+  await flush();
+  assert.equal(reads.length, 2);
+  assert.equal(logs.length, 1, "logged once");
+
+  league.set("acct", [entry("GOLD", "II", 64)]);
+  tracker.matchFinished({ matchId: "NA1_43", queueId: 420, gameEndTimestamp: null, accounts: [{ puuid: "acct", label: "acct#NA1" }] });
+  await flush();
+  assert.equal(reads.length, 3, "the first after-read goes at once");
+  tracker.snapshot(["acct"]);
+  mock.timers.tick(RANK_RETRY_FLOOR_MS - 1);
+  tracker.snapshot(["acct"]);
+  await flush();
+  assert.equal(reads.length, 3, "and the floor counts from it");
+  const gaps = reads.slice(1).map((read, index) => read.at - reads[index].at);
+  assert.deepEqual(gaps, [RANK_RETRY_FLOOR_MS, 0]);
+});
+
+test("a retry that another read overtook waits for the floor again", async () => {
+  mock.timers.enable({ apis: ["setTimeout", "Date"], now: 1_900_000_000_000 });
+  const { tracker, league, reads } = setup();
+  league.set("acct", [entry("GOLD", "II", 64)]);
+  tracker.snapshot(["acct"]);
+  await flush();
+  mock.timers.tick(30 * 60_000);
+  const start = Date.now();
+  const accounts = [{ puuid: "acct", label: "acct#NA1" }];
+  // League-v4 lags for two matches of the same account; the second's first read goes out between the first's retries.
+  tracker.matchFinished({ matchId: "NA1_44", queueId: 420, gameEndTimestamp: null, accounts });
+  await flush();
+  mock.timers.tick(30_000);
+  tracker.matchFinished({ matchId: "NA1_45", queueId: 420, gameEndTimestamp: null, accounts });
+  await flush();
+  for (let step = 0; step < 40; step++) {
+    mock.timers.tick(10_000);
+    await flush();
+  }
+  const times = reads.slice(1).map((read) => read.at - start);
+  assert.deepEqual(times.slice(0, 2), [0, 30_000], "both first after-reads go at once");
+  for (let index = 2; index < times.length; index++) {
+    assert.ok(times[index] - times[index - 1] >= RANK_RETRY_FLOOR_MS, `read ${index} came ${times[index] - times[index - 1]} ms after the previous one`);
+  }
+  assert.equal(times.length, 2 * MAX_RANK_READS);
+});
+
+test("stop at shutdown: queued reads do nothing, retries are cleared and pending rows settle with no row", async () => {
+  mock.timers.enable({ apis: ["setTimeout", "Date"], now: 1_900_000_000_000 });
+  const { tracker, league, reads } = setup();
+  league.set("lagging", [entry("GOLD", "II", 64)]);
+  tracker.snapshot(["lagging"]);
+  await flush();
+  mock.timers.tick(30 * 60_000);
+  tracker.matchFinished({ matchId: "NA1_50", queueId: 420, gameEndTimestamp: null, accounts: [{ puuid: "lagging", label: "lagging#NA1" }] });
+  await tracker.firstReads("NA1_50");
+  assert.equal(tracker.row("NA1_50", "lagging")?.state.kind, "pending", "a retry is scheduled");
+
+  // One read in flight, one queued behind it.
+  let answer!: (entries: readonly RankedEntry[]) => void;
+  league.set("busy", () => new Promise((resolve) => { answer = resolve; }));
+  league.set("queued", [entry("GOLD", "II", 64)]);
+  tracker.snapshot(["busy", "queued"]);
+  await flush();
+  assert.deepEqual(reads.map((read) => read.puuid), ["lagging", "lagging", "busy"]);
+
+  tracker.stop();
+  assert.equal(tracker.isStopped, true);
+  let settled = false;
+  void tracker.settled("NA1_50", ["lagging"]).then(() => { settled = true; });
+  await flush();
+  assert.equal(settled, true, "the pending row settles at once");
+  assert.equal(tracker.row("NA1_50", "lagging"), undefined, "with no row");
+  answer([entry("GOLD", "II", 64)]);
+  mock.timers.tick(10 * 60_000);
+  await flush();
+  tracker.snapshot(["new"]);
+  tracker.matchFinished({ matchId: "NA1_51", queueId: 420, gameEndTimestamp: null, accounts: [{ puuid: "new", label: "new#NA1" }] });
+  await flush();
+  assert.deepEqual(reads.map((read) => read.puuid), ["lagging", "lagging", "busy"], "nothing queued, retried or new is read");
+});
+
+test("stopAllPolling stops the production tracker", () => {
+  assert.equal(rankTracker.isStopped, false);
+  stopAllPolling();
+  assert.equal(rankTracker.isStopped, true);
 });
 
 test("rank names: 黄金 II in text, 黄金二 in voice, apex without a division, unknown ranks show nothing", () => {
