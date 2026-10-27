@@ -76,7 +76,7 @@ Logs contain Riot IDs, Discord usernames and server names, so keep them local li
 The bot requests the standard Guilds and GuildVoiceStates intents.
 Its current commands do not require privileged Presence or Server Members gateway intents.
 The bot needs View Channel, Connect and Speak permissions in the voice channel.
-Optional match messages in the voice channel chat also need Send Messages.
+Optional match messages in the voice channel chat also need Send Messages and Embed Links, because the reports are embeds.
 The 马报 channel needs View Channel, Send Messages and Embed Links, and the optional weekly roles need Manage Roles with the bot's role above the managed roles; see [马报](ma-bao.md).
 Invite the application with the `bot` and `applications.commands` scopes.
 The avatar is `assets/m-advisor-avatar.png` (1024 x 1024), rendered from `assets/m-advisor-avatar.svg`.
