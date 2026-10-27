@@ -11,6 +11,7 @@ import { closeDatabase, getDatabase } from "../src/store/database";
 import { getAnnouncerState, getPregameVoiceEnabled, setLastMatchId } from "../src/store/announcerStore";
 import { getAccountByRiotId } from "../src/utils/riotApi";
 import { getLatestSRMatchId, getMatchDetail } from "../src/utils/riotMatchApi";
+import { getActiveGame } from "../src/utils/riotSpectatorApi";
 import { resetMockData } from "../src/services/riotData";
 import { isSyntheticAccount, mergeBoundAccount } from "../src/utils/bindingAccounts";
 
@@ -26,7 +27,11 @@ const calls = {
   polls: [] as string[],
   pollChannels: [] as Array<string | undefined>,
   played: [] as Array<{ channelId: string; text: string; style: string }>,
+  /** Every pollGameStartNow call, with the mock game the account is in at that moment. */
+  gameStarts: [] as Array<{ guildId: string; matchId?: string; channelId?: string; game: unknown }>,
 };
+/** What the stubbed watcher reports for a /simulate start. */
+let gameStartOutcome: { textPosted: boolean; voice: string } | null = { textPosted: true, voice: "played" };
 const baselines = new Map<string, string>();
 let voiceFailure: Error | undefined;
 let beforePlayback: (() => void) | undefined;
@@ -68,6 +73,12 @@ stubModule("../src/services/gameMonitor.ts", {
     calls.starts.push({ guildId, channelId: member.voice.channelId! });
   },
   stopPolling: (guildId: string) => calls.stops.push(guildId),
+  // The watcher asks spectator through the normal provider, as the real one does.
+  pollGameStartNow: async (guildId: string, matchId?: string, channelId?: string) => {
+    const puuid = listTrackedMembers(guildId)[0].accounts[0].puuid;
+    calls.gameStarts.push({ guildId, matchId, channelId, game: await getActiveGame(puuid) });
+    return { tick: { started: 1, posted: 1, errors: 0 }, outcome: gameStartOutcome };
+  },
   // Each member's first account takes a baseline, then announces whatever changed since.
   pollGuildNow: async (_client: unknown, guildId: string, expectedChannelId?: string) => {
     const latest: Array<{ puuid: string; matchId: string }> = [];
@@ -133,6 +144,7 @@ beforeEach(() => {
   beforePlayback = undefined;
   pollFailure = false;
   onPoll = undefined;
+  gameStartOutcome = { textPosted: true, voice: "played" };
   savedFetch = globalThis.fetch;
   globalThis.fetch = async () => { throw new Error("Command test attempted a network request."); };
   savedConsoleError = console.error;
@@ -291,6 +303,54 @@ for (const outcome of ["win", "loss"]) {
     assert.deepEqual((f.replies.at(-1) as { allowedMentions?: unknown }).allowedMentions, { parse: [], roles: [], users: [], repliedUser: false });
   });
 }
+
+test("/simulate start opens a labeled mock game on the loading screen and waits for its 锦囊", async () => {
+  const puuid = await seedBinding();
+  const f = interactionFixture({ outcome: "start" });
+  await commands.simulate.execute(f.interaction);
+  assert.equal(calls.gameStarts.length, 1);
+  const [call] = calls.gameStarts;
+  const game = call.game as { mock: boolean; gameStartTime: number; mockMatchId: string; participants: Array<{ puuid: string; teamId: number }> };
+  assert.equal(call.channelId, f.channel.id);
+  assert.equal(game.mock, true);
+  assert.equal(game.gameStartTime, 0);
+  assert.equal(call.matchId, game.mockMatchId);
+  assert.equal(game.participants.find((player) => player.puuid === puuid)?.teamId, 100);
+  assert.deepEqual(calls.polls, [], "no finished match is simulated");
+  assert.match(replyText(f.replies.at(-1)), /模拟数据：军师赛前锦囊已发到文字频道并播报完成。此结果不是实际战绩/);
+  assert.deepEqual((f.replies.at(-1) as { allowedMentions?: unknown }).allowedMentions, { parse: [], roles: [], users: [], repliedUser: false });
+
+  // A second start while the mock game is on is refused with a hint; ending it reuses its match ID.
+  const again = interactionFixture({ outcome: "start" });
+  await commands.simulate.execute(again.interaction);
+  assert.match(replyText(again.replies.at(-1)), /模拟开局失败.*胜利或失败结束它/);
+  assert.equal(calls.gameStarts.length, 1);
+  await commands.simulate.execute(interactionFixture({ outcome: "win" }).interaction);
+  assert.equal(await getLatestSRMatchId(puuid), game.mockMatchId);
+});
+
+test("/simulate start reports a server with pregame voice off, and fails when the 锦囊 did not go out", async () => {
+  await seedBinding();
+  gameStartOutcome = { textPosted: true, voice: "off" };
+  const off = interactionFixture({ outcome: "start" });
+  await commands.simulate.execute(off.interaction);
+  assert.match(replyText(off.replies.at(-1)), /本服务器关闭了赛前语音/);
+  resetMockData();
+  await seedBinding();
+  gameStartOutcome = { textPosted: true, voice: "dropped" };
+  const dropped = interactionFixture({ outcome: "start" });
+  await commands.simulate.execute(dropped.interaction);
+  assert.match(replyText(dropped.replies.at(-1)), /模拟锦囊暂未发出/);
+});
+
+test("/simulate start is refused in real mode", async () => {
+  await seedBinding();
+  process.env.RIOT_MODE = "real";
+  const f = interactionFixture({ outcome: "start" });
+  await commands.simulate.execute(f.interaction);
+  assert.match(replyText(f.replies.at(-1)), /RIOT_MODE=mock/);
+  assert.equal(calls.gameStarts.length, 0);
+});
 
 test("/simulate rejects real mode, missing binding, and absent tracked member before mutation", async () => {
   const puuid = await seedBinding();
