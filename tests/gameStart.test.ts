@@ -925,8 +925,8 @@ test("the recap wording by tier: the 军师 owns a bad call, no em dash, sanitiz
     assert.ok(RECAP_PHRASES[tier].length >= 2, `${tier} has a small pool`);
     for (const phrase of RECAP_PHRASES[tier]) {
       const line = phrase("小明");
-      assert.ok(line.startsWith("军师点名的 小明 ") && line.includes(tier) &&line.endsWith("。"), line);
-      assert.ok(!line.includes("—"), line);
+      assert.ok(line.startsWith("军师点名的 小明 ") && line.includes(tier) && line.endsWith("。"), line);
+      assert.ok(!line.includes("\u2014"), line);
     }
   }
   // A bad call is the 军师's to own after the name: it says so and never blames the player.
