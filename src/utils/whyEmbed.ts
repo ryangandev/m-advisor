@@ -1,7 +1,7 @@
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder } from "discord.js";
 import { formatScore } from "../services/announcementText";
 import { DIMENSION_LABELS } from "../services/horseProfile";
-import { appealRuling, dimensionEvidence, formatGap, verdictSummary } from "../services/horseVerdict";
+import { appealRuling, dimensionEvidence, everyItem, formatGap, verdictSummary } from "../services/horseVerdict";
 import type { DimensionImpact, Verdict } from "../services/horseVerdict";
 import type { HorseRecord } from "../store/horseRecordStore";
 import { TIER_ICONS } from "./stableEmbed";
@@ -54,7 +54,7 @@ function dragLine(verdict: Verdict, entry: DimensionImpact): string {
   const evidence = dimensionEvidence(entry.dimension, verdict.record);
   return [
     `**${DIMENSION_LABELS[entry.dimension]}** 超过 ${percent(entry.percentile)} 的同位置玩家`,
-    `占${verdict.positionLabel}评分 ${percent(entry.weight)}`,
+    `占这局${verdict.positionLabel}评分 ${percent(entry.share)}`,
     ...evidence,
   ].join(" · ");
 }
@@ -63,10 +63,10 @@ function gapLines(verdict: Verdict): string[] {
   const { above, below } = verdict;
   return [
     above
-      ? `⬆️ 离上一名（${above.tier}）差 **${formatGap(above.gap)}** 分${above.close ? "，惜败" : ""}`
+      ? `⬆️ 离上一名${above.sameTier ? "" : `（${above.tier}）`}差 **${formatGap(above.gap)}** 分${above.close ? "，惜败" : ""}`
       : "⬆️ 队内第一，上面没有更高的档位了",
     below
-      ? `⬇️ 领先下一名（${below.tier}）**${formatGap(below.gap)}** 分${below.close ? "，险胜" : ""}`
+      ? `⬇️ 领先下一名${below.sameTier ? "" : `（${below.tier}）`}**${formatGap(below.gap)}** 分${below.close ? "，险胜" : ""}`
       : "⬇️ 队内最后一名，后面没有退路了",
   ];
 }
@@ -77,6 +77,8 @@ export interface WhyView {
   self: boolean;
   /** Champion name as shown to players. */
   champion: string;
+  /** Whether the radar is attached; false when rendering it failed, so the verdict still goes out. */
+  image: boolean;
 }
 
 /** The public 判决书. The radar is attached as RADAR_FILE_NAME. Mock verdicts are visibly labeled. */
@@ -90,12 +92,13 @@ export function buildWhyEmbed(view: WhyView): EmbedBuilder {
       `<@${record.discordUserId}> · ${view.champion} · ${verdict.positionLabel} · ${record.won ? "胜" : "负"} · ${timestamp(record.playedAt)}`,
       `${TIER_ICONS[record.tier]} **${record.tier}** · **${formatScore(record.score)}** 分 · 队内第 ${record.teamRank}/${record.teamSize}`,
     ].join("\n"))
-    .setImage(`attachment://${RADAR_FILE_NAME}`)
     .setFooter({ text: record.mock ? MOCK_FOOTER : `对局 ${record.matchId} • 策马军师` });
+
+  if (view.image) embed.setImage(`attachment://${RADAR_FILE_NAME}`);
 
   const reasons = verdict.drags.length > 0
     ? verdict.drags.map((entry) => dragLine(verdict, entry))
-    : ["没有一项低于同位置中位数。"];
+    : [`${everyItem(verdict)}都不低于同位置中位数。`];
   if (verdict.best) {
     reasons.push(`亮点：**${DIMENSION_LABELS[verdict.best.dimension]}** 超过 ${percent(verdict.best.percentile)} 的同位置玩家`);
   }

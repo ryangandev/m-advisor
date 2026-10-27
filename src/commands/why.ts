@@ -8,6 +8,7 @@ import { getTrackedMember } from "../store/bindingStore";
 import { countMemberHorseRecords } from "../store/horseRecordStore";
 import type { HorseRecord } from "../store/horseRecordStore";
 import { buildErrorEmbed } from "../utils/embeds";
+import { logError } from "../utils/log";
 import { championLabel } from "../utils/stableEmbed";
 import {
   APPEAL_PREFIX, RADAR_FILE_NAME, buildAppealEmbed, buildAppealRow, buildWhyEmbed, buildWhyEmptyEmbed, parseAppealCustomId,
@@ -33,6 +34,9 @@ function closeCase(key: string): void {
   closedCases.add(key);
   if (closedCases.size > DOCKET_LIMIT) closedCases.delete(closedCases.values().next().value!);
 }
+
+/** Replaceable in tests, for example with a renderer that fails. */
+export const whyDependencies = { renderRadar: renderVerdictRadar };
 
 /** Forgets every closed case. For tests. */
 export function resetAppealDocket(): void {
@@ -91,11 +95,17 @@ const whyCommand: BotCommand = {
     // Rendering the radar can take a moment on a cold start, so acknowledge first.
     await interaction.deferReply();
     const verdict = buildVerdict(record);
-    const image = await renderVerdictRadar(verdict);
+    let image: Buffer | null = null;
+    try {
+      image = await whyDependencies.renderRadar(verdict);
+    } catch (error) {
+      // The verdict still goes out without its picture; only the error class is logged.
+      logError(`The /why radar could not be rendered: ${error instanceof Error ? error.name : "unknown error"}`);
+    }
     const row = buildAppealRow(record, closedCases.has(caseKey(guildId, { mock, memberId, matchId: record.matchId })));
     await interaction.editReply({
-      embeds: [buildWhyEmbed({ verdict, self: memberId === interaction.user.id, champion: championLabel(record) })],
-      files: [new AttachmentBuilder(image, { name: RADAR_FILE_NAME })],
+      embeds: [buildWhyEmbed({ verdict, self: memberId === interaction.user.id, champion: championLabel(record), image: image !== null })],
+      files: image ? [new AttachmentBuilder(image, { name: RADAR_FILE_NAME })] : [],
       components: row ? [row] : [],
       allowedMentions: NO_MENTIONS,
     });
@@ -150,8 +160,14 @@ const whyCommand: BotCommand = {
     closeCase(key);
     const verdict = buildVerdict(record);
     const row = buildAppealRow(record, true);
-    await interaction.update({ components: row ? [row] : [] });
-    await interaction.followUp({ embeds: [buildAppealEmbed(verdict)], allowedMentions: NO_MENTIONS });
+    try {
+      await interaction.update({ components: row ? [row] : [] });
+      await interaction.followUp({ embeds: [buildAppealEmbed(verdict)], allowedMentions: NO_MENTIONS });
+    } catch (error) {
+      // No ruling went out, so the case is reopened and the member can appeal again.
+      closedCases.delete(key);
+      throw error;
+    }
   },
 };
 

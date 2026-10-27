@@ -41,6 +41,7 @@ test("the verdict names the dimensions that cost the most by position weight tim
   assert.deepEqual(verdict.drags.map((entry) => entry.dimension), ["vision", "teamfight", "utility"]);
   assert.ok(Math.abs(verdict.drags[0].impact - -0.0902) < 1e-9);
   assert.equal(verdict.drags[0].weight, 0.22);
+  assert.ok(Math.abs(verdict.drags[0].share - 0.22) < 1e-9, "all nine dimensions are present, so the share is the weight");
   assert.equal(verdict.best?.dimension, "economy");
   assert.deepEqual(verdict.dimensions.map((entry) => entry.dimension), [...DIMENSIONS]);
   assert.deepEqual(verdict.dimensions.filter((entry) => entry.key).map((entry) => entry.dimension), ["teamfight", "vision", "utility"]);
@@ -75,9 +76,9 @@ test("neighbouring tiers carry their gap and are close at or below the threshold
   assert.equal(jungler.above, null);
   assert.deepEqual({ tier: jungler.below?.tier, close: jungler.below?.close }, { tier: "上等马", close: true });
 
-  const atThreshold = buildVerdict(makeHorseRecord({ score: 5, scoreAbove: 5 + CLOSE_GAP, scoreBelow: 5 - CLOSE_GAP - 0.01 }));
+  const atThreshold = buildVerdict(makeHorseRecord({ score: 5, scoreAbove: 5 + CLOSE_GAP, scoreBelow: 5 - CLOSE_GAP - 0.06 }));
   assert.equal(atThreshold.above?.close, true, "0.3 points is still 惜败");
-  assert.equal(atThreshold.below?.close, false, "0.31 points is no longer 险胜");
+  assert.equal(atThreshold.below?.close, false, "0.36 points prints as 0.4 and is no longer 险胜");
   assert.equal(atThreshold.above?.tier, "上等马");
   assert.equal(atThreshold.below?.tier, "下等马");
 });
@@ -90,10 +91,90 @@ test("gaps print with the announcement's rounding and never as zero", () => {
 
 test("evidence quotes the record's own statistics for a dimension", () => {
   const record = seededSupport();
-  assert.deepEqual(dimensionEvidence("vision", record), ["每分钟视野得分 0.8", "全场 3 个真眼"]);
+  assert.deepEqual(dimensionEvidence("vision", record), ["每分钟视野得分 0.8", "插了 3 个真眼"]);
   assert.deepEqual(dimensionEvidence("teamfight", record), ["参团率 24%", "0/9/4"]);
   assert.deepEqual(dimensionEvidence("matchup", makeHorseRecord({ durationSeconds: 1200, features: { goldDiffPerMinute: -40 } })), ["比对位少 800 经济"]);
   assert.deepEqual(dimensionEvidence("frontline", makeHorseRecord({ features: {} })), []);
+});
+
+test("objectives evidence leads with building damage and counts barons with dragons and heralds", () => {
+  const record = makeHorseRecord({ features: { buildingDamagePerMinute: 95.4, epicObjectiveShare: 0.25, turretShare: 0.1 } });
+  assert.deepEqual(dimensionEvidence("objectives", record), ["每分钟 95 建筑伤害", "龙、先锋和大龙参与 25%"]);
+});
+
+test("evidence never quotes a lead in the member's favour as if it were proof against them", () => {
+  const ahead = makeHorseRecord({ durationSeconds: 1200, features: { goldDiffPerMinute: 30, maxCsAdvantage: 12 } });
+  assert.deepEqual(dimensionEvidence("matchup", ahead), []);
+  const behind = makeHorseRecord({ durationSeconds: 1200, features: { goldDiffPerMinute: -40, maxCsAdvantage: -3 } });
+  assert.deepEqual(dimensionEvidence("matchup", behind), ["比对位少 800 经济", "补刀从没领先过对位"]);
+  assert.deepEqual(dimensionEvidence("matchup", makeHorseRecord({ features: { maxCsAdvantage: 0 } })), ["补刀从没领先过对位"]);
+});
+
+test("a share of the score divides by the weights of the dimensions that had data", () => {
+  // Without data for six dimensions, a support's vision (0.22) is 0.22 / (0.22 + 0.20 + 0.22) of the score.
+  const verdict = buildVerdict(seededSupport({ dimensions: { vision: 0.1, teamfight: 0.4, utility: 0.6 } }));
+  assert.equal(verdict.drags[0].dimension, "vision");
+  assert.ok(Math.abs(verdict.drags[0].share - 0.22 / 0.64) < 1e-9);
+  assert.match(appealRuling(verdict), /在这局辅助评分里占 34%/);
+});
+
+test("惜败 and 险胜 follow the printed gap, so the same printed number always gets the same label", () => {
+  const prints03 = buildVerdict(makeHorseRecord({ score: 5, scoreAbove: 5.34, scoreBelow: 4.66 }));
+  assert.equal(formatGap(prints03.above!.gap), "0.3");
+  assert.equal(prints03.above?.close, true);
+  assert.equal(prints03.below?.close, true);
+  const prints04 = buildVerdict(makeHorseRecord({ score: 5, scoreAbove: 5.36, scoreBelow: 4.64 }));
+  assert.equal(formatGap(prints04.above!.gap), "0.4");
+  assert.equal(prints04.above?.close, false);
+  assert.equal(prints04.below?.close, false);
+});
+
+test("a 没有马 whose worst dimension is not a key one is never told it is what the position values most", () => {
+  // Survival at 0 (weight 0.08) costs more than vision at 0.45 (weight 0.22) for a support.
+  const dimensions = { damage: 0.6, teamfight: 0.6, survival: 0, economy: 0.6, frontline: 0.6, vision: 0.45, objectives: 0.6, utility: 0.6, matchup: 0.6 };
+  for (let index = 0; index < 20; index += 1) {
+    const verdict = buildVerdict(seededSupport({ matchId: `NA1_${7000 + index}`, scoreAbove: 4, dimensions }));
+    assert.equal(verdict.drags[0].dimension, "survival");
+    assert.equal(verdict.drags[0].key, false);
+    const summary = verdictSummary(verdict, true);
+    assert.match(summary, /^生存只超过 0% 的同位置玩家，/);
+    assert.ok(!summary.includes("最看重"), summary);
+  }
+  for (let index = 0; index < 20; index += 1) {
+    const unknown = verdictSummary(buildVerdict(seededSupport({ matchId: `NA1_${8000 + index}`, position: null, scoreAbove: 4 })), true);
+    assert.ok(!unknown.includes("未知位置最看重"), unknown);
+  }
+  const keyWorst = Array.from({ length: 20 }, (_, index) => verdictSummary(buildVerdict(seededSupport({ matchId: `NA1_${9000 + index}`, scoreAbove: 4 })), true));
+  assert.ok(keyWorst.some((summary) => summary.includes("这是辅助最看重的地方之一")), "a key worst dimension can still be called that");
+});
+
+test("an ADC with a red frontline is not told every item is above the median", () => {
+  const record = makeHorseRecord({
+    position: "BOTTOM", tier: "下等马", teamRank: 4, score: 5.2, scoreAbove: 6.5,
+    dimensions: { damage: 0.6, teamfight: 0.6, survival: 0.6, economy: 0.6, frontline: 0.1, vision: 0.6, objectives: 0.6, utility: 0.6, matchup: 0.6 },
+  });
+  const verdict = buildVerdict(record);
+  assert.deepEqual(verdict.drags, [], "frontline has no weight for a bottom laner");
+  assert.equal(verdict.allAboveMedian, false);
+  assert.match(verdictSummary(verdict, true), /^计入评分的每一项都在同位置中位数以上/);
+  assert.match(appealRuling(verdict), /呈堂证供：计入评分的每一项都在同位置中位数以上/);
+  const clean = buildVerdict({ ...record, dimensions: { ...record.dimensions, frontline: 0.5 } });
+  assert.match(verdictSummary(clean, true), /^每一项都在同位置中位数以上/);
+});
+
+test("in a team larger than five a neighbour of the same tier is named by place", () => {
+  // Ranks 2 and 3 of seven are both 上等马.
+  const verdict = buildVerdict(makeHorseRecord({ tier: "上等马", teamRank: 3, teamSize: 7, score: 6, scoreAbove: 6.2, scoreBelow: 5.9 }));
+  assert.equal(verdict.above?.sameTier, true);
+  assert.equal(verdict.below?.tier, "中等马");
+  assert.equal(verdict.below?.sameTier, false);
+  assert.match(verdictSummary(verdict, true), /^离上一名只差 0\.2 分，惜败/);
+  const ruling = appealRuling(verdict);
+  assert.match(ruling, /离上一名只差 0\.2 分/);
+  assert.ok(!ruling.includes("离上等马"), ruling);
+  const sameBelow = appealRuling(buildVerdict(makeHorseRecord({ tier: "上等马", teamRank: 2, teamSize: 7, score: 6.2, scoreAbove: 7, scoreBelow: 6 })));
+  assert.match(sameBelow, /你只比下一名多 0\.2 分，这是险胜。/);
+  assert.ok(!sameBelow.includes("改判成上等马"), sameBelow);
 });
 
 test("the summary admits 惜败, names the costliest dimension, and says 你 only to the member", () => {
@@ -119,7 +200,7 @@ test("an appeal is always 维持原判, cites the strongest data and admits 惜�
   const ruling = appealRuling(buildVerdict(seededSupport()));
   const lines = ruling.split("\n");
   assert.match(lines[0], /^<@support-friend> .*没有马/);
-  assert.equal(lines[1], "呈堂证供：视野只超过 9% 的同位置玩家，而这一项占辅助评分的 22%，每分钟视野得分 0.8，全场 3 个真眼。");
+  assert.equal(lines[1], "呈堂证供：视野只超过 9% 的同位置玩家，而这一项在这局辅助评分里占 22%，每分钟视野得分 0.8，插了 3 个真眼。");
   assert.match(lines[2], /^军师承认这一局是惜败，离下等马只差 0\.2 分。可差一点也是差，驳回上诉，维持原判：没有马。/);
   assert.equal(appealRuling(buildVerdict(seededSupport())), ruling, "deterministic for the same match and appellant");
 });
