@@ -4,6 +4,7 @@ import type { BotCommand } from "../types";
 import { formatScore } from "../services/announcementText";
 import { buildVerdict, findVerdictRecord, listVerdictChoices, pick } from "../services/horseVerdict";
 import { isMockData } from "../services/riotData";
+import { closeAppeal, isAppealClosed, reopenAppeal } from "../store/appealStore";
 import { getTrackedMember } from "../store/bindingStore";
 import { countMemberHorseRecords } from "../store/horseRecordStore";
 import type { HorseRecord } from "../store/horseRecordStore";
@@ -19,29 +20,8 @@ const NO_MENTIONS = { parse: [], roles: [], users: [], repliedUser: false };
 /** Discord shows at most 25 autocomplete choices. */
 const CHOICE_LIMIT = 25;
 const CHOICE_NAME_LIMIT = 100;
-/** Bounds the closed-case memory; the oldest cases are forgotten first. */
-const DOCKET_LIMIT = 5000;
-
-/**
- * Cases already appealed in this process, so one member appeals one match once. Nothing is written to the database;
- * after a restart a repeat appeal is heard again and, being deterministic, gets the same ruling.
- */
-const closedCases = new Set<string>();
-const caseKey = (guildId: string, target: { mock: boolean; memberId: string; matchId: string }) =>
-  `${guildId}:${target.mock ? "m" : "r"}:${target.memberId}:${target.matchId}`;
-
-function closeCase(key: string): void {
-  closedCases.add(key);
-  if (closedCases.size > DOCKET_LIMIT) closedCases.delete(closedCases.values().next().value!);
-}
-
 /** Replaceable in tests, for example with a renderer that fails. */
 export const whyDependencies = { renderRadar: renderVerdictRadar };
-
-/** Forgets every closed case. For tests. */
-export function resetAppealDocket(): void {
-  closedCases.clear();
-}
 
 const dateFormat = new Intl.DateTimeFormat("zh-CN", {
   timeZone: "America/Los_Angeles", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
@@ -102,7 +82,7 @@ const whyCommand: BotCommand = {
       // The verdict still goes out without its picture; only the error class is logged.
       logError(`The /why radar could not be rendered: ${error instanceof Error ? error.name : "unknown error"}`);
     }
-    const row = buildAppealRow(record, closedCases.has(caseKey(guildId, { mock, memberId, matchId: record.matchId })));
+    const row = buildAppealRow(record, isAppealClosed({ guildId, discordUserId: memberId, matchId: record.matchId, mock }));
     await interaction.editReply({
       embeds: [buildWhyEmbed({ verdict, self: memberId === interaction.user.id, champion: championLabel(record), image: image !== null })],
       files: image ? [new AttachmentBuilder(image, { name: RADAR_FILE_NAME })] : [],
@@ -146,8 +126,8 @@ const whyCommand: BotCommand = {
       await interaction.reply({ content: refusal, flags: MessageFlags.Ephemeral, allowedMentions: NO_MENTIONS });
       return;
     }
-    const key = caseKey(guildId, target);
-    if (closedCases.has(key)) {
+    const appeal = { guildId, discordUserId: target.memberId, matchId: target.matchId, mock: target.mock };
+    if (isAppealClosed(appeal)) {
       await interaction.reply({ content: "本案已结，维持原判。", flags: MessageFlags.Ephemeral });
       return;
     }
@@ -157,7 +137,10 @@ const whyCommand: BotCommand = {
       return;
     }
     // Closed before any await, so a double click cannot be heard twice. The record itself is only read.
-    closeCase(key);
+    if (!closeAppeal(appeal)) {
+      await interaction.reply({ content: "本案已结，维持原判。", flags: MessageFlags.Ephemeral });
+      return;
+    }
     const verdict = buildVerdict(record);
     const row = buildAppealRow(record, true);
     try {
@@ -165,7 +148,11 @@ const whyCommand: BotCommand = {
       await interaction.followUp({ embeds: [buildAppealEmbed(verdict)], allowedMentions: NO_MENTIONS });
     } catch (error) {
       // No ruling went out, so the case is reopened and the member can appeal again.
-      closedCases.delete(key);
+      try {
+        reopenAppeal(appeal);
+      } catch (reopenError) {
+        logError(`The /why case could not be reopened: ${reopenError instanceof Error ? reopenError.name : "unknown error"}`);
+      }
       throw error;
     }
   },

@@ -26,6 +26,7 @@ The database contains Discord member IDs and Riot account IDs, so keep it outsid
 | Ordered list of each member's Riot accounts | `src/store/bindingStore.ts` | SQLite (`member_accounts`) |
 | Announcer style, `sweet` or `old` (default `old`) | `src/store/announcerStore.ts` | SQLite |
 | One horse record per tracked member per announced match | `src/store/horseRecordStore.ts` | SQLite (`horse_records`) |
+| Closed `/why` appeal cases | `src/store/appealStore.ts` | SQLite (`appeal_cases`) |
 | Polling timer | `src/store/announcerStore.ts` | Memory only |
 | Current voice channel | `src/store/announcerStore.ts` | Memory only |
 | Session match baseline | `src/store/announcerStore.ts` | Memory only |
@@ -68,12 +69,14 @@ Shipped migrations are never edited; a new schema change appends a new entry.
 | 3 | The version 2 tables plus `horse_records` |
 | 4 | The version 3 tables plus `report_settings` and `report_marks` |
 | 5 | The version 4 tables plus `pregame_settings` |
+| 6 | The version 5 tables plus `appeal_cases` |
 
 The 1 to 2 step copies each `guild_bindings` row into `tracked_members` at position 0 and each `bound_accounts` row into `member_accounts` with its account order, then drops the two old tables.
 `guild_preferences` is unchanged, so the voice choice carries over.
 The 2 to 3 step only creates `horse_records` and its indexes, so every existing row is untouched.
 The 3 to 4 step only creates `report_settings` and `report_marks`, so every existing row is untouched.
 The 4 to 5 step only creates `pregame_settings`, so every existing row is untouched.
+The 5 to 6 step only creates `appeal_cases` and its index, so every existing row is untouched.
 Migration happens in place, with no downgrade path, the first time any command opens an existing older database file.
 That includes `npm start`, `npm run dev`, `npm run doctor` (which only opens a file that already exists) and the `verify:*` scripts.
 `npm run register` does not open the database.
@@ -101,6 +104,16 @@ An existing key is left unchanged, so recording a match twice never makes a seco
 `listHorseRecords(guildId, { mock, discordUserId?, from?, to?, order?, limit? })` returns records whose `played_at` lies in `[from, to)`, and the `mock` flag is required so that mock and real records are never returned together.
 `listMatchHorseRecords`, `countMemberHorseRecords` and `eraseMemberHorseRecords` complete the API.
 Only tracked members are stored: no teammate or enemy PUUID, name or champion appears in the table.
+
+## Appeal cases
+
+`appeal_cases` holds one row per closed `/why` 上诉 case, keyed by (`guild_id`, `discord_user_id`, `match_id`, `mock`) with a `closed_at` time in Unix milliseconds, so one member appeals one match once even across restarts (see [/why](why.md#上诉)).
+Mock and real cases are separate keys.
+It has no foreign key, like `horse_records`, so `/unbind` keeps the cases.
+`src/store/appealStore.ts` owns it: `closeAppeal` inserts the case and returns whether it was new, `isAppealClosed` reads it, and `reopenAppeal` deletes it when the ruling could not be sent.
+The table is bounded by age: every `closeAppeal` deletes the cases closed more than a year ago (`APPEAL_RETENTION_MS`) in the same transaction, and `isAppealClosed` already ignores them.
+`eraseMemberHorseRecords` deletes the member's cases in the same transaction as their records, so `/stable-erase` leaves nothing behind.
+No Riot name, champion or score is stored in it.
 
 ## 马报 (report settings)
 
@@ -142,4 +155,5 @@ Migration tests build a literal version 1 file in WAL mode, written by a process
 They check that members, account order, voice styles and file mode survive and the old tables are gone.
 They also check the automatic backup (present, mode `0600`, holding the version 1 data, never overwritten, not repeated), two processes opening the same old file concurrently, that a failing migration rolls back to version 1, and that reopening a current file changes nothing.
 `tests/pregameSettings.test.ts` holds the version 4 to 5 migration tests (a literal version 4 file, the `.v4.bak` backup, a failing step that rolls back to version 4, newer-schema rejection) and the pre-game voice switch API.
+`tests/appealStore.test.ts` holds the version 5 to 6 migration tests (a literal version 5 file upgraded by a separate process, the `.v5.bak` backup, a failing step that rolls back to version 5) and the appeal case API, including survival across processes, pruning and erasing.
 The tests do not write to the bot's actual data directory.
