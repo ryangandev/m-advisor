@@ -410,6 +410,18 @@ test("/bind in real mode cleans mock accounts even when the real account is alre
   assert.equal(f.replies.at(-1), "This account is already bound.");
 });
 
+test("/bind at the 10-account server limit explains the limit instead of a Riot lookup failure", async () => {
+  const full = Array.from({ length: 10 }, (_, index) => ({ puuid: `full-${index}`, gameName: `Full${index}`, tagLine: "NA1" }));
+  setMemberAccounts(guildId, "tracked-user", full);
+  const f = interactionFixture({ riotId: "MockWin#NA1" });
+  await commands.bind.execute(f.interaction);
+  const reply = replyText(f.replies.at(-1));
+  assert.match(reply, /at most 10 Riot accounts/);
+  assert.doesNotMatch(reply, /Riot lookup/);
+  assert.deepEqual(firstMember(guildId)?.accounts, full);
+  assert.deepEqual(calls.starts, [], "a rejected bind does not touch monitoring");
+});
+
 test("/bind in mock mode keeps the other mock accounts", async () => {
   await seedBinding();
   const f = interactionFixture({ riotId: "MockLoss#NA1" });

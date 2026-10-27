@@ -4,6 +4,7 @@ import type { ChatInputCommandInteraction, EmbedBuilder } from "discord.js";
 import profileCommand from "../src/commands/profile";
 import { RiotApiError, resetMockData } from "../src/services/riotData";
 import { buildErrorEmbed, getProfileIconUrl } from "../src/utils/embeds";
+import { AccountBoundToOtherMemberError, GuildAccountLimitError } from "../src/store/storeErrors";
 import { getCommandUserErrorMessage, getRiotUserErrorMessage } from "../src/utils/userFacingErrors";
 
 const originalMode = process.env.RIOT_MODE;
@@ -68,6 +69,15 @@ test("real profile authentication errors remain safe and are never labeled as si
   assert.equal(error.title, "Error");
   assert.doesNotMatch(error.description!, /模拟数据|do-not-show-this-key/);
   assert.match(error.description!, /configuration needs attention/);
+});
+
+test("binding store errors get their own messages instead of the Riot substring rules", () => {
+  const limit = getCommandUserErrorMessage(new GuildAccountLimitError());
+  assert.equal(limit, "A server can track at most 10 Riot accounts. Use /unbind to remove a member first.");
+  const owned = getCommandUserErrorMessage(new AccountBoundToOtherMemberError("secret-puuid", "owner-id"));
+  assert.equal(owned, "That Riot account is already bound to another member of this server. Use /unbind on them first.");
+  assert.doesNotMatch(owned, /secret-puuid|owner-id/);
+  assert.match(getCommandUserErrorMessage(new Error("Riot lookup exploded")), /Unable to complete the Riot lookup right now\.$/);
 });
 
 test("structured errors preserve mock labels, precise retry delay, and command routing", () => {
