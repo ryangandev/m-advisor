@@ -71,13 +71,13 @@ function main(): void {
         path.resolve(input!),
         `--text-file=${textFile}`,
         `--output-file=${output}`,
-        // resvg reads plain OTF/TTF, so no woff2. Kerning and other layout tables are not needed for short labels.
+        // resvg reads plain OTF/TTF, so no woff2. Short horizontal labels need no layout, baseline or vertical tables.
         "--layout-features=",
         "--no-hinting",
         "--name-IDs=*",
         "--name-languages=*",
         "--notdef-outline",
-        "--drop-tables+=DSIG",
+        "--drop-tables+=DSIG,GSUB,GPOS,BASE,VORG,vhea,vmtx",
       ], { stdio: "inherit" });
       if (result.error || result.status !== 0) throw new Error(`pyftsubset failed for ${weight}: ${result.error?.message ?? `exit ${result.status}`}`);
       console.log(`${path.relative(process.cwd(), output)}: ${statSync(output).size} bytes`);

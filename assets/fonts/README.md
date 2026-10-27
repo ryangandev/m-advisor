@@ -17,16 +17,17 @@ The renderer in `src/utils/whyRadar.ts` loads them first and keeps the system CJ
 - Every character of the Chinese champion names in `src/data/championNamesZh.json`, the dimension names, tier names, position labels and the fixed strings the radar draws.
 - Printable ASCII, fullwidth ASCII forms and the punctuation and signs the radar uses, including the star.
 
-It drops hinting and every layout feature, which short horizontal labels do not need.
+It drops hinting and the GSUB, GPOS, BASE, VORG, vhea and vmtx tables, which short horizontal labels do not need; the result has only the tables CFF, cmap, head, hhea, hmtx, maxp, name, post and OS/2 plus the glyph order.
+The regenerated files are 747,604 bytes (regular) and 742,832 bytes (bold), and a rendered mock radar is byte for byte the same PNG as with the layout tables.
 The result is plain OpenType (CFF), the format resvg reads, with the family name `Noto Sans SC`.
 `tests/whyRadar.test.ts` reads the files' character tables and fails when the radar can draw a character the subset lacks.
 
 ## Regenerating
 
-Download and unzip the font (the script itself never touches the network), install fonttools, then run the script from the repository root:
+Download and unzip the font (the script itself never touches the network), install fonttools (the files were made with 4.68.0), then run the script from the repository root:
 
 ```sh
-python3 -m venv /tmp/fonttools-venv && /tmp/fonttools-venv/bin/pip install fonttools
+python3 -m venv /tmp/fonttools-venv && /tmp/fonttools-venv/bin/pip install fonttools==4.68.0
 node --import tsx scripts/subset-radar-font.ts \
   --regular /path/to/NotoSansSC-Regular.otf --bold /path/to/NotoSansSC-Bold.otf \
   --pyftsubset /tmp/fonttools-venv/bin/pyftsubset

@@ -7,7 +7,7 @@ import { afterEach, beforeEach, test } from "node:test";
 import Database from "better-sqlite3";
 import { getAnnouncerState, getPregameVoiceEnabled, setPregameVoiceEnabled } from "../src/store/announcerStore";
 import { listTrackedMembers } from "../src/store/bindingStore";
-import { closeDatabase, getDatabase } from "../src/store/database";
+import { SCHEMA_VERSION, closeDatabase, getDatabase } from "../src/store/database";
 import { getReportSettings } from "../src/store/reportStore";
 
 let directory: string;
@@ -150,13 +150,13 @@ function writeVersionFourDatabase(filePath: string, extraSql = ""): void {
   assert.ok(existsSync(`${filePath}-wal`) && statSync(`${filePath}-wal`).size > 0, "the fixture must leave an uncheckpointed WAL");
 }
 
-test("a version 4 database upgrades to version 5 with a backup, default on and its data intact", () => {
+test("a version 4 database upgrades to the current version with a backup, default on and its data intact", () => {
   const filePath = join(directory, "v4.sqlite3");
   process.env.DATABASE_PATH = filePath;
   writeVersionFourDatabase(filePath);
 
   assert.equal(getPregameVoiceEnabled("guild-one"), true);
-  assert.equal(getDatabase().pragma("user_version", { simple: true }), 6);
+  assert.equal(getDatabase().pragma("user_version", { simple: true }), SCHEMA_VERSION);
   assert.deepEqual(getDatabase().prepare("SELECT * FROM pregame_settings").all(), []);
   assert.deepEqual(listTrackedMembers("guild-one").map((member) => member.discordUserId), ["laowang"]);
   assert.equal(getAnnouncerState("guild-one").voiceStyle, "sweet");
