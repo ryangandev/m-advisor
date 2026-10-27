@@ -12,9 +12,8 @@ import {
 } from "../store/announcerStore";
 import { getLatestSRMatchId, getMatchDetail } from "../utils/riotMatchApi";
 import { getRiotMode, RiotApiError } from "./riotData";
-import { buildMatchAnnouncement, MIN_RANKED_MINUTES } from "./announcementText";
+import { buildMatchAnnouncement } from "./announcementText";
 import { buildPregameRecap } from "./pregameRecap";
-import { rankTeam } from "./horseRanking";
 import type { MatchAnnouncement } from "./announcementText";
 import { fetchMatchEvents } from "./matchEvents";
 import type { MatchEvent } from "./matchEvents";
@@ -709,7 +708,7 @@ export class GameMonitor {
     if (!canPlay()) throw new AnnouncementCancelledError();
     if (!progress.textPosted) {
       await this.postReport(guildId, initial, boundParticipants, progress, announcement, speaker.puuid, result,
-        this.pregameRecap(guildId, match.matchId, detail, speaker));
+        this.pregameRecap(guildId, match.matchId, announcement));
       if (!this.current(guildId, session)) throw new AnnouncementCancelledError();
     }
     await this.dependencies.announce(
@@ -822,19 +821,17 @@ export class GameMonitor {
    * It needs the pregame pick of this match in the same data mode, still bound to that member, on the report's team,
    * and a rated match. A failure here is logged and never affects the report.
    */
-  private pregameRecap(guildId: string, matchId: string, detail: MatchDetail, speaker: BoundParticipant): string | undefined {
+  private pregameRecap(guildId: string, matchId: string, announcement: MatchAnnouncement): string | undefined {
     try {
       const memory = this.gameStartMemory.get(guildId);
       const pick = memory && recallPick(memory, matchId, (this.dependencies.gameStart?.now ?? Date.now)());
       if (!pick || pick.mock !== this.dependencies.mock()) return undefined;
-      const account = this.dependencies.members(guildId)
-        .find((member) => member.discordUserId === pick.memberId)?.accounts.find((candidate) => candidate.puuid === pick.puuid);
-      if (!account) return undefined;
-      // Only the speaker's team is ranked, so a pick on the other side or outside the match finds no horse.
-      const ranking = rankTeam(detail, speaker.puuid);
-      if (ranking.aborted || ranking.remake || ranking.durationMinutes < MIN_RANKED_MINUTES) return undefined;
-      const horse = ranking.horses.find((candidate) => candidate.participant.puuid === pick.puuid);
-      return horse ? buildPregameRecap({ matchId, name: account.gameName, tier: horse.tier }) : undefined;
+      const bound = this.dependencies.members(guildId)
+        .find((member) => member.discordUserId === pick.memberId)?.accounts.some((candidate) => candidate.puuid === pick.puuid);
+      if (!bound) return undefined;
+      // The tier and the name are the report's own: only its team is listed, and a remake or aborted match lists nobody.
+      const player = announcement.players?.find((candidate) => candidate.puuid === pick.puuid);
+      return player ? buildPregameRecap({ matchId, name: player.name, tier: player.tier }) : undefined;
     } catch (error) {
       this.dependencies.log(new Error(`The 锦囊回顾 of match ${matchId} was left out: ${errorMessage(error)}`));
       return undefined;

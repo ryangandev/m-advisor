@@ -244,15 +244,19 @@ Ending the game later with `/simulate outcome:胜利` or `失败` reuses the sam
 When a 锦囊 card had a 军师之选, the horse embed of that game's finished report gets one more field, `锦囊回顾`, naming the pick and how the call turned out.
 It is text only: the spoken report is the same with and without it.
 The monitor remembers the pick per guild, across monitoring sessions, with the match ID, the member, the account they played on and whether the card was mock.
+A pick is remembered only once somebody could see or hear its card: when the card's text was posted, or when its voice line started playing.
+A card that failed to post and never played leaves nothing to recap.
 That memory is kept for 3 hours, at most 50 picks, the oldest dropped first, because a game lasts 20 to 45 minutes and its report may wait for a channel.
 It lives in the process like the rest of the game start memory, so a bot restart during the game loses it and the report simply has no field.
-The field appears only when the pick is in the finished match, on the team the report rates, and still bound to the same member.
+The field appears only when the pick is among the players the report ranks, which are the team it rates, and the account is still bound to the same member.
 The card and the report must be in the same data mode, so a mock pick never decorates a real report and the reverse.
-No pick, because the card was cold or never posted, means no field, and so does a match the report does not rate, such as a remake.
+No pick, because the card was cold or never shown, means no field, and so does a match the report does not rate, such as a remake, an aborted game or one that was too short.
+The tier and the name come from the report's own ranking (`players` on the announcement), the same data as the rows of the embed, so the line can never disagree with them.
 The wording depends on the pick's tier in that match and is chosen from a small pool, seeded by `recap:<matchId>` so the same match always shows the same line.
 A 特等马 pick celebrates the call, a 上等马 pick says it held up, and a 中等马 pick calls it so-so.
 For a 下等马 or a 没有马 pick the 军师 admits to misjudging, and the joke stays on the 军师, never on the player.
-The line names only the pick, by the game name stored with their binding, and nothing about enemies or other players.
+The line names only the pick, by the name that player's row in the same embed shows, and nothing about enemies or other players.
+Chinese text has no spaces around the name, and a name gets a space only on a side where its first or last character is an ASCII letter or digit, as in `军师点名的小明本局` and `军师点名的 Faker 本局`.
 Mock reports keep their mock label.
 
 ## Diagnostics

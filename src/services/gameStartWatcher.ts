@@ -480,10 +480,6 @@ export class GameStartWatcher {
         entry.pickMemberId = entry.brief.pick.memberId;
         entry.pickPuuid = participants.find((participant) => participant.memberId === entry.brief!.pick!.memberId
           && participant.teamId === speaker.teamId)?.puuid;
-        // Outlives the 15 minute memory above: the finished report of a long game may want it hours later.
-        if (entry.pickPuuid) {
-          rememberPick(this.host.memory, entry.matchId, { memberId: entry.pickMemberId, puuid: entry.pickPuuid, mock: entry.brief.mock, at: this.now() });
-        }
       }
       // Text first, fixed now; a failed post is logged and the voice still plays.
       const mentions = ids().filter((memberId) => channel.members.has(memberId));
@@ -494,6 +490,7 @@ export class GameStartWatcher {
           allowedMentions: pregameAllowedMentions(mentions),
         });
         entry.textChannelId = channel.id;
+        this.rememberShownPick(entry);
         result.posted++;
         this.dependencies.info(`Posted the 军师赛前锦囊 of game ${entry.matchId} in ${(channel as { name?: string }).name ?? channel.id}.`);
       } catch (error) {
@@ -509,6 +506,15 @@ export class GameStartWatcher {
       return;
     }
     this.queueVoice(entry);
+  }
+
+  /**
+   * Keeps the 军师之选 for the 锦囊回顾, but only once somebody could see or hear the card: its text was posted, or its voice line started.
+   * A pick nobody saw is never recapped. Outlives the 15 minute memory: the finished report of a long game may want it hours later.
+   */
+  private rememberShownPick(entry: GameStartEntry): void {
+    if (!entry.brief || !entry.pickMemberId || !entry.pickPuuid) return;
+    rememberPick(this.host.memory, entry.matchId, { memberId: entry.pickMemberId, puuid: entry.pickPuuid, mock: entry.brief.mock, at: this.now() });
   }
 
   /** Only bound members on the perspective team reach the builder; everyone else on that team is a count, the other team nothing. */
@@ -567,6 +573,7 @@ export class GameStartWatcher {
       // The queue resolves once before generation and once when joining; from the second call on the line is playing.
       if (++resolves >= 2 && target && !playing) {
         playing = target;
+        this.rememberShownPick(entry);
         this.host.rememberChannel(target.id);
         this.dependencies.info(`The 军师赛前锦囊 of game ${entry.matchId} starts playing ${((this.now() - entry.detectedAt) / 1000).toFixed(1)} s `
           + "after detection.");

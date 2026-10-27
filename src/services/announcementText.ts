@@ -25,6 +25,11 @@ export interface MatchAnnouncement {
   report: MatchReport;
   /** The 车队内战 when two or more bound friends played on the report's team; its sentence ends the speech. */
   party?: PartyRanking;
+  /**
+   * The report's team as the report ranked it: each player's tier and the name shown in their row.
+   * Only on a rated report (not aborted, not a remake, long enough), so anything built from it agrees with the embed it sits on.
+   */
+  players?: ReadonlyArray<{ puuid: string; tier: HorseTier; name: string }>;
 }
 export interface AnnouncementOptions {
   benchmarks?: Benchmarks;
@@ -287,6 +292,7 @@ export function buildMatchAnnouncement(detail: MatchDetail, trackedPuuid: string
     choose: seededChooser(`${ranking.matchId}:party`),
   });
   const speech = [prefix, summary, roll, praiseText, roastText, party?.sentence ?? ""].join("");
-  return { speech, report: { title, summary, lines, praise: praiseText, roast: roastText || undefined, mock }, ...(party ? { party } : {}) };
+  const players = ranking.horses.map((horse, index) => ({ puuid: horse.participant.puuid, tier: horse.tier, name: lines[index].name }));
+  return { speech, report: { title, summary, lines, praise: praiseText, roast: roastText || undefined, mock }, players, ...(party ? { party } : {}) };
 }
 

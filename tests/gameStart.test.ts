@@ -4,7 +4,7 @@ import type { Client, MessageCreateOptions, VoiceChannel } from "discord.js";
 import type { ActiveGame, ActiveGameParticipant, MatchDetail, TrackedMember } from "../src/types";
 import { GameMonitor, logGameStartFailure, type MonitorDependencies } from "../src/services/gameMonitor";
 import { GAME_START_INTERVAL_MS, GAME_START_WINDOW_MS, PICK_MEMORY_MS } from "../src/services/gameStartWatcher";
-import { buildPregameRecap, RECAP_FIELD_NAME, RECAP_PHRASES } from "../src/services/pregameRecap";
+import { buildPregameRecap, RECAP_FIELD_NAME, RECAP_PHRASES, spacedName } from "../src/services/pregameRecap";
 import { rankTeam } from "../src/services/horseRanking";
 import { VoiceAnnouncementService, type VoiceAnnouncementDependencies } from "../src/services/voiceAnnouncements";
 import { MOCK_PREGAME_PREFIX, OTHER_SIDE_NOTE } from "../src/services/pregameBrief";
@@ -893,13 +893,21 @@ async function finishGame(bot: Harness, matchId: string, puuids: string[], shape
   return bot.monitor.poll(bot.client, GUILD);
 }
 
+/** Names the player in the match as the report's row shows them; the recap must use this name, not the stored one. */
+const named = (names: Record<string, string>) => (detail: MatchDetail) => {
+  for (const player of detail.info.participants) if (names[player.puuid]) player.riotIdGameName = names[player.puuid];
+};
+
+/** The in-match name of the n-th player: Chinese, so the recap puts no space around it. */
+const rowName = (index: number) => `${"甲乙丙丁戊"[index]}马`;
+
 const SOLO_HISTORY: readonly HorseTier[] = ["上等马", "特等马", "特等马"];
 const ALL_TIERS: readonly HorseTier[] = ["特等马", "上等马", "中等马", "下等马", "没有马"];
 
 test("the finished report of a game whose 锦囊 had a pick shows the 锦囊回顾, worded by the pick's tier in the match", async () => {
   const seen = new Set<HorseTier>();
   for (let slot = 0; slot < 5; slot++) {
-    const members = Array.from({ length: 5 }, (_, index) => ({ id: id(30 + index), puuids: [`acct-${index}`], channel: "voice-1", names: [`队友${index}`] }));
+    const members = Array.from({ length: 5 }, (_, index) => ({ id: id(30 + index), puuids: [`acct-${index}`], channel: "voice-1", names: [`旧名${index}`] }));
     const bot = harness(members);
     // Only this member has a history, so the 军师 can only pick them.
     bot.records.set(id(30 + slot), history(id(30 + slot), SOLO_HISTORY));
@@ -907,15 +915,16 @@ test("the finished report of a game whose 锦囊 had a pick shows the 锦囊回�
     const matchId = `NA1_${9000 + slot}`;
     await loadGame(bot, 9000 + slot, puuids.map((puuid) => ({ puuid, teamId: 100, championId: AHRI })));
     assert.ok(embedOf(bot.sent[0].message).includes("军师之选"), "the card made a pick");
-    await finishGame(bot, matchId, puuids);
+    await finishGame(bot, matchId, puuids, named(Object.fromEntries(puuids.map((puuid, index) => [puuid, rowName(index)]))));
     const tier = rankTeam(bot.matches.get(matchId)!, puuids[0]).horses.find((horse) => horse.participant.puuid === puuids[slot])!.tier;
     seen.add(tier);
     const recap = recapOf(bot);
     assert.ok(recap, `slot ${slot} has a recap`);
-    assert.equal(recap, buildPregameRecap({ matchId, name: `队友${slot}`, tier }));
-    assert.ok(recap.includes(tier) && recap.startsWith("军师点名的 "), recap);
-    for (let other = 0; other < 5; other++) assert.equal(recap.includes(`队友${other}`), other === slot, "only the pick is named");
-    assert.ok(!recap.includes("Stored-") && !recap.includes("#NA1"), "never a Riot ID");
+    assert.equal(recap, buildPregameRecap({ matchId, name: rowName(slot), tier }));
+    assert.ok(recap.includes(tier) && recap.startsWith(`军师点名的${rowName(slot)}本局`), recap);
+    assert.ok(embedOf(reportMessages(bot)[0]).includes(rowName(slot)), "the row above shows the same name");
+    for (let other = 0; other < 5; other++) assert.equal(recap.includes(rowName(other)), other === slot, "only the pick is named");
+    assert.ok(!recap.includes("旧名") && !recap.includes("Stored-") && !recap.includes("#NA1"), "the row name, never the stored name or a Riot ID");
   }
   assert.deepEqual([...seen].sort(), [...ALL_TIERS].sort(), "every tier was exercised");
 });
@@ -925,19 +934,36 @@ test("the recap wording by tier: the 军师 owns a bad call, no em dash, sanitiz
     assert.ok(RECAP_PHRASES[tier].length >= 2, `${tier} has a small pool`);
     for (const phrase of RECAP_PHRASES[tier]) {
       const line = phrase("小明");
-      assert.ok(line.startsWith("军师点名的 小明 ") && line.includes(tier) && line.endsWith("。"), line);
+      assert.ok(line.startsWith("军师点名的小明") && line.includes(tier) && line.endsWith("。"), line);
       assert.ok(!line.includes("\u2014"), line);
     }
   }
   // A bad call is the 军师's to own after the name: it says so and never blames the player.
   for (const tier of ["下等马", "没有马"] as const) {
     for (const phrase of RECAP_PHRASES[tier]) {
-      const verdict = phrase("小明").replace(/^军师点名的 小明 本局[^，]*，/u, "");
+      const verdict = phrase("小明").replace(/^军师点名的小明[^，]*，/u, "");
       assert.match(verdict, /军师/u, verdict);
       assert.ok(!/(菜|废|垃圾|太差|不行|拖累|坑)/u.test(verdict), verdict);
     }
   }
-  assert.match(buildPregameRecap({ matchId: "NA1_1", name: "<@123>`*bad*`", tier: "特等马" }), /^军师点名的 [^<>`*]+ 本局特等马/u);
+  assert.match(buildPregameRecap({ matchId: "NA1_1", name: "<@123>`*bad*`", tier: "特等马" }), /^军师点名的[^<>`*]+特等马/u);
+});
+
+test("the name gets a space only where a letter or digit meets Chinese text", () => {
+  const line = (name: string) => buildPregameRecap({ matchId: "NA1_7", name, tier: "特等马" });
+  assert.equal(spacedName("小明"), "小明");
+  assert.equal(spacedName("Faker"), " Faker ");
+  assert.equal(spacedName("小明2"), "小明2 ");
+  assert.equal(spacedName("Ab小"), " Ab小");
+  assert.equal(spacedName("小_明"), "小_明");
+  assert.match(line("Faker"), /^军师点名的 Faker (本局|果然是本局)/u);
+  assert.match(line("小明"), /^军师点名的小明(本局|果然是本局)/u);
+  for (const tier of ALL_TIERS) {
+    for (let index = 0; index < 20; index++) {
+      const text = buildPregameRecap({ matchId: `NA1_${index}`, name: "Ab小c", tier });
+      assert.ok(text.startsWith("军师点名的 Ab小c ") && text.includes(tier), text);
+    }
+  }
 });
 
 test("the recap is deterministic per match and varies between matches", () => {
@@ -1014,7 +1040,7 @@ test("no 锦囊回顾 once the pick is no longer bound to that member", async ()
 
   // Control: untouched bindings show it.
   const bound = await setup();
-  await finishGame(bound, "NA1_9300", ["acct-a", "acct-b"]);
+  await finishGame(bound, "NA1_9300", ["acct-a", "acct-b"], named({ "acct-a": "小明" }));
   assert.match(recapOf(bound)!, /小明/);
 });
 
@@ -1076,7 +1102,7 @@ test("the pick survives a session stop and restart during the game, and outlives
   bot.move(A, "voice-1");
   bot.sync();
   await bot.monitor.poll(bot.client, GUILD);
-  await finishGame(bot, "NA1_9600", ["acct-a"]);
+  await finishGame(bot, "NA1_9600", ["acct-a"], named({ "acct-a": "小明" }));
   assert.match(recapOf(bot)!, /小明/);
 });
 
@@ -1125,4 +1151,67 @@ test("a guild remembers at most 50 picks, the oldest dropped first", async () =>
   assert.equal(await decorated(0), false, "the oldest pick was dropped");
   assert.equal(await decorated(1), true, "the second oldest is kept");
   assert.equal(await decorated(50), true, "the newest is kept");
+});
+
+test("a pick nobody saw is not recapped: the card failed to post and its voice never played", async () => {
+  const bot = harness([{ id: A, puuids: ["acct-a"], channel: "voice-1" }]);
+  bot.records.set(A, history(A, SOLO_HISTORY));
+  bot.settings.voice = false;
+  const channel = bot.channel("voice-1");
+  const send = channel.send;
+  let failed = false;
+  channel.send = async (message) => {
+    if (!failed) {
+      failed = true;
+      throw new Error("Missing Permissions");
+    }
+    return send(message);
+  };
+  bot.enter(spectatorGame(9900, [{ puuid: "acct-a", teamId: 100, championId: AHRI }]));
+  bot.sync();
+  await bot.monitor.poll(bot.client, GUILD);
+  await bot.tick();
+  assert.ok(failed && bot.sent.length === 0, "the card could not be posted");
+  assert.equal(bot.errors.filter((line) => line.includes("was not posted")).length, 1);
+  await finishGame(bot, "NA1_9900", ["acct-a"]);
+  assert.equal(reportMessages(bot).length, 1, "the report itself was posted");
+  assert.equal(recapOf(bot), undefined);
+});
+
+test("a pick whose card failed to post but whose voice line played is recapped", async () => {
+  const bot = harness([{ id: A, puuids: ["acct-a"], channel: "voice-1" }]);
+  bot.records.set(A, history(A, SOLO_HISTORY));
+  const channel = bot.channel("voice-1");
+  const send = channel.send;
+  let failed = false;
+  channel.send = async (message) => {
+    if (!failed) {
+      failed = true;
+      throw new Error("Missing Permissions");
+    }
+    return send(message);
+  };
+  bot.enter(spectatorGame(9901, [{ puuid: "acct-a", teamId: 100, championId: AHRI }]));
+  bot.sync();
+  await bot.monitor.poll(bot.client, GUILD);
+  await bot.tick();
+  await until(() => bot.played.length === 1, "the voice line");
+  await finishGame(bot, "NA1_9901", ["acct-a"]);
+  assert.ok(recapOf(bot));
+});
+
+test("a remake or an aborted game has no 锦囊回顾, however good the pick was", async () => {
+  const cases: Array<[string, (detail: MatchDetail) => void]> = [
+    ["remake", (detail) => { detail.info.earlySurrender = true; }],
+    ["aborted", (detail) => { detail.info.aborted = true; }],
+    ["too short", (detail) => { detail.info.gameDuration = 120; }],
+  ];
+  for (const [index, [label, shape]] of cases.entries()) {
+    const bot = harness([{ id: A, puuids: ["acct-a"], channel: "voice-1" }]);
+    bot.records.set(A, history(A, SOLO_HISTORY));
+    await loadGame(bot, 9910 + index, [{ puuid: "acct-a", teamId: 100, championId: AHRI }]);
+    await finishGame(bot, `NA1_${9910 + index}`, ["acct-a"], shape);
+    assert.equal(reportMessages(bot).length, 1, `${label}: the report was posted`);
+    assert.equal(recapOf(bot), undefined, label);
+  }
 });
