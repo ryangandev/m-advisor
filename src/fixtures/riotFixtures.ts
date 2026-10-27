@@ -81,11 +81,31 @@ function rawParticipant(player: FixturePlayer, teamId: number, win: boolean): Re
   };
 }
 
-export function buildMockMatch(profile: MockProfile, matchId: string, outcome: MockOutcome, endedAt = Date.now()): RawMatch {
-  const won = outcome === "win";
+/** A mock account seated in a mock game, with the name its match row shows. */
+export interface MockSeat { puuid: string; name: string }
+/** Who sat on each team of a mock game, in seat order, and which team the profile's outcome belongs to. */
+export interface MockSquads { blue: MockSeat[]; red: MockSeat[]; profileTeam: 100 | 200 }
+
+/** Seats the given accounts in the first slots; the remaining slots keep their fixture player under a numbered filler PUUID. */
+function seat(slots: FixturePlayer[], seats: MockSeat[], filler: string): FixturePlayer[] {
+  let fillers = 0;
+  return slots.map((slot, index) => seats[index]
+    ? { ...slot, puuid: seats[index].puuid, name: seats[index].name }
+    : { ...slot, puuid: `${filler}-${++fillers}` });
+}
+
+/**
+ * With `squads`, the accounts of a mock game take their seats on their own teams (blue is team 100), so every member's
+ * finished match is the same game with the same champions; `outcome` is then the result of `squads.profileTeam`.
+ */
+export function buildMockMatch(profile: MockProfile, matchId: string, outcome: MockOutcome, endedAt = Date.now(), squads?: MockSquads): RawMatch {
+  const profileSeat = { puuid: profile.account.puuid, name: profile.account.gameName };
+  const { blue, red, profileTeam } = squads ?? { blue: [profileSeat], red: [], profileTeam: 100 };
+  // `won` is whether team 100 won; the fixture lines below are written from team 100's point of view.
+  const won = (outcome === "win") === (profileTeam === 100);
   // Each player's takedowns stay within their team's kills, and each team's kills equal the other team's deaths.
-  const allies: FixturePlayer[] = [
-    { puuid: profile.account.puuid, name: profile.account.gameName, championId: 103, championName: "Ahri", position: "MIDDLE",
+  const allies: FixturePlayer[] = seat([
+    { puuid: "", name: "", championId: 103, championName: "Ahri", position: "MIDDLE",
       kda: won ? [8, 2, 7] : [2, 7, 4], scale: won ? 1.15 : 0.8 },
     { puuid: "MOCK-ALLY-1", name: "模拟队友一", championId: 516, championName: "Ornn", position: "TOP",
       kda: won ? [2, 3, 9] : [2, 3, 6], scale: 1.05 },
@@ -97,8 +117,8 @@ export function buildMockMatch(profile: MockProfile, matchId: string, outcome: M
     // A support with no kills but excellent vision and protection.
     { puuid: "MOCK-ALLY-4", name: "模拟队友四", championId: 412, championName: "Thresh", position: "UTILITY",
       kda: won ? [0, 4, 16] : [0, 4, 9], scale: 1.25 },
-  ];
-  const enemies: FixturePlayer[] = [
+  ], blue, "MOCK-ALLY");
+  const enemies: FixturePlayer[] = seat([
     { puuid: "MOCK-ENEMY-1", name: "模拟对手一", championId: 238, championName: "Zed", position: "MIDDLE",
       // Deliberately give an enemy the top KDA in a loss fixture to catch incorrect victory inference.
       kda: won ? [6, 4, 8] : [14, 1, 8], scale: won ? 0.85 : 1.3 },
@@ -108,7 +128,7 @@ export function buildMockMatch(profile: MockProfile, matchId: string, outcome: M
     { puuid: "MOCK-ENEMY-4", name: "模拟对手四", championId: 51, championName: "Caitlyn", position: "BOTTOM", kda: won ? [7, 3, 6] : [4, 2, 10] },
     { puuid: "MOCK-ENEMY-5", name: "模拟对手五", championId: 89, championName: "Leona", position: "UTILITY",
       kda: won ? [1, 3, 13] : [1, 2, 16], scale: 0.9 },
-  ];
+  ], red, "MOCK-ENEMY");
   const participants = [
     ...allies.map((player) => rawParticipant(player, 100, won)),
     ...enemies.map((player) => rawParticipant(player, 200, !won)),
@@ -328,20 +348,23 @@ const MOCK_ALLY_LINEUP = [[103, 4, 14], [516, 4, 12], [64, 4, 11], [222, 4, 7], 
 const MOCK_ENEMY_LINEUP = [[238, 4, 14], [122, 4, 12], [121, 4, 11], [51, 4, 7], [89, 4, 3]] as const;
 
 /**
- * A mock game that is still loading: start time 0, length 0, queue 420 on Summoner's Rift. The given PUUIDs take
- * team 100 in order and `MOCK-ALLY-*` fill the rest; team 200 is all `MOCK-ENEMY-*`. `mockMatchId` is not a Riot
- * field: it carries the match ID that the finished mock match reuses.
+ * A mock game that is still loading: start time 0, length 0, queue 420 on Summoner's Rift. The blue accounts take
+ * team 100 in order and the red accounts team 200; `MOCK-ALLY-*` and `MOCK-ENEMY-*` fill the remaining seats,
+ * numbered in seat order like the finished mock match. `mockMatchId` is not a Riot field: it carries the match ID
+ * that the finished mock match reuses.
  */
-export function buildMockActiveGame(gameId: number, mockMatchId: string, puuids: string[]): RawActiveGame {
+export function buildMockActiveGame(gameId: number, mockMatchId: string, blue: string[], red: string[] = []): RawActiveGame {
   const participant = (puuid: string, riotId: string, teamId: number, [championId, spell1Id, spell2Id]: readonly number[], index: number) => ({
     puuid, riotId, teamId, championId, spell1Id, spell2Id, bot: false, profileIconId: 29 + index,
     perks: { perkIds: [8005, 9111, 9104, 8014, 8139, 8135], perkStyle: 8000, perkSubStyle: 8100 },
     gameCustomizationObjects: [],
   });
+  let allyFillers = 0;
+  let enemyFillers = 0;
   const allies = MOCK_ALLY_LINEUP.map((lineup, index) =>
-    participant(puuids[index] ?? `MOCK-ALLY-${index + 1}`, `模拟队友${index + 1}#MOCK`, 100, lineup, index));
+    participant(blue[index] ?? `MOCK-ALLY-${++allyFillers}`, `模拟队友${index + 1}#MOCK`, 100, lineup, index));
   const enemies = MOCK_ENEMY_LINEUP.map((lineup, index) =>
-    participant(`MOCK-ENEMY-${index + 1}`, `模拟对手${index + 1}#MOCK`, 200, lineup, index));
+    participant(red[index] ?? `MOCK-ENEMY-${++enemyFillers}`, `模拟对手${index + 1}#MOCK`, 200, lineup, index));
   return {
     gameId, gameType: "MATCHED_GAME", gameStartTime: 0, mapId: 11, gameLength: 0, platformId: "NA1", gameMode: "CLASSIC",
     bannedChampions: [], gameQueueConfigId: 420, observers: { encryptionKey: "MOCK" },

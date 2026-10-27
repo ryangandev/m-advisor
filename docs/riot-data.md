@@ -97,10 +97,19 @@ Verified against Riot with the development key on 2026-10-27:
 The 200 response shape is NOT yet verified: it follows Riot's documented `CurrentGameInfo` and is pending a capture of a real game.
 `tests/fixtures/spectator-active-game.documented.json` is built from that documentation and is not a capture; replace it with a capture when there is one.
 
-The parser requires `gameId` (a positive safe integer), `gameStartTime` (a non-negative integer, 0 while loading), `gameLength` (a finite number), `gameQueueConfigId`, `mapId`, `platformId`, and a non-empty `participants` array.
-Each participant needs `teamId` (100 or 200), `championId`, `spell1Id`, `spell2Id`, a boolean `bot`, and a non-empty string `puuid` unless it is a bot.
-A malformed body is an `invalid_response` error, never "not in a game".
-Everything else is ignored, and the participant `riotId` is never read: names come from stored bindings.
+The parser is strict only about what identifies the game: the body must be an object with a positive safe integer `gameId`, an integer `gameStartTime` (0 while loading), a `participants` array and a finite `gameLength` (negative is allowed).
+Anything else degrades instead of failing, because custom games, Practice Tool, Arena and privacy-filtered players would otherwise break every poll with `invalid_response`:
+
+- `gameQueueConfigId`, `mapId` and `platformId` are `null` when missing or unusable, and `isAnnouncedGame()` is false for a null queue or map.
+- A participant whose `puuid` is missing, empty or not text (a bot, or a hidden human) is kept with `puuid: null`.
+- A missing or bad `championId`, `spell1Id` or `spell2Id` becomes 0, and a `bot` that is not `true` is false.
+- A participant that is not an object or has no `teamId` of 100 or 200 cannot be placed on a team and is dropped.
+
+A body that is not an object, or has no usable `gameId`, `gameStartTime`, `participants` or `gameLength`, is an `invalid_response` error, never "not in a game".
+The participant `riotId` is never read: names come from stored bindings.
+
+Spectator's own requester also reads the `errorCode` token of a 404 (kept only if it is a short upper-case token).
+`NOT_FOUND` means "not in a game" and returns `null`; any other 404, such as Riot's older `{"status":{...}}` envelope or a gateway page, is an `invalid_response` error with status 404.
 
 `matchIdOf(game)` is `NA1_${gameId}`, the match-v5 ID the game will have once finished.
 `isLoading(game)` is true while `gameStartTime` is 0.
@@ -110,12 +119,16 @@ A 401 or 403 is thrown as a `RiotApiError`; `isSpectatorAuthError()` recognizes 
 
 ### Mock active games
 
-`simulateMockGameStart(puuids)` starts a labeled mock game for one to five accounts and returns `{ matchId, gameId }`.
+`simulateMockGameStart(blue, red = [])` starts a labeled mock game and returns `{ matchId, gameId }`.
 The game is still loading (`gameStartTime` 0, `gameLength` 0) in queue 420 on Summoner's Rift.
-The given accounts take team 100 in order, `MOCK-ALLY-*` fill the rest of it, and team 200 is `MOCK-ENEMY-*`.
-Parsed mock games have `mock: true`, and their game ID is above 9 billion so it can never be a real one.
+The `blue` accounts (one to five) take team 100 in order and the optional `red` accounts (up to five) take team 200, so a friend on the other side can be simulated.
+`MOCK-ALLY-*` and `MOCK-ENEMY-*` fill the remaining seats, numbered in seat order.
+Parsed mock games have `mock: true`, and their game ID starts at 9 billion, far above the game IDs Riot has issued so far, which makes them easy to tell apart.
+Nothing relies on that: `mock` comes from the mode.
 Its match ID is reserved as `MOCK_<first puuid>_<epoch>_<sequence>`, and `matchIdOf()` returns it.
 `simulateMockMatch()` for an account in the game ends it for everyone in it and reuses that ID, so the start and the finished match are one match.
+The finished match seats every member of the game on their own team with the champions the game had, and its ID is the newest entry of every member's history.
+The outcome passed to `simulateMockMatch()` is the result of the team of the account it was called for.
 `resetMockData()` clears mock games.
 With no mock game, the mock spectator endpoint answers a simulated 404.
 Mock accounts that simulate a failure fail the spectator request the same way, and starting a game for them is refused.

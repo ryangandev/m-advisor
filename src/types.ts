@@ -121,7 +121,8 @@ export interface MatchDetail {
 
 /**
  * One player of a game in progress, from spectator-v5. Riot's `riotId` is deliberately not kept: the bot only ever
- * shows names from stored bindings. `puuid` is null only for a bot, which carries none.
+ * shows names from stored bindings. `puuid` is null when the participant has no usable account: a bot, or a human
+ * whose PUUID Riot omitted. A champion or spell Riot omitted is 0.
  */
 export interface ActiveGameParticipant {
   puuid: string | null;
@@ -141,9 +142,11 @@ export interface ActiveGame {
   gameStartTime: number;
   /** Seconds the game has run. */
   gameLength: number;
-  gameQueueConfigId: number;
-  mapId: number;
-  platformId: string;
+  /** Null when Riot omitted it or sent something unusable (custom games, Practice Tool); see `isAnnouncedGame`. */
+  gameQueueConfigId: number | null;
+  mapId: number | null;
+  platformId: string | null;
+  /** Only participants that could be placed on team 100 or 200. */
   participants: ActiveGameParticipant[];
   /** Simulated data: the game came from the mock provider and its match ID is `mockMatchId`. */
   mock: boolean;

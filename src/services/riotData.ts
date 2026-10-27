@@ -12,6 +12,8 @@ export class RiotApiError extends Error {
     readonly status?: number,
     readonly retryAfterMs?: number,
     readonly simulated = false,
+    /** Riot's own `errorCode` token of a 404, when the requester was asked to read it. Never a free-form message. */
+    readonly errorCode?: string,
   ) {
     super(message);
     this.name = "RiotApiError";
@@ -49,7 +51,7 @@ export function riotNumber(value: unknown): number {
   return value;
 }
 
-function statusError(status: number, retryAfterMs?: number, simulated = false): RiotApiError {
+function statusError(status: number, retryAfterMs?: number, simulated = false, errorCode?: string): RiotApiError {
   const prefix = simulated ? "模拟数据: " : "";
   const errors: Record<number, [RiotErrorCode, string]> = {
     401: ["unauthorized", "Riot API error 401: authentication required. Update RIOT_API_KEY."],
@@ -60,7 +62,7 @@ function statusError(status: number, retryAfterMs?: number, simulated = false): 
   const [code, message] = errors[status] ?? (status >= 500
     ? ["unavailable", `Riot API error ${status}: service temporarily unavailable.`]
     : ["bad_request", `Riot API error ${status}: request rejected.`]);
-  return new RiotApiError(`${prefix}${message}`, code, status, retryAfterMs, simulated);
+  return new RiotApiError(`${prefix}${message}`, code, status, retryAfterMs, simulated, errorCode);
 }
 
 const mockProfiles = new Map<string, MockProfile>();
@@ -69,9 +71,9 @@ const mockMatches = new Map<string, RawMatch>();
 /** Matches whose account simulates a missing timeline. */
 const mockTimelineMissing = new Set<string>();
 /** Mock games in progress (loading), each reserving the match ID that ending it with `simulateMockMatch` reuses. */
-interface MockGame { gameId: number; matchId: string; puuids: string[] }
+interface MockGame { gameId: number; matchId: string; blue: string[]; red: string[] }
 const mockGames = new Map<string, MockGame>();
-/** Mock game IDs are far above anything Riot issues, so a mock game can never be mistaken for a real one. */
+/** Mock game IDs start far above the game IDs Riot has issued so far, so they are easy to tell apart. */
 const MOCK_GAME_ID_BASE = 9_000_000_000;
 let mockSequence = 0;
 let mockEpoch = 0;
@@ -103,6 +105,10 @@ function profileForPuuid(puuid: string): MockProfile {
   return rememberProfile(generated);
 }
 
+function gameOf(puuid: string): MockGame | undefined {
+  return [...mockGames.values()].find((game) => game.blue.includes(puuid) || game.red.includes(puuid));
+}
+
 function checkFixtureFailure(profile: MockProfile): void {
   if (profile.failureStatus) {
     throw statusError(profile.failureStatus, profile.failureStatus === 429 ? 1000 : undefined, true);
@@ -115,39 +121,44 @@ export function simulateMockMatch(puuid: string, outcome: MockOutcome): { matchI
   const profile = profileForPuuid(puuid);
   checkFixtureFailure(profile);
   // Ending a mock game that has this account keeps the ID reserved when it started, so the start and the end are one match.
-  const game = [...mockGames.values()].find((candidate) => candidate.puuids.includes(puuid));
+  const game = gameOf(puuid);
   if (game) mockGames.delete(game.matchId);
   const matchId = game?.matchId ?? `MOCK_${puuid}_${mockEpoch}_${++mockSequence}`;
-  mockMatches.set(matchId, buildMockMatch(profile, matchId, outcome));
+  const seatOf = (member: string) => ({ puuid: member, name: profileForPuuid(member).account.gameName });
+  const squads = game ? { blue: game.blue.map(seatOf), red: game.red.map(seatOf), profileTeam: game.blue.includes(puuid) ? 100 as const : 200 as const } : undefined;
+  mockMatches.set(matchId, buildMockMatch(profile, matchId, outcome, Date.now(), squads));
   if (profile.timelineMissing) mockTimelineMissing.add(matchId);
-  const history = [matchId, ...(mockHistory.get(puuid) ?? [])];
-  for (const expiredId of history.slice(20)) {
-    mockMatches.delete(expiredId);
-    mockTimelineMissing.delete(expiredId);
+  // The game ends for everyone in it: the match is the newest entry of every member's history.
+  for (const member of game ? [...game.blue, ...game.red] : [puuid]) {
+    profileForPuuid(member);
+    const history = [matchId, ...(mockHistory.get(member) ?? [])];
+    for (const expiredId of history.slice(20)) {
+      mockMatches.delete(expiredId);
+      mockTimelineMissing.delete(expiredId);
+    }
+    mockHistory.set(member, history.slice(0, 20));
   }
-  mockHistory.set(puuid, history.slice(0, 20));
   return { matchId, outcome };
 }
 
 /**
- * Starts a labeled mock game that is still loading, with the given accounts (one to five) on team 100 and
- * simulated allies and enemies around them. Spectator requests for those accounts answer with it until
- * `simulateMockMatch` ends it for one of them, which reuses the returned `matchId`.
+ * Starts a labeled mock game that is still loading. The `blue` accounts (one to five) take team 100 and the optional
+ * `red` accounts (up to five) team 200, with simulated allies and enemies in the other seats. Spectator requests for
+ * those accounts answer with it until `simulateMockMatch` ends it for one of them, which reuses the returned `matchId`.
  */
-export function simulateMockGameStart(puuids: string[]): { matchId: string; gameId: number } {
+export function simulateMockGameStart(blue: string[], red: string[] = []): { matchId: string; gameId: number } {
   if (!isMockData()) throw new RiotApiError("Simulated games require RIOT_MODE=mock.", "mock_only");
-  if (puuids.length < 1 || puuids.length > 5 || new Set(puuids).size !== puuids.length || puuids.some((puuid) => !puuid.trim())) {
-    throw new RiotApiError("A mock game needs one to five distinct accounts.", "bad_request");
+  const everyone = [...blue, ...red];
+  if (blue.length < 1 || blue.length > 5 || red.length > 5 || new Set(everyone).size !== everyone.length || everyone.some((puuid) => !puuid.trim())) {
+    throw new RiotApiError("A mock game needs one to five distinct accounts on team 100 and up to five more on team 200.", "bad_request");
   }
-  for (const puuid of puuids) {
+  for (const puuid of everyone) {
     checkFixtureFailure(profileForPuuid(puuid));
-    if ([...mockGames.values()].some((game) => game.puuids.includes(puuid))) {
-      throw new RiotApiError("An account is already in a mock game.", "bad_request");
-    }
+    if (gameOf(puuid)) throw new RiotApiError("An account is already in a mock game.", "bad_request");
   }
-  const matchId = `MOCK_${puuids[0]}_${mockEpoch}_${++mockSequence}`;
+  const matchId = `MOCK_${blue[0]}_${mockEpoch}_${++mockSequence}`;
   const gameId = MOCK_GAME_ID_BASE + mockEpoch * 1_000_000 + mockSequence;
-  mockGames.set(matchId, { gameId, matchId, puuids: [...puuids] });
+  mockGames.set(matchId, { gameId, matchId, blue: [...blue], red: [...red] });
   return { matchId, gameId };
 }
 
@@ -185,9 +196,9 @@ function mockFetch<T>(url: string): T {
   }
   if (path.slice(0, 5).join("/") === "lol/spectator/v5/active-games/by-summoner" && path.length === 6) {
     checkFixtureFailure(profileForPuuid(path[5]));
-    const game = [...mockGames.values()].find((candidate) => candidate.puuids.includes(path[5]));
-    if (!game) throw statusError(404, undefined, true);
-    return buildMockActiveGame(game.gameId, game.matchId, game.puuids) as T;
+    const game = gameOf(path[5]);
+    if (!game) throw statusError(404, undefined, true, "NOT_FOUND");
+    return buildMockActiveGame(game.gameId, game.matchId, game.blue, game.red) as T;
   }
   if (path.slice(0, 4).join("/") === "lol/match/v5/matches" && path.length === 5) {
     const match = mockMatches.get(path[4]);
@@ -210,6 +221,18 @@ export interface RiotRequesterOptions {
   maxRetries?: number;
   maxRetryDelayMs?: number;
   apiKey?: () => string | undefined;
+  /** On a 404, read Riot's `errorCode` token from the body into `RiotApiError.errorCode`. */
+  readNotFoundCode?: boolean;
+}
+
+/** Riot's `errorCode` of a 404 body, only if it is a short upper-case token; anything else is dropped. */
+async function notFoundCode(response: Response): Promise<string | undefined> {
+  try {
+    const text = await response.text();
+    if (text.length > 4096) return undefined;
+    const code = (JSON.parse(text) as { errorCode?: unknown } | null)?.errorCode;
+    return typeof code === "string" && /^[A-Z_]{1,64}$/.test(code) ? code : undefined;
+  } catch { return undefined; }
 }
 
 function retryDelay(header: string | null, now: number): number | undefined {
@@ -257,7 +280,9 @@ export function createRiotRequester(options: RiotRequesterOptions = {}): <T>(url
         catch { throw new RiotApiError("Riot API returned an invalid response.", signal.aborted ? "timeout" : "invalid_response"); }
       }
       const afterMs = retryDelay(response.headers.get("Retry-After"), now());
-      // Response bodies may contain HTML or changing diagnostics; status alone controls error handling.
+      // Response bodies may contain HTML or changing diagnostics; status alone controls error handling,
+      // except that a requester asked to can keep the sanitized `errorCode` token of a 404.
+      const errorCode = options.readNotFoundCode && response.status === 404 ? await notFoundCode(response) : undefined;
       await response.body?.cancel().catch(() => undefined);
       if (response.status === 429) {
         const cooldown = afterMs ?? 1000 * 2 ** attempt;
@@ -271,7 +296,7 @@ export function createRiotRequester(options: RiotRequesterOptions = {}): <T>(url
         await sleep(wait);
         continue;
       }
-      throw statusError(response.status, afterMs);
+      throw statusError(response.status, afterMs, false, errorCode);
     }
     throw new RiotApiError("Riot API request did not complete.", "unavailable");
   };
