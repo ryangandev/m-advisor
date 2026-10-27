@@ -18,7 +18,7 @@ import type { MatchEvent } from "./matchEvents";
 import { buildHorseRecords } from "./horseRecords";
 import { recordHorseRecords } from "../store/horseRecordStore";
 import type { HorseRecord } from "../store/horseRecordStore";
-import { buildHorseReportEmbed } from "../utils/embeds";
+import { buildHorseReportEmbed, buildPartyEmbed } from "../utils/embeds";
 import { AnnouncementCancelledError, AnnouncementQueueFullError, announceTextToCurrentChannel } from "./voiceAnnouncements";
 import { logError, logInfo } from "../utils/log";
 
@@ -408,10 +408,14 @@ export class GameMonitor {
    * Read live, so someone unbound during the report neither counts for the channel nor gets mentioned.
    */
   private liveParticipantIds(guildId: string, participants: BoundParticipant[]): string[] {
+    return [...new Set(this.liveParticipants(guildId, participants).map((participant) => participant.memberId))];
+  }
+
+  /** The participants who still own the account they played on, in bind order. */
+  private liveParticipants(guildId: string, participants: BoundParticipant[]): BoundParticipant[] {
     const members = this.dependencies.members(guildId);
-    const owns = (participant: BoundParticipant) => members.some((member) =>
-      member.discordUserId === participant.memberId && member.accounts.some((account) => account.puuid === participant.puuid));
-    return [...new Set(participants.filter(owns).map((participant) => participant.memberId))];
+    return participants.filter((participant) => members.some((member) =>
+      member.discordUserId === participant.memberId && member.accounts.some((account) => account.puuid === participant.puuid)));
   }
 
   /**
@@ -651,7 +655,11 @@ export class GameMonitor {
     const speaker = this.previousSpeaker(client, guildId, session, progress, boundParticipants)
       ?? this.perspective(client, guildId, session, detected.boundParticipants, initial)!;
     progress.speakerPuuid = speaker.puuid;
-    const announcement = buildMatchAnnouncement(detail, speaker.puuid, this.dependencies.mock(), { events: progress.events });
+    // The party is every tracked player on the speaker's team, in voice or not; a friend on the other team is an enemy here.
+    const party = this.liveParticipants(guildId, boundParticipants)
+      .filter((participant) => participant.teamId === speaker.teamId)
+      .map(({ memberId, puuid }) => ({ memberId, puuid }));
+    const announcement = buildMatchAnnouncement(detail, speaker.puuid, this.dependencies.mock(), { events: progress.events, party });
     let pick = initial.id;
     const resolveTarget = () => {
       const chosen = this.chooseChannel(client, guildId, participantIds(), pick);
@@ -777,7 +785,8 @@ export class GameMonitor {
     try {
       await channel.send({
         ...(mentions.length > 0 ? { content: mentions.map((memberId) => `<@${memberId}>`).join(" ") } : {}),
-        embeds: [buildHorseReportEmbed(announcement.report)],
+        // The 车队内战, when there is one, is a second embed right after the report; it mentions without pinging.
+        embeds: [buildHorseReportEmbed(announcement.report), ...(announcement.party ? [buildPartyEmbed(announcement.party)] : [])],
         allowedMentions: { parse: [], roles: [], users: mentions, repliedUser: false },
       });
     } catch (error) {

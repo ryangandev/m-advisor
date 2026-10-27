@@ -5,6 +5,8 @@ import { rankTeam } from "./horseRanking";
 import type { Benchmarks, Dimension, HorseTier, RankedHorse } from "./horseRanking";
 import { strongestEvent } from "./matchEvents";
 import type { MatchEvent } from "./matchEvents";
+import { buildPartyRanking } from "./partyRanking";
+import type { PartyMember, PartyRanking } from "./partyRanking";
 
 /** Games shorter than this are remakes or abandoned games whose statistics say nothing about play. */
 export const MIN_RANKED_MINUTES = 10;
@@ -18,11 +20,21 @@ export interface MatchReport {
   roast?: string;
   mock: boolean;
 }
-export interface MatchAnnouncement { speech: string; report: MatchReport }
+export interface MatchAnnouncement {
+  speech: string;
+  report: MatchReport;
+  /** The 车队内战 when two or more bound friends played on the report's team; its sentence ends the speech. */
+  party?: PartyRanking;
+}
 export interface AnnouncementOptions {
   benchmarks?: Benchmarks;
   /** Timeline moments from fetchMatchEvents; null or omitted keeps the statistics-only report. */
   events?: readonly MatchEvent[] | null;
+  /**
+   * Bound members who played the match. Those on the report's team are ranked among themselves into a 车队内战
+   * when there are at least two; anyone on the other team is ignored, and fewer than two changes nothing.
+   */
+  party?: readonly PartyMember[];
 }
 
 /** One decimal place, rounded half up, so a score reads the same in speech, the channel report and the 马厩. */
@@ -265,7 +277,16 @@ export function buildMatchAnnouncement(detail: MatchDetail, trackedPuuid: string
   let roastText = worst === best ? "" : roast(worst, ranking.durationMinutes, ranking.won, choose, events);
   if (best === tracked) praiseText += "召唤军师的人自己就是特等马，军师怀疑你在刷存在感。";
   if (worst === tracked && worst !== best) roastText += "最离谱的是，这匹没有马，正是召唤军师的本人。";
-  const speech = [prefix, summary, roll, praiseText, roastText].join("");
-  return { speech, report: { title, summary, lines, praise: praiseText, roast: roastText || undefined, mock } };
+  const party = options.party && buildPartyRanking({
+    team: ranking.horses.map((horse, index) => ({
+      puuid: horse.participant.puuid, tier: horse.tier, score: lines[index].score, champion: lines[index].champion, name: lines[index].name,
+    })),
+    party: options.party,
+    mock,
+    // Its own seed, so the party wording never shifts the choices of the report itself.
+    choose: chooser(`${ranking.matchId}:party`),
+  });
+  const speech = [prefix, summary, roll, praiseText, roastText, party?.sentence ?? ""].join("");
+  return { speech, report: { title, summary, lines, praise: praiseText, roast: roastText || undefined, mock }, ...(party ? { party } : {}) };
 }
 
