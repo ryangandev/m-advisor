@@ -50,8 +50,24 @@ test("speech is split into sentences by default and every chunk keeps the announ
   assert.deepEqual(requests, ["sweet:军师羽扇一挥，本局马匹鉴定如下。", "sweet:特等马，锤石，模拟队友四，9.9分。"]);
 });
 
-test("playback starts with the first chunk while later chunks generate in order, one at a time", async () => {
-  const pending = [deferred<string>(), deferred<string>(), deferred<string>()];
+/** A fake generator that honours the request signal, as the local worker does. */
+const abortable = <T>(promise: Promise<T>, signal: AbortSignal) => new Promise<T>((resolve, reject) => {
+  signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+  promise.then(resolve, reject);
+});
+/** A fake transport that stays on its first chunk until it is aborted. */
+const holdFirstChunk = (onPlaying: () => void = () => undefined) =>
+  async (_target: VoiceChannel, audio: AsyncIterable<string>, _timeout: number, signal?: AbortSignal) => {
+    for await (const _path of audio) {
+      onPlaying();
+      await new Promise<void>((_resolve, reject) => {
+        signal!.addEventListener("abort", () => reject(new Error("The operation was aborted")), { once: true });
+      });
+    }
+  };
+
+test("playback starts once the first two chunks exist while later chunks generate in order, one at a time", async () => {
+  const pending = [deferred<string>(), deferred<string>(), deferred<string>(), deferred<string>()];
   const events: string[] = [];
   let active = 0;
   const service = new VoiceAnnouncementService({
@@ -65,53 +81,90 @@ test("playback starts with the first chunk while later chunks generate in order,
     play: playEach((path) => { events.push(`play:${path}`); }),
     cleanup: async (path) => { events.push(`cleanup:${path}`); },
   });
-  const result = service.announce("guild", "0|1|2", "old", () => channel());
+  const result = service.announce("guild", "0|1|2|3", "old", () => channel());
   await flush();
   assert.deepEqual(events, ["generate:0"]);
   pending[0].resolve("0.wav");
   await flush();
-  // Audio starts before the second chunk exists, and the second chunk starts without waiting for playback.
-  assert.deepEqual([...events].sort(), ["generate:0", "generate:1", "play:0.wav"]);
-  // A chunk that finishes early still plays after the one before it.
-  pending[2].resolve("2.wav");
-  await flush();
-  assert.deepEqual([...events].sort(), ["generate:0", "generate:1", "play:0.wav"]);
+  assert.deepEqual(events, ["generate:0", "generate:1"], "one ready chunk is not enough to join");
   pending[1].resolve("1.wav");
+  await flush();
+  // Audio starts before the third chunk exists, and the third chunk starts without waiting for playback.
+  assert.deepEqual([...events].sort(), ["generate:0", "generate:1", "generate:2", "play:0.wav", "play:1.wav"]);
+  // A chunk that finishes early still plays after the one before it.
+  pending[3].resolve("3.wav");
+  await flush();
+  assert.ok(!events.includes("play:3.wav"));
+  pending[2].resolve("2.wav");
   await result;
-  assert.deepEqual(events.filter((event) => event.startsWith("play")), ["play:0.wav", "play:1.wav", "play:2.wav"]);
-  assert.deepEqual(events.slice(-3), ["cleanup:0.wav", "cleanup:1.wav", "cleanup:2.wav"]);
+  assert.deepEqual(events.filter((event) => event.startsWith("play")), ["play:0.wav", "play:1.wav", "play:2.wav", "play:3.wav"]);
+  assert.deepEqual(events.slice(-4), ["cleanup:0.wav", "cleanup:1.wav", "cleanup:2.wav", "cleanup:3.wav"]);
 });
 
-test("a mid-stream generation failure stops playback, skips later chunks and cleans every chunk", async () => {
-  const second = deferred<string>();
+test("a single-chunk announcement joins as soon as its chunk exists", async () => {
+  const events: string[] = [];
+  const service = new VoiceAnnouncementService({
+    generate: async (text) => { events.push(`generate:${text}`); return "only.wav"; },
+    play: playEach((path) => { events.push(`play:${path}`); }),
+    cleanup: async () => undefined,
+  });
+  await service.announce("guild", "策马军师语音测试。", "old", () => channel());
+  assert.deepEqual(events, ["generate:策马军师语音测试。", "play:only.wav"]);
+});
+
+test("a failed chunk is retried once inline before anything is lost", async () => {
+  const attempts = new Map<string, number>();
+  const played: string[] = [];
+  const service = new VoiceAnnouncementService({
+    split: bars,
+    generate: async (text) => {
+      attempts.set(text, (attempts.get(text) ?? 0) + 1);
+      if (text === "2" && attempts.get(text) === 1) throw new Error("Local TTS worker exited.");
+      return `${text}.wav`;
+    },
+    play: playEach((path) => { played.push(path); }),
+    cleanup: async () => undefined,
+  });
+  await service.announce("guild", "0|1|2", "old", () => channel());
+  assert.deepEqual(Object.fromEntries(attempts), { 0: 1, 1: 1, 2: 2 });
+  assert.deepEqual(played, ["0.wav", "1.wav", "2.wav"]);
+});
+
+test("an early chunk that keeps failing never joins, so no partial report is heard", async () => {
+  const attempts: string[] = [];
+  let played = false;
+  const service = new VoiceAnnouncementService({
+    split: bars,
+    generate: async (text) => {
+      attempts.push(text);
+      if (text === "1") throw new Error("Local TTS could not generate speech.");
+      return `${text}.wav`;
+    },
+    play: async () => { played = true; },
+    cleanup: async () => undefined,
+  });
+  await assert.rejects(service.announce("guild", "0|1|2", "old", () => channel()), /could not generate/);
+  assert.deepEqual(attempts, ["0", "1", "1"]);
+  assert.equal(played, false);
+});
+
+test("a later chunk that fails twice stops playback, skips later chunks and cleans every chunk", async () => {
   const generated: string[] = [];
   const cleaned: string[] = [];
-  let aborted: unknown;
   const service = new VoiceAnnouncementService({
     split: bars,
     generate: async (text) => {
       generated.push(text);
-      if (text === "1") return second.promise;
+      if (text === "2") throw new Error("Local TTS worker exited.");
       return `${text}.wav`;
     },
-    play: async (_target, audio, _timeout, signal) => {
-      signal!.addEventListener("abort", () => { aborted = signal!.reason; }, { once: true });
-      for await (const path of audio) {
-        // The first chunk is still playing when the second fails.
-        if (path === "0.wav") await new Promise<void>((_resolve, reject) => {
-          signal!.addEventListener("abort", () => reject(new Error("transport aborted")), { once: true });
-        });
-      }
-    },
+    // The transport is still on the first chunk, and reports the abort in its own words.
+    play: holdFirstChunk(),
     cleanup: async (path) => { cleaned.push(path); },
   });
-  const result = service.announce("guild", "0|1|2", "old", () => channel());
-  await flush();
-  second.reject(new Error("Local TTS worker exited."));
-  await assert.rejects(result, /worker exited/);
-  assert.match(String(aborted), /worker exited/, "playback is stopped instead of waiting for the current chunk");
-  assert.deepEqual(generated, ["0", "1"]);
-  assert.deepEqual(cleaned, ["0.wav"]);
+  await assert.rejects(service.announce("guild", "0|1|2|3", "old", () => channel()), /worker exited/);
+  assert.deepEqual(generated, ["0", "1", "2", "2"]);
+  assert.deepEqual(cleaned, ["0.wav", "1.wav"]);
 });
 
 test("a failed first chunk never joins a channel", async () => {
@@ -134,7 +187,7 @@ test("eligibility is checked before each chunk, cancelling between chunks", asyn
     split: bars,
     generate: async (text) => {
       generated.push(text);
-      // The member leaves while the first chunk is being generated and played.
+      // The member leaves while the first chunk is being generated.
       if (text === "0") allowed = false;
       return `${text}.wav`;
     },
@@ -147,36 +200,58 @@ test("eligibility is checked before each chunk, cancelling between chunks", asyn
   assert.deepEqual(cleaned, ["0.wav"]);
 });
 
-test("cancellation during playback waits for the chunk in progress and removes every chunk file", async () => {
+test("cancellation during playback cancels the request in progress and removes every chunk file", async () => {
   const controller = new AbortController();
-  const second = deferred<string>();
+  const third = deferred<string>();
   const generated: string[] = [];
   const cleaned: string[] = [];
+  let requestSignal: AbortSignal | undefined;
   const playing = deferred<void>();
   const service = new VoiceAnnouncementService({
     split: bars,
-    generate: async (text) => { generated.push(text); return text === "1" ? second.promise : `${text}.wav`; },
-    play: async (_target, audio, _timeout, signal) => {
-      for await (const _path of audio) {
-        playing.resolve();
-        await new Promise<void>((_resolve, reject) => {
-          signal!.addEventListener("abort", () => reject(new Error("transport aborted")), { once: true });
-        });
-      }
+    generate: async (text, _style, signal) => {
+      generated.push(text);
+      if (text !== "2") return `${text}.wav`;
+      requestSignal = signal;
+      return abortable(third.promise, signal);
     },
+    play: holdFirstChunk(() => playing.resolve()),
     cleanup: async (path) => { cleaned.push(path); },
   });
-  const result = service.announce("guild", "0|1|2", "old", () => channel(), () => true, controller.signal);
-  const settled = result.then(() => "resolved", (error: unknown) => error);
+  const result = service.announce("guild", "0|1|2|3", "old", () => channel(), () => true, controller.signal);
   await playing.promise;
   controller.abort(new AnnouncementCancelledError());
-  await flush();
-  assert.deepEqual(cleaned, [], "the job waits for the generation request in progress");
-  second.resolve("1.wav");
-  assert.ok(await settled instanceof AnnouncementCancelledError);
-  assert.deepEqual(generated, ["0", "1"], "no chunk starts after cancellation");
+  await assert.rejects(result, AnnouncementCancelledError);
+  assert.equal(requestSignal?.aborted, true, "the worker request is cancelled instead of awaited");
+  assert.deepEqual(generated, ["0", "1", "2"], "no chunk starts after cancellation");
   assert.deepEqual(cleaned, ["0.wav", "1.wav"]);
 });
+
+test("a chunk that never resolves while Playing ends at the announcement deadline with full cleanup", async () => {
+  const generated: string[] = [];
+  const cleaned: string[] = [];
+  const late = deferred<string>();
+  const service = new VoiceAnnouncementService({
+    split: bars,
+    // The third request ignores its signal and never answers in time, like a stuck worker.
+    generate: async (text) => { generated.push(text); return text === "2" ? late.promise : `${text}.wav`; },
+    play: holdFirstChunk(() => undefined),
+    cleanup: async (path) => { cleaned.push(path); },
+  }, 8, 50);
+  const keepAlive = setTimeout(() => undefined, 1000);
+  try {
+    const error = await service.announce("guild", "0|1|2|3", "old", () => channel()).catch((failure: unknown) => failure);
+    assert.match(String(error), /timed out after/);
+    assert.ok(!(error instanceof AnnouncementCancelledError), "a timeout is a failure that leaves the match eligible");
+  } finally { clearTimeout(keepAlive); }
+  assert.deepEqual(generated, ["0", "1", "2"], "a timed-out chunk is not retried");
+  assert.deepEqual(cleaned, ["0.wav", "1.wav"]);
+  // Audio that still arrives after the deadline is removed.
+  late.resolve("2.wav");
+  await flush();
+  assert.deepEqual(cleaned, ["0.wav", "1.wav", "2.wav"]);
+});
+
 
 test("fixed channel eligibility changes after generation cancel before joining and clean audio", async () => {
   const speech = deferred<string>();

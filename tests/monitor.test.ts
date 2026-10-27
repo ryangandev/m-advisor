@@ -192,14 +192,15 @@ test("failed TTS leaves a pending match eligible for retry", async () => {
   let attempts = 0;
   bot.generate = async () => {
     attempts++;
-    if (attempts === 1) throw new Error("Fake speech failure");
+    // The voice queue retries a failed request once inline, so both attempts of the first poll fail.
+    if (attempts <= 2) throw new Error("Fake speech failure");
     return "retry-audio.wav";
   };
   assert.deepEqual(await bot.poll(), { announced: 0, errors: 1 });
   assert.equal(getLastMatchId(bot.guildId, "tracked"), "historical-match");
   assert.equal(bot.infos.filter((message) => message.startsWith("Announced")).length, 0, "a failed announcement is not reported as done");
   assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
-  assert.equal(attempts, 2);
+  assert.equal(attempts, 3);
   assert.deepEqual(bot.cleaned, ["retry-audio.wav"]);
   assert.equal(getLastMatchId(bot.guildId, "tracked"), "pending-match");
 });
@@ -246,11 +247,12 @@ test("shared-match failure attempts speech once per poll and retries next time",
   bot.latestIds.set("second", "shared-match");
   let attempts = 0;
   bot.generate = async () => { attempts++; throw new Error("speech unavailable"); };
-  assert.deepEqual(await bot.poll(), { announced: 0, errors: 1 });
-  assert.equal(attempts, 1);
-  assert.equal(getLastMatchId(bot.guildId, "second"), "historical-match");
+  // One announcement per poll, each with the voice queue's single inline retry.
   assert.deepEqual(await bot.poll(), { announced: 0, errors: 1 });
   assert.equal(attempts, 2);
+  assert.equal(getLastMatchId(bot.guildId, "second"), "historical-match");
+  assert.deepEqual(await bot.poll(), { announced: 0, errors: 1 });
+  assert.equal(attempts, 4);
 });
 
 test("stop and restart create a new baseline instead of replaying an offline match", async () => {
