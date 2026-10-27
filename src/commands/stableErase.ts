@@ -42,7 +42,7 @@ const stableEraseCommand: BotCommand = {
       return;
     }
     const extras = [appeals > 0 ? `${appeals} 个上诉案件` : "", ranks > 0 ? `${ranks} 条段位记录` : ""].filter(Boolean);
-    const detail = `${counts.real} 局真实记录和 ${counts.mock} 局模拟记录${extras.length > 0 ? `，以及${extras.join("和")}` : ""}`;
+    const detail = `${counts.real} 局真实记录和 ${counts.mock} 局模拟记录${extras.length > 0 ? `，以及 ${extras.join("和 ")}` : ""}`;
     if (interaction.options.getBoolean("confirm") !== true) {
       await interaction.reply({
         content: `<@${user.id}> 有${detail}。清除后无法恢复，确认的话请重新执行并把 confirm 设为 true。`,
