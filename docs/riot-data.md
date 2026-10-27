@@ -132,3 +132,51 @@ The outcome passed to `simulateMockMatch()` is the result of the team of the acc
 `resetMockData()` clears mock games.
 With no mock game, the mock spectator endpoint answers a simulated 404.
 Mock accounts that simulate a failure fail the spectator request the same way, and starting a game for them is refused.
+
+## League snapshots (league-v4)
+
+`getLeagueEntries(puuid)` in `src/utils/riotLeagueApi.ts` reads `GET https://na1.api.riotgames.com/lol/league/v4/entries/by-puuid/{puuid}` and returns `{ entries, dropped }`.
+It exists to read an account's rank and LP before and after a ranked game.
+`/profile` still uses `getRankedEntries()` and its own parser.
+
+The league endpoint has its own requester, like spectator: one attempt, a 5 second timeout, no retries and no waiting.
+The caller schedules any retry.
+A league 429 therefore never sets the shared na1 cooldown that `/profile` and `/bind` honor, and the league requester's own cooldown fails fast.
+Riot still counts every request against the same na1 app limit on its side.
+
+The parser is tolerant per entry, because the numbers drive an LP difference:
+
+- An entry is kept only with a string `queueType`, `tier` and `rank`, and whole, non-negative `leaguePoints`, `wins` and `losses`.
+- A missing `leaguePoints` rejects that entry. It is never read as 0, which would invent an LP change.
+- A malformed entry is dropped and counted in `dropped`; the other queue's entry survives.
+- A body that is not an array, or an array whose every entry is malformed, is an `invalid_response` error, because an empty list would read as an unranked account.
+
+Real-mode failures are thrown as `RiotApiError`.
+They never fall back to mock data, and real mode never reads the mock ranked state.
+
+### Ladder math
+
+`src/services/rankMath.ts` is pure and uses Riot's enums only: `IRON` to `CHALLENGER` and divisions `IV` to `I`.
+Display names belong to the text layer, not to the math.
+
+- The ladder value is `tier * 400 + division * 100 + LP`, with IRON 0 to DIAMOND 6 (EMERALD is 5) and IV 0 to I 3. `MASTER`, `GRANDMASTER` and `CHALLENGER` share `2800 + LP`, and their `rank` string means nothing.
+- The delta is the value after minus the value before. It is correct across divisions, tiers and the DIAMOND to MASTER boundary: DIAMOND I 90 to MASTER 15 is +25, and GOLD IV 90 to GOLD III 10 is +20.
+- Queue 420 is `RANKED_SOLO_5x5` and 440 is `RANKED_FLEX_SR`. Other queues have no LP read.
+- The attribution key is `wins + losses` of the matching queue entry, before and after: no new game is `pending`, exactly one new game is attributed to the game, and anything else is `unattributable`.
+- A promotion or demotion is a change of rung over one game, in one small predicate (`countsAsRankMove`). Today every division or tier change counts. Whether that is the final definition is still Ryan's decision.
+- Moves between `MASTER`, `GRANDMASTER` and `CHALLENGER` happen through cutoffs, not games, so they are a plain `change`, never a promotion.
+- No entry before and one after is `placed`, with no delta. An entry that disappeared, an unknown tier or division and a queue mismatch give `none`, never an error.
+
+### Mock ranked state
+
+Mock ranked entries are mutable per PUUID, seeded from the fixture profile (`MockWin#NA1` starts at GOLD II 64 LP solo and SILVER I 28 LP flex) and shared with `/profile`.
+`simulateMockMatch()` moves the entry of the match's queue: +22 LP and one more win for a win, -19 LP and one more loss for a loss, with division and tier rollover.
+Every mock match is queue 420, so only solo moves.
+In a mock game the outcome is the result of the team of the account it was called for, and each member moves by their own team's result.
+An account without an entry in that queue stays unranked.
+`setMockRankedEntry(puuid, entry)` replaces or adds an entry for tests and is rejected in real mode.
+`resetMockData()` clears the ranked state back to the fixtures.
+
+### Still to measure
+
+These need real ranked games and are not known yet: how long league-v4 lags behind the end of a game, whether a remake changes LP or `wins + losses`, whether an entry exists during placements, and where a demotion places you in LP.

@@ -1,6 +1,8 @@
 import { setTimeout as delay } from "node:timers/promises";
 import { buildMockActiveGame, buildMockMatch, buildMockProfile, buildMockTimeline } from "../fixtures/riotFixtures";
 import type { MockOutcome, MockProfile, RawMatch } from "../fixtures/riotFixtures";
+import type { RankedEntry } from "../types";
+import { rankedQueueFor, shiftEntry } from "./rankMath";
 
 export type RiotMode = "mock" | "real";
 export type RiotErrorCode = "invalid_mode" | "missing_key" | "unauthorized" | "forbidden" | "not_found" | "rate_limited" | "unavailable" | "bad_request" | "network" | "timeout" | "invalid_response" | "mock_only";
@@ -68,6 +70,14 @@ function statusError(status: number, retryAfterMs?: number, simulated = false, e
 const mockProfiles = new Map<string, MockProfile>();
 const mockHistory = new Map<string, string[]>();
 const mockMatches = new Map<string, RawMatch>();
+/**
+ * Each mock account's league-v4 entries, copied from its fixture profile on first use and then moved by
+ * `simulateMockMatch`. This is mock data only: real mode never reads it.
+ */
+const mockRanked = new Map<string, RankedEntry[]>();
+/** LP a simulated ranked win gives and a loss takes away. */
+export const MOCK_WIN_LP = 22;
+export const MOCK_LOSS_LP = 19;
 /** Matches whose account simulates a missing timeline. */
 const mockTimelineMissing = new Set<string>();
 /** Mock games in progress (loading), each reserving the match ID that ending it with `simulateMockMatch` reuses. */
@@ -105,6 +115,42 @@ function profileForPuuid(puuid: string): MockProfile {
   return rememberProfile(generated);
 }
 
+function rankedOf(puuid: string): RankedEntry[] {
+  let entries = mockRanked.get(puuid);
+  if (!entries) {
+    entries = structuredClone(profileForPuuid(puuid).ranked);
+    mockRanked.set(puuid, entries);
+  }
+  return entries;
+}
+
+/**
+ * Moves the account's entry in the match's ranked queue by the mock LP of a win or loss, with division and tier
+ * rollover, and counts the game in wins or losses. An account without an entry in that queue, or a queue without LP,
+ * is left alone.
+ */
+function applyMockRankedResult(puuid: string, queueId: number, outcome: MockOutcome): void {
+  const queueType = rankedQueueFor(queueId);
+  if (!queueType) return;
+  const entries = rankedOf(puuid);
+  const index = entries.findIndex((entry) => entry.queueType === queueType);
+  if (index < 0) return;
+  const entry = entries[index];
+  const won = outcome === "win";
+  entries[index] = shiftEntry(entry, won ? MOCK_WIN_LP : -MOCK_LOSS_LP, {
+    wins: entry.wins + (won ? 1 : 0), losses: entry.losses + (won ? 0 : 1),
+  });
+}
+
+/** Replaces (or adds) the mock account's entry for the entry's queue, for tests. Mock mode only. */
+export function setMockRankedEntry(puuid: string, entry: RankedEntry): void {
+  if (!isMockData()) throw new RiotApiError("Mock ranked entries require RIOT_MODE=mock.", "mock_only");
+  const entries = rankedOf(puuid);
+  const index = entries.findIndex((existing) => existing.queueType === entry.queueType);
+  if (index < 0) entries.push({ ...entry });
+  else entries[index] = { ...entry };
+}
+
 function gameOf(puuid: string): MockGame | undefined {
   return [...mockGames.values()].find((game) => game.blue.includes(puuid) || game.red.includes(puuid));
 }
@@ -131,6 +177,9 @@ export function simulateMockMatch(puuid: string, outcome: MockOutcome): { matchI
   // The game ends for everyone in it: the match is the newest entry of every member's history.
   for (const member of game ? [...game.blue, ...game.red] : [puuid]) {
     profileForPuuid(member);
+    // The outcome is the caller's team's; a member of the other team had the opposite result.
+    const sameTeam = !game || game.blue.includes(member) === game.blue.includes(puuid);
+    applyMockRankedResult(member, mockMatches.get(matchId)!.info.queueId as number, sameTeam ? outcome : outcome === "win" ? "loss" : "win");
     const history = [matchId, ...(mockHistory.get(member) ?? [])];
     for (const expiredId of history.slice(20)) {
       mockMatches.delete(expiredId);
@@ -167,6 +216,7 @@ export function resetMockData(): void {
   mockGames.clear();
   mockHistory.clear();
   mockMatches.clear();
+  mockRanked.clear();
   mockTimelineMissing.clear();
   mockSequence = 0;
   mockEpoch++;
@@ -187,7 +237,7 @@ function mockFetch<T>(url: string): T {
   if (path.slice(0, 5).join("/") === "lol/league/v4/entries/by-puuid" && path.length === 6) {
     const profile = profileForPuuid(path[5]);
     checkFixtureFailure(profile);
-    return structuredClone(profile.ranked) as T;
+    return structuredClone(rankedOf(profile.account.puuid)) as T;
   }
   if (path.slice(0, 5).join("/") === "lol/match/v5/matches/by-puuid" && path.length === 7 && path[6] === "ids") {
     const profile = profileForPuuid(path[5]);
