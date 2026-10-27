@@ -2,6 +2,7 @@
 
 A locally hosted Discord bot that looks up League of Legends profiles and announces completed games in Chinese.
 The default setup uses mock Riot data and the installed offline Qwen3-TTS model, so testing does not require Riot or cloud speech credentials.
+Player-facing documentation, in Chinese, is at https://madvisor.rystudio.app.
 
 | Command | Access | Behavior |
 | --- | --- | --- |
