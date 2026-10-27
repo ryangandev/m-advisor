@@ -475,11 +475,18 @@ test("a member who leaves and comes back starts a new presence and is checked at
   bot.sync();
   bot.leaveGame(running);
   bot.enter(spectatorGame(5026, [{ puuid: "acct-a", teamId: 100, championId: AHRI }]));
+  const before = bot.requests.length;
   bot.move(A, "voice-1");
+  // Their return alone triggers a check, long before the next 20 second tick.
   bot.sync();
-  await bot.tick();
-  assert.equal(bot.sent.length, 1);
+  await until(() => bot.sent.length === 1, "the 锦囊 after the return");
   assert.ok(bot.infos.some((line) => line.includes("Detected game start NA1_5026")));
+  assert.deepEqual(bot.requests.slice(before), ["acct-a", "acct-b"], "one early check of everyone in the session");
+  // A sync that adds nobody, such as a channel move, does not check early.
+  bot.move(B, "voice-1");
+  bot.sync();
+  await delay(20);
+  assert.deepEqual(bot.requests.slice(before), ["acct-a", "acct-b"]);
 });
 
 test("the teammate leaving during playback does not cut the line; the last member leaving stops it", async () => {
