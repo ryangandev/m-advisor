@@ -23,6 +23,7 @@ Bindings, voice preferences, each tracked member's 马厩 history and the 马报
 Each server can track several Discord members, with at most 10 LoL accounts across them.
 Real profiles currently use the North America region.
 New monitoring sessions establish a baseline, so starting the bot does not replay old games.
+When two or more tracked friends play a game on the same team, the report adds a 车队内战 ranking of just those friends and the voice names the 车队 best and the 背锅.
 
 ## Local setup
 
