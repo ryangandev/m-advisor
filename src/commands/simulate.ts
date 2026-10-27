@@ -9,6 +9,7 @@ import { withSimulationLock } from "../services/simulationLock";
 import { getLastMatchId } from "../store/announcerStore";
 import { assertRunning } from "../services/shutdownState";
 import { logError } from "../utils/log";
+import { NO_MENTIONS } from "../utils/embeds";
 
 const command: BotCommand = {
   data: new SlashCommandBuilder().setName("simulate").setDescription("用模拟比赛验证完整赛后播报流程")
@@ -42,11 +43,11 @@ const command: BotCommand = {
         const result = await pollGuildNow(interaction.client, channel.guild.id, channel.id);
         assertRunning();
         if (result.announced < 1 || result.errors > 0 || getLastMatchId(channel.guild.id, binding.accounts[0].puuid) !== simulated.matchId) throw new Error("模拟比赛暂未播报成功，请稍后重试或查看本地日志。");
-        await interaction.editReply(`模拟数据：${outcome === "win" ? "胜利" : "失败"}比赛播报完成。此结果不是实际战绩。`);
+        await interaction.editReply({ content: `模拟数据：${outcome === "win" ? "胜利" : "失败"}比赛播报完成。此结果不是实际战绩。`, allowedMentions: NO_MENTIONS });
       });
     } catch (error) {
       logError(`Simulation test failed: ${error instanceof Error ? error.name : "unknown error"}`);
-      await interaction.editReply(safeTestError(error));
+      await interaction.editReply({ content: safeTestError(error), allowedMentions: NO_MENTIONS });
     }
   },
 };

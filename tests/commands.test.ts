@@ -287,6 +287,7 @@ for (const outcome of ["win", "loss"]) {
     assert.equal(calls.played.length, 1);
     assert.match(calls.played[0].text, outcome === "win" ? /模拟数据：胜利/ : /模拟数据：失败/);
     assert.match(replyText(f.replies.at(-1)), /模拟数据.*不是实际战绩/);
+    assert.deepEqual((f.replies.at(-1) as { allowedMentions?: unknown }).allowedMentions, { parse: [], roles: [], users: [], repliedUser: false });
   });
 }
 
@@ -308,6 +309,26 @@ test("/simulate rejects real mode, missing binding, and absent tracked member be
   await commands.simulate.execute(f.interaction);
   assert.match(replyText(f.replies.at(-1)), /\/bind/);
   assert.equal(calls.played.length, 0);
+});
+
+test("/simulate refuses when members are tracked but none is in the test channel", async () => {
+  setMemberAccounts(guildId, "away-user", [await getAccountByRiotId("MockLoss", "NA1")]);
+  setMemberAccounts(guildId, "tracked-user", [await getAccountByRiotId("MockWin", "NA1")]);
+  setMemberAccounts(guildId, "gone-user", [await getAccountByRiotId("MockThird", "NA1")]);
+  const puuids = listTrackedMembers(guildId).map((member) => member.accounts[0].puuid);
+  const before = await Promise.all(puuids.map((puuid) => getLatestSRMatchId(puuid)));
+  const f = interactionFixture();
+  f.members.set("away-user", { id: "away-user", voice: { channelId: "elsewhere", channel: null } });
+  f.tracked.voice.channelId = "different-channel";
+  // gone-user is not in the guild's member list at all, so fetching them fails.
+  await commands.simulate.execute(f.interaction);
+  const reply = f.replies.at(-1) as { content?: string; allowedMentions?: unknown };
+  assert.equal(reply.content, "请先让被追踪成员进入同一个测试语音频道。");
+  assert.deepEqual(reply.allowedMentions, { parse: [], roles: [], users: [], repliedUser: false });
+  assert.deepEqual(calls.syncs, []);
+  assert.deepEqual(calls.polls, []);
+  assert.equal(calls.played.length, 0);
+  assert.deepEqual(await Promise.all(puuids.map((puuid) => getLatestSRMatchId(puuid))), before);
 });
 
 test("/simulate does not claim success when the monitor fails", async () => {
