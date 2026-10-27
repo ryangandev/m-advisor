@@ -167,16 +167,42 @@ export function buildRecentMatchesEmbed(view: RecentMatchesView): EmbedBuilder {
     .setDescription(lines.join("\n"))
     .setFooter({ text: view.mock ? "模拟数据 / Mock data • 策马军师" : "Riot 实时数据 • 策马军师" });
   // Discord allows 25 fields in an embed, counted across every member's accounts.
-  for (const account of view.accounts.slice(0, 25)) {
-    const rows = account.notice ? [account.notice]
+  const fields = view.accounts.slice(0, 25).map((account) => ({
+    name: `${account.memberOrder}. ${account.riotId}`.slice(0, 256),
+    rows: account.notice ? [account.notice]
       : account.matches.length === 0 ? ["没有对局记录。"]
-        : account.matches.map((_, index) => recentMatchLine(account, index, view));
-    let value = "";
-    for (const row of rows) {
-      if (value.length + row.length + 1 > 1024) break;
-      value += `${value ? "\n" : ""}${row}`;
-    }
-    embed.addFields({ name: `${account.memberOrder}. ${account.riotId}`.slice(0, 256), value: value || rows[0].slice(0, 1024) });
-  }
+        : account.matches.map((_, index) => recentMatchLine(account, index, view)),
+  }));
+  // Discord also caps the whole embed at 6000 characters, so every field gets an even share of what the rest leaves.
+  const json = embed.toJSON();
+  const fixed = (json.title?.length ?? 0) + (json.description?.length ?? 0) + (json.footer?.text.length ?? 0)
+    + fields.reduce((total, field) => total + field.name.length, 0);
+  const share = Math.min(FIELD_VALUE_LIMIT, Math.floor((EMBED_TOTAL_LIMIT - fixed) / Math.max(1, fields.length)));
+  for (const field of fields) embed.addFields({ name: field.name, value: fitRows(field.rows, share) });
   return embed;
+}
+
+const FIELD_VALUE_LIMIT = 1024;
+const EMBED_TOTAL_LIMIT = 6000;
+const MORE_ROWS = "…";
+
+/** The rows that fit in `limit` characters, newest first, with a marker when some are dropped; the newest row always stays. */
+function fitRows(rows: readonly string[], limit: number): string {
+  const kept: string[] = [];
+  let length = 0;
+  for (const [index, row] of rows.entries()) {
+    const added = (kept.length > 0 ? 1 : 0) + row.length;
+    // Room for "\n…" is kept unless this is the last row.
+    const reserve = index < rows.length - 1 ? 1 + MORE_ROWS.length : 0;
+    if (length + added + reserve > limit) break;
+    kept.push(row);
+    length += added;
+  }
+  if (kept.length === rows.length) return kept.join("\n");
+  if (kept.length === 0) {
+    // Even the newest row is too long for the share: shorten it rather than drop it.
+    const room = Math.max(1, limit - 1 - MORE_ROWS.length);
+    return `${rows[0].slice(0, room)}\n${MORE_ROWS}`.slice(0, FIELD_VALUE_LIMIT);
+  }
+  return `${kept.join("\n")}\n${MORE_ROWS}`;
 }
