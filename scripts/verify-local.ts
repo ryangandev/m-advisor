@@ -12,6 +12,8 @@ import { listTrackedMembers, setMemberAccounts } from "../src/store/bindingStore
 import { closeDatabase } from "../src/store/database";
 import { getRiotMode, simulateMockMatch } from "../src/services/riotData";
 import { GameMonitor } from "../src/services/gameMonitor";
+import { fetchMatchEvents } from "../src/services/matchEvents";
+import { recordHorseRecords } from "../src/store/horseRecordStore";
 import { VoiceAnnouncementService } from "../src/services/voiceAnnouncements";
 import { generateTTS, shutdownTTS } from "../src/utils/tts";
 import { SENTENCE_PAUSE_MS, decodeSpeechFile, prepareSpeechPcm } from "../src/utils/voicePlayback";
@@ -84,6 +86,7 @@ async function verify(): Promise<void> {
         announceStarted = performance.now();
         return voice.announce(guild, text, style, resolve, allowed, signal);
       },
+      events: (matchId, detail) => fetchMatchEvents(matchId, detail), record: recordHorseRecords,
       mock: () => getRiotMode() === "mock", log: error => { throw error; }, info: message => console.log(message) });
     const client = {} as Client;
     monitor.sync(client, channel.guild.id, ["local-test-member"]);

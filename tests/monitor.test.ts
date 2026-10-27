@@ -2,11 +2,17 @@ import assert from "node:assert/strict";
 import { afterEach, beforeEach, test } from "node:test";
 import { VoiceChannel, type Client, type MessageCreateOptions } from "discord.js";
 import type { MatchDetail, TrackedMember } from "../src/types";
-import { GameMonitor, resolveMonitoredVoiceChannel, type MonitorDependencies } from "../src/services/gameMonitor";
+import { GameMonitor, MAX_VOICE_ATTEMPTS, resolveMonitoredVoiceChannel, type MonitorDependencies } from "../src/services/gameMonitor";
 import { VoiceAnnouncementService, type VoiceAnnouncementDependencies } from "../src/services/voiceAnnouncements";
-import { RiotApiError } from "../src/services/riotData";
+import { resetMockData, RiotApiError, simulateMockMatch } from "../src/services/riotData";
+import { buildMatchAnnouncement } from "../src/services/announcementText";
+import { buildHorseRecords } from "../src/services/horseRecords";
+import type { MatchEvent } from "../src/services/matchEvents";
 import { getAnnouncerState, getLastMatchId } from "../src/store/announcerStore";
+import { setMemberAccounts } from "../src/store/bindingStore";
 import { closeDatabase } from "../src/store/database";
+import { listMatchHorseRecords, recordHorseRecords, type HorseRecord } from "../src/store/horseRecordStore";
+import { getLatestSRMatchId, getMatchDetail } from "../src/utils/riotMatchApi";
 import { testMatch } from "./helpers/matches";
 
 const monitors: GameMonitor[] = [];
@@ -95,6 +101,8 @@ function harness(guildId: string, specs: string[] | MemberSpec[] = ["tracked"]) 
   const cleaned: string[] = [];
   const errors: unknown[] = [];
   const infos: string[] = [];
+  const records: HorseRecord[][] = [];
+  const timelines: string[] = [];
   let generate = async (text: string): Promise<string> => { generated.push(text); return "mock-audio.wav"; };
   let play: VoiceAnnouncementDependencies["play"] = async (target) => { played.push(target.id); };
   const service = new VoiceAnnouncementService({
@@ -113,6 +121,9 @@ function harness(guildId: string, specs: string[] | MemberSpec[] = ["tracked"]) 
       return channelId && !blocked.has(channelId) ? channel(channelId) as unknown as VoiceChannel : null;
     },
     announce: (...args) => service.announce(...args),
+    // No timeline by default, so reports quote statistics; tests that need moments replace this.
+    events: async (matchId) => { timelines.push(matchId); return null; },
+    record: (batch) => { records.push([...batch]); return batch.length; },
     mock: () => true,
     log: (error) => { errors.push(error); },
     info: (message) => { infos.push(message); },
@@ -123,6 +134,7 @@ function harness(guildId: string, specs: string[] | MemberSpec[] = ["tracked"]) 
   const inVoice = () => members.filter((member) => location.get(member.discordUserId)).map((member) => member.discordUserId);
   return {
     guildId, monitor, client, dependencies, latestIds, matches, lookups, generated, played, cleaned, errors, infos, sent, channel, move, blocked,
+    records, timelines,
     get messages() { return sent.map((entry) => entry.message); },
     get members() { return members; },
     set members(value: TrackedMember[]) { members = value; },
@@ -207,16 +219,19 @@ test("monitoring logs its start, baseline, detections, completions and stop", as
   };
   bot.latestIds.set("tracked", "ended-match");
   await bot.poll();
+  assert.equal(bot.infos.length, 4);
   assert.match(bot.infos[0], /^Detected finished match ended-match for tracked#NA1: ended 9[56] s ago, queue 420, 30 min\.$/);
-  assert.match(bot.infos[1], /^Announced match ended-match in voice \d+ s after detection\.$/);
+  assert.equal(bot.infos[1], "Saved 1 马厩 record for match ended-match.");
+  assert.match(bot.infos[2], /^Match ended-match starts playing in voice channel first-channel \d+\.\d s after detection\.$/);
+  assert.match(bot.infos[3], /^Announced match ended-match in voice \d+\.\d s after detection\.$/);
   bot.latestIds.set("tracked", "unknown-end");
   await bot.poll();
-  assert.match(bot.infos[2], /^Detected finished match unknown-end for tracked#NA1: end time unknown,/);
-  assert.equal(bot.infos.length, 4);
+  assert.match(bot.infos[4], /^Detected finished match unknown-end for tracked#NA1: end time unknown,/);
+  assert.equal(bot.infos.length, 8);
   bot.monitor.stop(bot.guildId, "the tracked member left voice");
   assert.equal(bot.infos.at(-1), "Monitoring stopped: the tracked member left voice.");
   bot.monitor.stop(bot.guildId, "again");
-  assert.equal(bot.infos.length, 5, "stopping an inactive guild logs nothing");
+  assert.equal(bot.infos.length, 9, "stopping an inactive guild logs nothing");
 });
 
 test("status reports the active session, its last check and the last error after it stops", async () => {
@@ -423,7 +438,7 @@ test("rebind during TTS cancels the old member's pending announcement", async ()
   assert.equal(getLastMatchId(bot.guildId, "tracked"), "new-match");
 });
 
-test("channel moves during TTS play and mention only in the member's new channel", async () => {
+test("channel moves during TTS play in the member's new channel after the text went to the old one", async () => {
   const bot = harness("move-generation-guild");
   await bot.start();
   bot.latestIds.set("tracked", "new-match");
@@ -437,7 +452,8 @@ test("channel moves during TTS play and mention only in the member's new channel
   speech.resolve("moved-audio.wav");
   assert.equal((await poll).announced, 1);
   assert.deepEqual(bot.played, ["second-channel"]);
-  assert.deepEqual(bot.sent.map((entry) => entry.channelId), ["second-channel"]);
+  // The text was posted before generation, while the member was still in the first channel.
+  assert.deepEqual(bot.sent.map((entry) => entry.channelId), ["first-channel"]);
 });
 
 test("a simulation poll pinned to its authorized channel cancels a move during TTS", async () => {
@@ -506,7 +522,7 @@ test("a member leaving during TTS cancels playback without consuming the match",
   assert.deepEqual(bot.played, []);
 });
 
-test("text send failure is reported after successful audio without repeating voice", async () => {
+test("a text send failure is reported, the voice still plays, and nothing repeats", async () => {
   const bot = harness("text-failure-guild");
   await bot.start();
   bot.latestIds.set("tracked", "new-match");
@@ -761,7 +777,8 @@ test("a majority move during speech generation is followed", async () => {
   speech.resolve("party.wav");
   assert.deepEqual(await poll, { announced: 1, errors: 0 });
   assert.deepEqual(bot.played, ["y"]);
-  assert.equal(bot.sent[0].message.content, "<@bob-id> <@cara-id>");
+  // The text went out before generation, to the channel chosen then; only the voice follows the move.
+  assert.deepEqual(bot.sent.map((entry) => [entry.channelId, entry.message.content]), [["x", "<@alice-id> <@bob-id>"]]);
 });
 
 test("a tie during speech generation keeps the first channel", async () => {
@@ -819,13 +836,13 @@ test("during playback a tied departure keeps playing while a strict majority mov
   bot.sync();
   assert.deepEqual(await moved, { announced: 0, errors: 0 });
   assert.equal(getLastMatchId(bot.guildId, "alice"), "first-party", "the aborted match is not consumed");
-  assert.equal(bot.sent.length, 1);
+  assert.deepEqual(bot.sent.map((entry) => entry.channelId), ["x", "x"], "each match's text went out before its voice");
   const retry = bot.poll();
   await playback.nextStart();
   playback.release();
   assert.deepEqual(await retry, { announced: 1, errors: 0 });
   assert.deepEqual(bot.played, ["x", "x", "y"]);
-  assert.equal(bot.sent.at(-1)!.message.content, "<@bob-id> <@cara-id>");
+  assert.equal(bot.sent.length, 2, "the retry does not post the text again");
   assert.equal(getLastMatchId(bot.guildId, "alice"), "second-party");
 });
 
@@ -972,13 +989,15 @@ test("the speaker leaving mid-report does not cut off a teammate who stays, and 
   const poll = bot.poll();
   await playback.nextStart();
   assert.match(bot.generated[0], /alice这局/);
+  // The text went out before generation, while both were in the channel.
+  assert.equal(bot.sent[0].message.content, "<@alice-id> <@bob-id>");
   // Alice says good night and leaves while her report plays; Bob, who played the same game, stays.
   bot.move("alice-id", null);
   bot.sync();
   await delay(WATCH);
   playback.release();
   assert.deepEqual(await poll, { announced: 1, errors: 0 });
-  assert.equal(bot.sent[0].message.content, "<@bob-id>");
+  assert.equal(bot.sent.length, 1);
   assert.deepEqual(await bot.poll(), { announced: 0, errors: 0 });
   assert.deepEqual(bot.played, ["x"]);
   assert.equal(getLastMatchId(bot.guildId, "bob"), "duo-match");
@@ -1084,14 +1103,14 @@ test("a teammate unbound during the report is neither counted for the channel no
   second.matches.set("duo", match("duo", ["alice", "bob"]));
   second.latestIds.set("alice", "duo");
   second.latestIds.set("bob", "duo");
-  const secondSpeech = deferred<string>();
-  const secondStarted = deferred<void>();
-  second.generate = async () => { secondStarted.resolve(); return secondSpeech.promise; };
+  const timeline = deferred<null>();
+  const timelineStarted = deferred<void>();
+  second.dependencies.events = async () => { timelineStarted.resolve(); return timeline.promise; };
   const secondPoll = second.poll();
-  await secondStarted.promise;
-  // Bob is unbound but stays in the channel.
+  await timelineStarted.promise;
+  // Bob is unbound after the match was detected, before its text goes out, but stays in the channel.
   second.members = second.members.filter((member) => member.discordUserId !== "bob-id");
-  secondSpeech.resolve("duo.wav");
+  timeline.resolve(null);
   assert.deepEqual(await secondPoll, { announced: 1, errors: 0 });
   assert.equal(second.messages[0].content, "<@alice-id>");
   assert.deepEqual(second.messages[0].allowedMentions?.users, ["alice-id"]);
@@ -1132,4 +1151,189 @@ test("a match waiting for a usable channel is fetched and logged once, and forgo
   assert.deepEqual(leaving.played, []);
   assert.equal(getLastMatchId(leaving.guildId, "alice"), "alice-solo");
   assert.equal(leaving.infos.filter((message) => message.startsWith("Match alice-solo is waiting")).length, 1);
+});
+
+// Text first, timeline moments, 马厩 records and the voice attempt cap.
+
+test("the text report is posted before speech generation and only once across voice retries", async () => {
+  const bot = harness("text-first-guild");
+  await bot.start();
+  bot.latestIds.set("tracked", "retried-match");
+  const sentAtGeneration: number[] = [];
+  let attempts = 0;
+  bot.generate = async () => {
+    sentAtGeneration.push(bot.sent.length);
+    // Both inline attempts of the first poll fail; the second poll succeeds.
+    if (++attempts <= 2) throw new Error("Fake speech failure");
+    return "retried.wav";
+  };
+  assert.deepEqual(await bot.poll(), { announced: 0, errors: 1 });
+  assert.equal(bot.sent.length, 1);
+  assert.equal(bot.sent[0].message.content, "<@member-1>");
+  assert.deepEqual(bot.sent[0].message.allowedMentions, { parse: [], roles: [], users: ["member-1"], repliedUser: false });
+  assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
+  assert.deepEqual(sentAtGeneration, [1, 1, 1], "the text was already posted when generation started");
+  assert.equal(bot.sent.length, 1, "a voice retry does not post the text again");
+  assert.equal(bot.records.length, 1, "the 马厩 records are written with the text, once");
+  assert.deepEqual(bot.timelines, ["retried-match"], "the timeline is fetched once per match");
+  assert.equal(bot.infos.filter((message) => message.startsWith("Detected finished match retried-match")).length, 1);
+});
+
+test("a timeline failure or a stuck timeline falls back to a statistics-only report", async () => {
+  const failing = harness("timeline-failure-guild");
+  await failing.start();
+  failing.dependencies.events = async () => { throw new Error("timeline exploded"); };
+  failing.latestIds.set("tracked", "no-timeline");
+  assert.deepEqual(await failing.poll(), { announced: 1, errors: 0 });
+  const detail = await failing.dependencies.detail("no-timeline");
+  assert.equal(failing.generated[0], buildMatchAnnouncement(detail, "tracked", true).speech);
+  assert.ok(failing.infos.includes("Timeline for match no-timeline is unavailable (timeline exploded); the report uses end-of-game statistics only."));
+  assert.equal(failing.sent.length, 1);
+
+  const stuck = harness("timeline-stuck-guild");
+  await stuck.start();
+  stuck.dependencies.timelineWaitMs = 30;
+  stuck.dependencies.events = () => new Promise(() => {});
+  stuck.latestIds.set("tracked", "slow-timeline");
+  assert.deepEqual(await stuck.poll(), { announced: 1, errors: 0 });
+  assert.ok(stuck.infos.some((message) => /^Timeline for match slow-timeline is unavailable \(no answer after 0\.0 s\)/.test(message)));
+});
+
+test("timeline moments reach the spoken and posted report", async () => {
+  const bot = harness("timeline-moments-guild");
+  await bot.start();
+  bot.latestIds.set("tracked", "moment-match");
+  const detail = await bot.dependencies.detail("moment-match");
+  // A pentakill for every player, so whoever is praised has a moment to cite.
+  const events: MatchEvent[] = detail.info.participants.map((player) => ({ puuid: player.puuid, timestamp: 600_000, kind: "multiKill", kills: 5 }));
+  bot.dependencies.events = async () => events;
+  assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
+  const withMoments = buildMatchAnnouncement(detail, "tracked", true, { events });
+  assert.notEqual(withMoments.speech, buildMatchAnnouncement(detail, "tracked", true).speech);
+  assert.equal(bot.generated[0], withMoments.speech);
+  assert.ok(JSON.stringify(bot.messages[0].embeds).includes(JSON.stringify(withMoments.report.praise!).slice(1, -1)));
+  const praised = bot.records[0].find((record) => record.commentaryTone === "praise");
+  if (praised) assert.equal(praised.momentKind, "multiKill");
+});
+
+test("the 马厩 records are written once, from the posted report's perspective, for every bound player", async () => {
+  const allies = ["alice", "bob", "cara", "dan", "eve"];
+  const bot = harness("horse-record-guild", [...allies, "zed"].map((puuid) => ({ id: `${puuid}-id`, puuids: [puuid], channel: "x" })));
+  await bot.start();
+  const detail = match("party", allies, ["zed"]);
+  bot.matches.set("party", detail);
+  for (const puuid of [...allies, "zed"]) bot.latestIds.set(puuid, "party");
+  assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
+  assert.equal(bot.records.length, 1);
+  const [records] = bot.records;
+  const expected = buildHorseRecords({
+    guildId: bot.guildId,
+    detail,
+    tracked: bot.members.flatMap((member) => member.accounts.map((account) => ({ discordUserId: member.discordUserId, puuid: account.puuid }))),
+    mock: true,
+    recordedAt: records[0].recordedAt,
+    announcement: { announcement: buildMatchAnnouncement(detail, "alice", true), perspectivePuuid: "alice", events: null },
+  });
+  assert.deepEqual(records, expected);
+  assert.equal(records.length, 6, "the tracked enemy is recorded from their own team's ranking");
+  const spoken = records.filter((record) => record.commentary !== null);
+  assert.deepEqual(spoken.map((record) => record.commentaryTone).sort(), ["praise", "roast"]);
+  assert.ok(spoken.every((record) => record.teamId === 100), "only the perspective's team was praised and roasted");
+  assert.equal(records.find((record) => record.puuid === "zed")!.commentary, null);
+});
+
+test("records go through the real store once per match, and a refused write never fails the announcement", async () => {
+  const bot = harness("horse-store-guild");
+  setMemberAccounts(bot.guildId, "member-1", [{ puuid: "tracked", gameName: "tracked", tagLine: "NA1" }]);
+  bot.dependencies.record = recordHorseRecords;
+  await bot.start();
+  bot.latestIds.set("tracked", "stored-match");
+  let attempts = 0;
+  bot.generate = async () => { if (++attempts <= 2) throw new Error("Fake speech failure"); return "stored.wav"; };
+  assert.deepEqual(await bot.poll(), { announced: 0, errors: 1 });
+  assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
+  const stored = listMatchHorseRecords(bot.guildId, "stored-match", true);
+  assert.equal(stored.length, 1);
+  assert.equal(stored[0].discordUserId, "member-1");
+
+  // The harness member is not in the database here, so the store refuses the record with UntrackedMemberError.
+  const refused = harness("horse-refused-guild");
+  refused.dependencies.record = recordHorseRecords;
+  await refused.start();
+  refused.latestIds.set("tracked", "refused-match");
+  assert.deepEqual(await refused.poll(), { announced: 1, errors: 0 });
+  assert.equal(refused.played.length, 1);
+  assert.equal(refused.errors.length, 1);
+  assert.match(String(refused.errors[0]), /马厩 records of match refused-match were not saved: A horse record can only be saved/);
+  assert.deepEqual(listMatchHorseRecords(refused.guildId, "refused-match", true), []);
+});
+
+test(`a match whose voice fails ${MAX_VOICE_ATTEMPTS} times is consumed once and never replayed`, async () => {
+  const bot = harness("attempt-cap-guild", ["tracked", "second"]);
+  await bot.start();
+  bot.latestIds.set("tracked", "broken-match");
+  bot.latestIds.set("second", "broken-match");
+  let attempts = 0;
+  bot.generate = async () => { attempts++; throw new Error("speech unavailable"); };
+  for (let poll = 1; poll < MAX_VOICE_ATTEMPTS; poll++) {
+    assert.deepEqual(await bot.poll(), { announced: 0, errors: 1 });
+    assert.equal(getLastMatchId(bot.guildId, "tracked"), "historical-match", "the match stays pending before the cap");
+  }
+  assert.deepEqual(await bot.poll(), { announced: 0, errors: 1 });
+  assert.equal(attempts, MAX_VOICE_ATTEMPTS * 2, "each attempt includes the queue's inline retry");
+  assert.equal(getLastMatchId(bot.guildId, "tracked"), "broken-match");
+  assert.equal(getLastMatchId(bot.guildId, "second"), "broken-match");
+  assert.ok(bot.status().announced.has("broken-match"));
+  assert.deepEqual(bot.infos.filter((message) => message.startsWith("Gave up")), [
+    `Gave up on the voice report of match broken-match after ${MAX_VOICE_ATTEMPTS} failed attempts; its text report was posted, and it is not retried.`,
+  ]);
+  assert.deepEqual(await bot.poll(), { announced: 0, errors: 0 });
+  assert.equal(attempts, MAX_VOICE_ATTEMPTS * 2);
+  assert.equal(bot.sent.length, 1);
+  assert.deepEqual(bot.played, []);
+});
+
+test("cancelled voice attempts do not count toward the cap", async () => {
+  const bot = harness("cap-cancel-guild");
+  await bot.start();
+  bot.latestIds.set("tracked", "interrupted-match");
+  for (let attempt = 0; attempt < MAX_VOICE_ATTEMPTS; attempt++) {
+    const started = deferred<void>();
+    const speech = deferred<string>();
+    bot.generate = async () => { started.resolve(); return speech.promise; };
+    const poll = bot.poll();
+    await started.promise;
+    bot.move("member-1", null);
+    speech.resolve("interrupted.wav");
+    assert.deepEqual(await poll, { announced: 0, errors: 0 });
+    bot.move("member-1", "first-channel");
+  }
+  assert.equal(getLastMatchId(bot.guildId, "tracked"), "historical-match");
+  bot.generate = async () => "finally.wav";
+  assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
+  assert.equal(bot.sent.length, 1);
+});
+
+test("after a restart, a member with a saved mock binding who joins a running mock session hears nothing", async () => {
+  process.env.RIOT_MODE = "mock";
+  // A fresh process: no mock profile or match exists until the first lookup.
+  resetMockData();
+  const bot = harness("mock-restart-guild", [
+    { id: "alice-id", puuids: ["MOCK-restart-alice"], channel: "x" },
+    { id: "bob-id", puuids: ["MOCK-restart-bob"], channel: null },
+  ]);
+  // A lookup takes a moment, as a real one does, so the fixture is created after Bob joined.
+  bot.dependencies.latest = async (puuid) => { await delay(5); return getLatestSRMatchId(puuid); };
+  bot.dependencies.detail = getMatchDetail;
+  assert.deepEqual(await bot.start(), { announced: 0, errors: 0 });
+  bot.move("bob-id", "x");
+  bot.sync();
+  assert.deepEqual(await bot.poll(), { announced: 0, errors: 0 });
+  assert.deepEqual(bot.generated, []);
+  assert.deepEqual(bot.sent, []);
+  assert.match(getLastMatchId(bot.guildId, "MOCK-restart-bob")!, /^MOCK_MOCK-restart-bob_\d+_BASELINE$/);
+  // A game Bob finishes afterwards is announced as usual.
+  const { matchId } = simulateMockMatch("MOCK-restart-bob", "win");
+  assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
+  assert.equal(getLastMatchId(bot.guildId, "MOCK-restart-bob"), matchId);
 });
