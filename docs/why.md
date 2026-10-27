@@ -19,17 +19,24 @@ A record found is answered in public: the reply is deferred, then edited with th
 
 `buildVerdict(record)` in `src/services/horseVerdict.ts` is pure.
 
-- Every dimension's impact is its position weight times its distance from the median, `weight × (percentile - 0.5)`, the same weights that combine the score (see [Horse ranking](scoring.md#model)).
-- The up to three most negative impacts are 拖后腿的维度, costliest first; a dimension with no weight for the position, such as frontline for a bottom laner, never counts.
-- The most positive impact is the 亮点.
-- Each named dimension quotes one or two of the record's own statistics, such as 每分钟视野得分 0.8 or 参团率 24%.
+- A dimension counts when the match had data for it and the position gives it weight, as in the ranking (see [Horse ranking](scoring.md#model)); frontline for a bottom laner never counts.
+- A counted dimension's share of the score is its position weight divided by the weights of the counted dimensions, because the combined value renormalizes when data is missing.
+  The embed and the ruling quote this share as 占这局辅助评分 22%.
+- Its impact is share times distance from the median, `share × (percentile - 0.5)`.
+- The up to three most negative impacts are 拖后腿的维度, costliest first, and the most positive impact is the 亮点.
+- Each named dimension quotes up to two of the record's own statistics, such as 每分钟视野得分 0.8, 插了 3 个真眼 or 每分钟 95 建筑伤害.
+  Evidence is only quoted against the member, so a statistic in their favour, such as a gold lead over the lane opponent or a positive maximum CS lead, is left out instead of reading as praise beside a low percentile.
+- When nothing counted is below the median, the text says 每一项 only if every dimension with data, counted or not, is at or above the median, since the radar shows them all; otherwise it says 计入评分的每一项.
 - `score_above` and `score_below` give the gap to the teammate ranked one place higher and lower, and `tierForRank` names their tier.
-- A gap of at most `CLOSE_GAP` = 0.3 points is 惜败 (just missed the tier above) or 险胜 (just held off the tier below).
+  In a team larger than five a neighbour can share the member's tier, and is then called 上一名 or 下一名 instead.
+- A gap that prints as at most `CLOSE_GAP` = 0.3 points is 惜败 (just missed the rank above) or 险胜 (just held off the rank below).
+  The label is decided on the printed value, so 差 0.3 分 is always 惜败 and 差 0.4 分 never is.
   0.3 points is 3 percentile points of same-position players, well under the usual gap between neighbouring teammates.
   Gaps print with the announcement's rounding, and a gap that rounds to 0.0 prints as 不到 0.1.
 
 The embed shows the member, champion, position, result and time, the tier and score, the 拖后腿的维度 with the 亮点, the gaps, the praise or roast stored from the announcement when there was one, and a one-line 军师判词.
 The 判词 says 你 only when the caller is the member and names the member otherwise.
+For a 没有马 it may say the worst dimension is what the position values most only when that dimension is a key dimension (below) of a known position.
 Records with no position use the all-position weights and show 未知位置.
 
 ## The radar image
@@ -53,6 +60,7 @@ It ships prebuilt binaries for Apple Silicon, Intel macOS, Linux and Windows as 
 The alternatives need more: `canvas` builds on Cairo and falls back to compiling it where no prebuilt binary fits, `sharp` brings a whole image-processing library for one rasterization, and a headless browser is far too heavy for one image.
 Drawing SVG in code keeps the chart a plain string, which the tests compare with a reviewed snapshot.
 It renders on a worker thread through `renderAsync`, in about 0.2 seconds.
+If rendering fails, the verdict is sent without the image and only the error class is logged.
 
 ### Fonts
 
@@ -72,6 +80,8 @@ The button's custom ID is `why-appeal:<r|m>:<member>:<match>`, so the handler kn
 - It cites the costliest dimension with its percentile, its share of the position's score and its statistics; a 特等马 is told there is nothing higher, and a verdict with nothing below the median cites the gap instead.
 - It admits 惜败 or 险胜 under the same `CLOSE_GAP`.
 - After the ruling the button turns into a disabled 本案已结 · 维持原判.
+- The case is closed before the reply is sent, so a double click is heard once; if disabling the button or sending the ruling fails, the case is reopened and the member can appeal again.
+- An appeal whose record was erased with `/stable-erase` gets a private 无案可审 and closes nothing.
 - One member appeals one match once: a repeat appeal, even from another `/why` message, gets a private 本案已结，维持原判。
   Closed cases are kept in memory only, at most 5000, so nothing new is written to the database.
   After a restart a repeat appeal is heard again and, being deterministic, gets the same ruling.
