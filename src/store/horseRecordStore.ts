@@ -4,6 +4,7 @@ import { POSITIONS } from "../types";
 import type { Position } from "../types";
 import { eraseMemberAppeals } from "./appealStore";
 import { getDatabase } from "./database";
+import { eraseMemberRankResults } from "./rankStore";
 import { UntrackedMemberError } from "./storeErrors";
 
 export { UntrackedMemberError };
@@ -318,7 +319,7 @@ export function countMemberHorseRecords(guildId: string, discordUserId: string):
 
 /**
  * Deletes every record, real and mock, of one member in one server and returns how many were removed.
- * The member's closed /why appeal cases go in the same transaction, so erased history leaves nothing behind.
+ * The member's closed /why appeal cases and stored LP results go in the same transaction, so erased history leaves nothing behind.
  * This is the only way history is erased: removing a tracked member never touches it.
  */
 export function eraseMemberHorseRecords(guildId: string, discordUserId: string): number {
@@ -327,6 +328,7 @@ export function eraseMemberHorseRecords(guildId: string, discordUserId: string):
   const database = getDatabase();
   return database.transaction(() => {
     eraseMemberAppeals(guildId, discordUserId);
+    eraseMemberRankResults(guildId, discordUserId);
     return database.prepare("DELETE FROM horse_records WHERE guild_id = ? AND discord_user_id = ?").run(guildId, discordUserId).changes;
   })();
 }

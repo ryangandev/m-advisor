@@ -20,7 +20,8 @@ export function rankedQueueFor(queueId: number): RankedQueueType | null {
   return LEAGUE_QUEUES[queueId] ?? null;
 }
 
-function isApex(tier: string): boolean {
+/** Whether the tier is MASTER, GRANDMASTER or CHALLENGER: no divisions, one shared LP ladder. */
+export function isApex(tier: string): boolean {
   return (APEX_TIERS as readonly string[]).includes(tier);
 }
 
