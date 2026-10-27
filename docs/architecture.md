@@ -66,6 +66,7 @@ Explicit registration is separate from startup and is limited to the configured 
 
 `/testvoice` uses the same speech and playback queue as game announcements.
 `/simulate` uses the earliest-bound tracked member who is in the test channel, establishes a baseline, creates one mock result on that member's first account and verifies that this exact match was announced.
+Its `开局（赛前锦囊）` outcome instead starts a mock game on the loading screen and waits for the game start watcher's 锦囊; see [Game start](announcements.md#game-start).
 Concurrent simulations for the same server are rejected until the first finishes.
 Both test commands require an administrator in the configured server and permitted voice channel.
 See [Acceptance](acceptance.md) for verification procedures and external prerequisites.

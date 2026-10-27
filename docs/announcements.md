@@ -170,6 +170,66 @@ A cancellation, such as the speaker leaving or a majority move, and a full voice
 After the third failed attempt for the same match the match is consumed: it joins the session's announced matches, the baselines of the accounts that reported it advance, one line is logged and it is never retried.
 Its text report was normally posted on the first attempt, so the channel still has the result; a malformed match is consumed without text or voice.
 
+## Game start
+
+When a tracked member's game is on its loading screen, the bot posts the 军师赛前锦囊 and, unless the server turned it off, speaks a short line of about 15 seconds.
+The 锦囊 content is described in [马厩](stable.md#军师赛前锦囊); this section covers when and where it goes out.
+
+### Detection
+
+`src/services/gameStartWatcher.ts` belongs to the guild's monitoring session and starts and stops with it.
+It has its own 20 second timer and its own in-flight check, apart from the 45 second match poll, so a long report never delays it.
+It checks once right away when the session starts, and soon after a member joins an existing session.
+Each tick asks spectator-v5 through `getActiveGame` for every account of the members in the session, once per PUUID, in bind order.
+In real mode a saved `MOCK-` account is skipped without a request or a log line; the match poll already warns about it.
+Once one account returns a game, every other account among that game's participants counts as in that game for this tick without its own request, so a premade costs one request.
+An account already seen in a game is asked again only on every sixth tick (2 minutes), until spectator answers that it is not in a game.
+Ten accounts therefore cost at most 60 requests every 2 minutes on na1, which counts its rate limit apart from americas.
+
+Each account has a state for the current presence of its member: unknown, not in a game, or in a game.
+A member who leaves voice, is unbound or loses the account starts over as unknown when they are back.
+A game is announced when one check finds it still loading (`gameStartTime` 0), or when this account's previous check in this presence found no game and the game has run at most 60 seconds.
+A game first seen already in progress is recorded as skipped with one log line and is never announced, so joining voice mid-game stays silent.
+Only Summoner's Rift (map 11) in a queue the bot announces counts, so ARAM, Arena, custom games and an unknown queue or map are skipped the same way.
+A game whose finished match the session already knows (waiting for a channel, being announced or announced) is skipped too.
+Every decided game, announced or skipped, is remembered by its match ID for the session, at most 50, so it is announced once even when several members are in it.
+The match ID is `NA1_<gameId>`, the ID the finished match will have, and the reserved mock ID in mock mode.
+
+A spectator 401 or 403 turns the watcher off for the rest of the session with one log line; finished matches are still announced.
+A spectator 429 skips that account for this tick quietly and is never shown to anyone.
+Any other failure, including a 404 that is not Riot's `NOT_FOUND`, is a failed check that leaves the account's state as it was.
+It is logged once per session and kind of error, and it never turns the watcher off.
+
+### Text and voice
+
+The channel is chosen as in [Channel choice](#channel-choice), from the game's tracked players who still own the account they play on, both teams included.
+The team rated is the one with the most of those players in that channel, on a tie the earliest-bound member's team, preferring members the session covers.
+Only bound members on that team reach the brief, with the game name stored with their binding, never the spectator `riotId`.
+Other players on that team are a count of 路人队友, bots not counted, and the other team is never scored or named.
+A tracked member on the other team in that channel is mentioned in the message so they hear about the game, but is never named or rated in the card or the line.
+When none of the game's players is in a usable channel, nothing is posted, and the next tick tries again within the window.
+
+The brief is fixed the first time a player has a usable channel.
+The card is posted to that voice channel's chat first, with every send's `allowedMentions` exactly `{ parse: [], roles: [], users, repliedUser: false }` where `users` are the game's tracked players in that channel.
+A failed post is logged and not tried again; the voice line still plays.
+When the server's pregame voice is on (see [Storage](storage.md)), the line then goes through the guild's shared voice queue as one plain job.
+It waits behind a report that is already queued or playing, and a playing report is never cut for it.
+Mock cards carry `模拟数据 · 军师赛前锦囊` and the mock footer, and mock lines start with `模拟锦囊，`.
+
+### Window and cancellation
+
+The loading screen lasts about one to three minutes, so the line has 90 seconds from detection to start playing.
+Before each generated chunk and before joining, it needs the window, a finished match for the same ID that the session does not know yet, a player of the rated team who is still in voice, and a usable channel.
+If any of those fails before playback, nothing is heard, and the next tick may queue it again while the window lasts.
+After 90 seconds a line that has not started is dropped with one log line, and the text stays.
+Once the line is playing it finishes where it started, even when its players leave or move; only the session stopping, when the last tracked member leaves voice, aborts it.
+A generation or playback failure is not retried, because the text is already there.
+A bot restart during loading creates a new session whose first check sees the game loading, so it may be announced again; that duplicate is accepted.
+
+`/simulate outcome:开局（赛前锦囊）` works only in mock mode.
+It starts a labeled mock game for the tracked members in the test channel on their first accounts, asks the watcher to check at once and waits for the card and the line.
+Ending the game later with `/simulate outcome:胜利` or `失败` reuses the same match ID, so the start and the finished report are one match.
+
 ## Diagnostics
 
 The bot logs to the terminal and its daily log file, described in [Runtime](runtime.md#logs).
@@ -183,6 +243,7 @@ It logs how many 马厩 records it saved for a match after posting its text, or 
 When the bot joins a channel with the first two speech chunks ready, it logs how many seconds that was after detection, the latency until the first sentence plays apart from the connection itself.
 After playback it logs how many seconds speech generation and playback took after detection.
 It logs once when it gives up on a match's voice after three failed attempts.
+For a game start it logs the detection, a skipped game once with the reason, the posted card, when the line starts and ends, and a dropped line.
 Together they show whether a slow announcement waited on Riot's match data, the poll interval or speech.
 A saved mock account skipped in real mode is logged as a monitoring failure that names the account.
 Startup in real mode and `npm run doctor` also warn about each saved mock account before anyone joins voice.
@@ -266,6 +327,9 @@ Before fixing the old monitor, a reproduction through the then-public `startPoll
 It also pins the text-first order, the once-only text and 马厩 write across voice retries, the timeline fallback and its prompt end on a stop, the sticky speaker, records written after the voice when the text fails, the three-attempt cap for voice and report-building failures but not a full queue, and the silent mock baseline after a restart.
 `tests/partyRanking.test.ts` pins the 车队内战 order, the 背锅 wording, the sentence length, the exclusion of other-team friends and the embed, and `tests/monitor.test.ts` pins the second embed and the unchanged ping set.
 `tests/voicePresence.test.ts` drives voice events through the real lifecycle into a monitor with fake Riot I/O.
+`tests/gameStart.test.ts` runs the real monitor, watcher and voice queue with a fake spectator, clock, speech and Discord.
+It pins the detection rules, the premade dedup and the sixth-tick recheck, the request budget with fake timers, the queue filter, the voice switch, the 90 second window, the finished-match cancel, leaving before and during playback, the rated team, the exact mentions, the quiet 429 and the 403 that leaves match monitoring on.
+It also feeds a game with enemies, strangers and a friend on the other team through the watcher and checks that none of their names, PUUIDs or champions reach the card or the line.
 `tests/voiceAnnouncements.test.ts` verifies queue serialization, chunk ordering, the two-chunk join, inline retry, early and mid-stream generation failure, cancellation between chunks and during playback, the announcement deadline with a chunk that never resolves, channel changes, limits, and cleanup of every chunk file.
 `tests/speechChunks.test.ts` verifies sentence boundaries, ASCII end marks inside names, preserved separators, decimal scores, hard cuts that keep words and numbers whole, short and long sentences and the length limits.
 `tests/voicePlayback.test.ts` uses the installed voice library's `entersState` with fake transports to verify playback lifecycle, chunk stitching, decoding before joining, gaps while a chunk generates, and failure cleanup.
