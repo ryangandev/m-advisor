@@ -159,13 +159,14 @@ import { Aside } from '@astrojs/starlight/components';
 
 ### /stable-erase
 
-清除一位成员的全部 [马厩](/features/stable/) 记录，真实和模拟的都清。
+清除一位成员的全部 [马厩](/features/stable/) 记录，真实和模拟的都清，同时清掉他的段位（LP）记录和已结案的 `/why` 上诉案件。
 
 | 选项 | 必填 | 说明 |
 | --- | --- | --- |
 | `user` | 是 | 要清除记录的成员 |
 | `confirm` | 否 | 填 `true` 才真的删除，不填只统计有多少条 |
 
+不加 `confirm:true` 时的统计和删除之后的回复，都会列出各类记录的数量：真实和模拟的对局、上诉案件、段位记录。
 删除之后无法恢复。
 
 ## 仅用于测试
