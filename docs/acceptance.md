@@ -154,4 +154,6 @@ Enter voice before completing a new supported match and confirm its actual resul
 An expired key or rate-limit error must stay an explicit real-provider error, with no automatic mock substitution.
 `/simulate` must reject real mode.
 
+On 2026-10-07 this check passed: one real match was spoken and reported exactly once in General; see [Status](status.md#real-riot-acceptance).
+
 Cloud speech credentials, an LLM API and speech recognition are not prerequisites for this workflow.

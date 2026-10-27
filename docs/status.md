@@ -74,13 +74,25 @@ In real mode `npm run doctor` and the restarted live bot both warned that the sa
 The live bot wrote its startup messages and that warning to `.data/logs/bot-2026-10-05.log` with mode `0600`.
 The real-mode `/bind` cleanup is covered by tests but has not yet been run in Discord.
 
+## Real Riot acceptance
+
+On 2026-10-06 the live bot in real mode removed the saved `MockWin#NA1` binding and bound Ryan's real account `not ry#tan90`.
+Monitoring started in General and recorded `NA1_5654095416` as the baseline.
+On 2026-10-07 the bot detected the finished match `NA1_5655858513` (queue 400, 36 minutes) 44 seconds after it ended.
+Speech generation and voice playback completed 132 seconds after detection, about three minutes after the game ended.
+A read-only REST read of General found exactly one bot report for that match at 07:26:55 UTC, 0.2 seconds after playback finished.
+The embed carries the 马匹排行, 军师表扬 and 军师批评 fields and the `Riot 实时数据` footer, with no mock label.
+Ryan confirmed that he heard the spoken report in the channel.
+The log shows no Riot, speech, transport or text-send error, and monitoring stopped normally when Ryan left voice.
+This is the first real-mode end-to-end acceptance; `/recent` has still not been run in the live channel.
+
 ## User-only blockers
 
 | ID | Needed | Blocks |
 | --- | --- | --- |
 | B1 | Resolved: Ryan authorized Ry的四合院 / General on 2026-10-02 | No longer blocks live operations |
-| B2 | Listen once inside that channel | Human audio acceptance only |
-| B3 | Resolved for API access on 2026-10-03; play a real game with Ryan's account bound in real mode | Real Riot acceptance only |
+| B2 | Resolved: Ryan heard the real five-horse report in General on 2026-10-07 | No longer blocks acceptance |
+| B3 | Resolved: a real game with Ryan's account bound in real mode was announced on 2026-10-07 | No longer blocks acceptance |
 | B4 | Resolved: Mac unlocked and Discord UI testing resumed | No longer blocks live operations |
 
 Mock data allows implementation and voice integration to continue without B3.
@@ -88,9 +100,8 @@ Discord Portal or server-permission changes become a blocker only if the actual 
 
 ## Next
 
-The approved engineering delivery and mock-to-real-Discord workflow are complete.
-The local bot is configured with `RIOT_MODE=real`, the eight registered commands, Ryan's `MockWin#NA1` test binding and the Old Man voice preference; it is started on demand.
+The approved engineering delivery, mock-to-real-Discord workflow and real Riot acceptance are complete.
+The local bot is configured with `RIOT_MODE=real`, the eight registered commands, Ryan's real `not ry#tan90` binding and the Old Man voice preference; it is started on demand.
 For later on-demand use, run `npm start` or double-click `scripts/launch.command`; see [Runtime](runtime.md).
-Listen to the new five-horse report style for B2, then run `npm run verify:discord -- --confirm-live` to check the embed report in the authorized channel.
-Finish real Riot acceptance by binding Ryan's real account with `/bind`, which removes the mock account, checking `/recent`, and completing one game while in voice.
+Run `/recent` once in the live channel to close the remaining diagnostics check.
 Record each verified acceptance separately; never treat mock success as real Riot success.
