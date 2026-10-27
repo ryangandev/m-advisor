@@ -155,6 +155,14 @@ export function listRankResults(guildId: string, query: RankResultQuery): RankRe
   return (getDatabase().prepare(sql).all(parameters) as RankResultRow[]).map(fromRow);
 }
 
+/** How many results a member has in one server, mock and real together, for the erase confirmation. */
+export function countMemberRankResults(guildId: string, discordUserId: string): number {
+  requireString(guildId, "Guild ID");
+  requireString(discordUserId, "Discord user ID");
+  return (getDatabase().prepare("SELECT count(*) AS count FROM rank_results WHERE guild_id = ? AND discord_user_id = ?")
+    .get(guildId, discordUserId) as { count: number }).count;
+}
+
 /** Deletes every result, real and mock, of one member in one server and returns how many were removed. */
 export function eraseMemberRankResults(guildId: string, discordUserId: string): number {
   requireString(guildId, "Guild ID");

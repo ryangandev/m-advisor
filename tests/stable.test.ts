@@ -6,10 +6,12 @@ import { afterEach, beforeEach, test } from "node:test";
 import { MessageFlags, PermissionFlagsBits } from "discord.js";
 import stableCommand from "../src/commands/stable";
 import stableEraseCommand from "../src/commands/stableErase";
+import { closeAppeal, isAppealClosed } from "../src/store/appealStore";
 import { removeTrackedMember, setMemberAccounts } from "../src/store/bindingStore";
 import { closeDatabase } from "../src/store/database";
 import { countMemberHorseRecords } from "../src/store/horseRecordStore";
 import type { HorseRecord } from "../src/store/horseRecordStore";
+import { listRankResults, recordRankResults } from "../src/store/rankStore";
 import type { HorseTier } from "../src/services/horseRanking";
 import { makeHorseRecord, recordTracked } from "./helpers/horseRecords";
 
@@ -302,6 +304,42 @@ test("常年垫底 needs an average percentile of 0.3 or below, and a milder phr
   await stableCommand.execute(fine.stub);
   const fineText = fieldText(fine.replies[0], "军师批注")!;
   assert.ok(!fineText.includes("常年垫底") && !fineText.includes("短板"), fineText);
+});
+
+test("/stable-erase counts and erases a member who has only LP results or appeal cases", async () => {
+  const rankResult = {
+    guildId: GUILD, discordUserId: "friend", matchId: "NA1_R", mock: false, puuid: "account-a", queueType: "solo" as const,
+    playedAt: 1_800_000_000_000, recordedAt: 1_800_000_060_000, kind: "change" as const, tier: "GOLD", division: "II", leaguePoints: 86,
+    lpDelta: 22, beforeTier: "GOLD", beforeDivision: "II", beforeLeaguePoints: 64,
+  };
+  // No horse record at all, for example because that write failed.
+  recordRankResults([rankResult, { ...rankResult, matchId: "NA1_S", mock: true }, { ...rankResult, discordUserId: "someone-else" }]);
+  closeAppeal({ guildId: GUILD, discordUserId: "friend", matchId: "NA1_R", mock: false });
+  assert.deepEqual(countMemberHorseRecords(GUILD, "friend"), { real: 0, mock: 0 });
+
+  const dry = interaction({ target: "friend" });
+  await stableEraseCommand.execute(dry.stub);
+  assert.doesNotMatch(dry.replies[0].content!, /没有马厩档案/);
+  assert.match(dry.replies[0].content!, /0 局真实记录和 0 局模拟记录，以及1 个上诉案件和2 条段位记录.*confirm/);
+  assert.equal(listRankResults(GUILD, { mock: false, discordUserId: "friend" }).length, 1, "a dry run erases nothing");
+
+  const real = interaction({ target: "friend", confirm: true });
+  await stableEraseCommand.execute(real.stub);
+  assert.match(real.replies[0].content!, /已清除 <@friend> 的全部马厩档案（.*1 个上诉案件和2 条段位记录）/);
+  assert.deepEqual(listRankResults(GUILD, { mock: false, discordUserId: "friend" }), []);
+  assert.deepEqual(listRankResults(GUILD, { mock: true, discordUserId: "friend" }), []);
+  assert.equal(isAppealClosed({ guildId: GUILD, discordUserId: "friend", matchId: "NA1_R", mock: false }), false);
+  assert.equal(listRankResults(GUILD, { mock: false, discordUserId: "someone-else" }).length, 1, "another member is untouched");
+
+  const again = interaction({ target: "friend", confirm: true });
+  await stableEraseCommand.execute(again.stub);
+  assert.match(again.replies[0].content!, /没有马厩档案/);
+
+  // Only an appeal case is enough as well.
+  closeAppeal({ guildId: GUILD, discordUserId: "lonely", matchId: "NA1_A", mock: false });
+  const lonely = interaction({ target: "lonely" });
+  await stableEraseCommand.execute(lonely.stub);
+  assert.match(lonely.replies[0].content!, /以及1 个上诉案件。/);
 });
 
 test("/stable-erase is hidden from non-administrators by default", () => {
