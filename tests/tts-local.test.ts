@@ -172,6 +172,33 @@ test("missing model metadata rejects current work and permits retry after config
   } finally { await f.cleanup(); }
 });
 
+test("an aborted request releases its caller at once, keeps the worker and deletes its late audio", async () => {
+  const f = await fixture({ FAKE_DELAY: "300" });
+  try {
+    await f.service.prewarm();
+    const activeController = new AbortController();
+    const queuedController = new AbortController();
+    const active = f.service.generate("正在生成", "old", activeController.signal);
+    const queued = f.service.generate("还在排队", "old", queuedController.signal);
+    const next = f.service.generate("下一条");
+    while (!(await readFile(f.log, "utf8").catch(() => ""))) await new Promise((resolve) => setTimeout(resolve, 5));
+    const started = performance.now();
+    activeController.abort(new Error("announcement stopped"));
+    queuedController.abort(new Error("queued announcement stopped"));
+    await assert.rejects(active, /announcement stopped/);
+    assert.ok(performance.now() - started < 150, "the caller does not wait for the worker");
+    await assert.rejects(queued, /queued announcement stopped/);
+    await next;
+    const requests = (await readFile(f.log, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+    assert.deepEqual(requests.map((request) => request.text), ["正在生成", "下一条"], "a queued abort never reaches the worker");
+    assert.equal(requests[0].pid, requests[1].pid, "the worker keeps its loaded model");
+    await assert.rejects(access(requests[0].output), "audio finished after the abort is deleted");
+    const aborted = new AbortController();
+    aborted.abort(new Error("already stopped"));
+    await assert.rejects(f.service.generate("不会排队", "old", aborted.signal), /already stopped/);
+  } finally { await f.cleanup(); }
+});
+
 test("model startup has a deadline and shutdown rejects pending requests", async () => {
   const timed = await fixture({ FAKE_TTS_MODE: "startup-hang" }, 250);
   try { await assert.rejects(timed.service.prewarm(), /loading timed out/); }
