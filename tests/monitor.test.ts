@@ -1456,7 +1456,7 @@ test("two friends on one team get a 车队内战 embed right after the report an
 
   const expected = buildMatchAnnouncement(detail, "alice", true, { party: [{ memberId: "alice-id", puuid: "alice" }, { memberId: "bob-id", puuid: "bob" }] });
   assert.equal(bot.generated[0], expected.speech);
-  assert.match(bot.generated[0], new RegExp(`车队内战，${order[0]}(最好|领跑|夺魁)，${order[1]}[^。]*背锅。$`));
+  assert.match(bot.generated[0], new RegExp(`车队内战，${order[0]}(相对最好|最好|领跑|夺魁)，${order[1]}[^。]*背锅。$`));
   assert.equal(bot.messages[0].content, "<@alice-id> <@bob-id>");
   assert.deepEqual(bot.messages[0].allowedMentions, { parse: [], roles: [], users: ["alice-id", "bob-id"], repliedUser: false });
 });
@@ -1528,6 +1528,39 @@ test("two friends who played against each other have no party", async () => {
   assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
   assert.equal(postedEmbeds(bot.messages[0]).length, 1);
   assert.doesNotMatch(bot.generated[0], /车队内战|zed/);
+});
+
+test("when the text post fails the 车队内战 is still spoken and the 马厩 records are the same as without a party", async () => {
+  const allies = ["alice", "bob", "cara", "dan", "eve"];
+  const run = async (guildId: string, tracked: string[]) => {
+    const bot = harness(guildId, tracked.map((puuid) => ({ id: `${puuid}-id`, puuids: [puuid], channel: "x" })));
+    bot.channel("x").send = async () => { throw new Error("Missing Permissions"); };
+    await bot.start();
+    const detail = match("quiet-party", allies);
+    bot.matches.set("quiet-party", detail);
+    for (const puuid of tracked) bot.latestIds.set(puuid, "quiet-party");
+    assert.deepEqual(await bot.poll(), { announced: 1, errors: 1 });
+    assert.deepEqual(bot.sent, [], "nothing was posted");
+    assert.equal(bot.records.length, 1, "the records were written once, after the voice");
+    return { bot, detail, records: bot.records[0] };
+  };
+  const duo = await run("quiet-party-guild", ["alice", "bob"]);
+  assert.match(duo.bot.generated[0], /车队内战，/, "the party sentence is spoken");
+  const withoutParty = buildHorseRecords({
+    guildId: duo.bot.guildId,
+    detail: duo.detail,
+    tracked: ["alice", "bob"].map((puuid) => ({ discordUserId: `${puuid}-id`, puuid })),
+    mock: true,
+    recordedAt: duo.records[0].recordedAt,
+    announcement: { announcement: buildMatchAnnouncement(duo.detail, "alice", true), perspectivePuuid: "alice", events: null },
+  });
+  assert.deepEqual(duo.records, withoutParty);
+
+  // Alice alone has no party; her record is the same as in the party run.
+  const solo = await run("quiet-solo-guild", ["alice"]);
+  assert.doesNotMatch(solo.bot.generated[0], /车队内战/);
+  const normalize = (record: HorseRecord) => ({ ...record, guildId: "g", recordedAt: 0, playedAt: 0 });
+  assert.deepEqual(solo.records.map(normalize), duo.records.filter((record) => record.puuid === "alice").map(normalize));
 });
 
 test("a voice retry posts the 车队内战 once and speaks it on the retry", async () => {

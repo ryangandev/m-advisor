@@ -93,15 +93,22 @@ export function buildPartyEmbed(party: PartyRanking): EmbedBuilder {
   const person = (entry: PartyEntry) => `<@${entry.memberId}> · ${entry.champion} · ${entry.tier} · ${entry.score.toFixed(1)} 分`;
   const row = (entry: PartyEntry, index: number) =>
     `${index + 1}. ${TIER_ICONS[entry.tier]} <@${entry.memberId}> · ${entry.champion} · **${entry.tier}** · ${entry.score.toFixed(1)} 分 · 队内第 ${entry.teamRank}/${entry.teamSize}`;
+  const people = (entries: readonly PartyEntry[], line: string) => `${entries.map(person).join("\n")}\n军师：${line}`;
+  const verdict: Array<{ name: string; value: string }> = [];
+  if (party.tiedAll) {
+    verdict.push({ name: "🤝 车队并列", value: people(party.entries, party.bestLine) });
+  } else {
+    const lead = party.modest ? " (相对)" : "";
+    verdict.push({ name: party.best.length > 1 ? `👑 车队 MVP 并列${lead}` : `👑 车队 MVP${lead}`, value: people(party.best, party.bestLine) });
+    verdict.push(party.worst.length > 1
+      ? { name: "🤝 垫底并列 (无人背锅)", value: people(party.worst, party.worstLine) }
+      : { name: party.relative ? "🍳 本局背锅 (相对)" : "🍳 本局背锅", value: people(party.worst, party.worstLine) });
+  }
   return new EmbedBuilder()
     .setTitle(`${party.mock ? "模拟战报 · " : ""}车队内战`)
     .setColor(party.mock ? 0x95A5A6 : 0xB8651B)
     .setDescription(`本局 ${party.entries.length} 位车队成员同队开黑，只在车队内部排名，对面不计分。`)
-    .addFields(
-      { name: "车队内部排名", value: party.entries.map(row).join("\n") },
-      { name: "👑 车队 MVP", value: `${person(party.mvp)}\n军师：${party.mvpLine}` },
-      { name: party.relative ? "🍳 本局背锅 (相对)" : "🍳 本局背锅", value: `${person(party.scapegoat)}\n军师：${party.scapegoatLine}` },
-    )
+    .addFields({ name: "车队内部排名", value: party.entries.map(row).join("\n") }, ...verdict)
     .setFooter({ text: party.mock ? "模拟数据 / Mock data • 策马军师" : "Riot 实时数据 • 策马军师" });
 }
 

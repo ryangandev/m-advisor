@@ -29,21 +29,31 @@ export interface PartyEntry {
   teamSize: number;
 }
 
-/** The 车队内战: bound friends on one team ranked among themselves. Derived from the team ranking and never stored. */
+/**
+ * The 车队内战: bound friends on one team ranked among themselves. Derived from the team ranking and never stored.
+ *
+ * Ties are decided on the displayed score. The members sharing the top score are the 车队 MVP together, and the
+ * members sharing the lowest score take the 背锅 together, which means nobody: a 背锅 is named only when exactly one
+ * member has the lowest score. When everyone shares one score there is neither an MVP nor a 背锅.
+ */
 export interface PartyRanking {
   /** The party in team rank order, best first; at least two members. */
   entries: PartyEntry[];
-  /** 车队 MVP: the party's best horse. */
-  mvp: PartyEntry;
-  /** 本局背锅: the party's lowest score, even when that horse is good, so the joke is only relative. */
-  scapegoat: PartyEntry;
-  /** The scapegoat is still a 特等马 or 上等马, so the wording says the blame is only relative. */
+  /** The members with the top score; every member when `tiedAll`. */
+  best: PartyEntry[];
+  /** The members with the lowest score, empty when `tiedAll`. One member is the 背锅; several are tied and nobody is. */
+  worst: PartyEntry[];
+  /** Every member has the same displayed score. */
+  tiedAll: boolean;
+  /** The best member is only 中等马 or lower, so the wording says relatively best instead of claiming the lead. */
+  modest: boolean;
+  /** The single 背锅 is still a 特等马 or 上等马, so the wording says the blame is only relative. */
   relative: boolean;
   /** The one spoken sentence appended to the report. */
   sentence: string;
-  /** 军师 lines for the embed; they carry no name because the embed mentions the member. */
-  mvpLine: string;
-  scapegoatLine: string;
+  /** 军师 lines for the embed; they carry no name because the embed mentions the member. Empty when there is nothing to say. */
+  bestLine: string;
+  worstLine: string;
   mock: boolean;
 }
 
@@ -59,16 +69,28 @@ export interface PartyInput {
 
 /** The sentence stays within this many characters unless the fixed words alone are longer. */
 export const PARTY_SENTENCE_LIMIT = 29;
-const MIN_SPOKEN_NAME = 3;
+const MIN_SPOKEN_NAME = 2;
 
 const SPOKEN_BEST = ["最好", "领跑", "夺魁"] as const;
+const MODEST_BEST = "相对最好";
+const TIED_BEST = "并列最好";
+const TIED_MODEST_BEST = "并列靠前";
 const BLAME = "背锅";
 const RELATIVE_BLAME = ["今天只是相对背锅", "只是相对背锅"] as const;
+const TIED_WORST = "并列垫底";
 
 const MVP_LINES = [
   "领跑整个车队，这面旗军师交给你扛。",
   "车队里数你最稳，开黑的主心骨就是你。",
   "同行的朋友里，你这匹跑在最前面。",
+] as const;
+const MODEST_MVP_LINES = [
+  "车队里你相对靠前，下把争取真领跑。",
+  "同行的朋友里你跑得相对靠前，下把再往前冲一冲。",
+] as const;
+const TIED_BEST_LINES = [
+  "几位并列靠前，谁也没甩开谁，下把分个高下。",
+  "分数并列在前，军师不偏不倚，下把见真章。",
 ] as const;
 const BLAME_LINES = [
   "车队里分数最低，这口锅先背着，下把打回来。",
@@ -79,18 +101,44 @@ const RELATIVE_BLAME_LINES = [
   "你其实打得不差，只是车队里有人更强，这口锅只是相对的。",
   "分数不低，只是在车队里排最后，相对背锅，别往心里去。",
 ] as const;
+const TIED_WORST_LINE = "几位并列垫底，这把没有谁单独背锅，下把一起打回来。";
+const ALL_TIED_LINE = "分数一模一样，这把车队不分高下，没人背锅。";
 
-/** Shortens two names to fit `budget` characters together, trimming the longer one first and never below a few characters. */
-function fitNames(first: string, second: string, budget: number): [string, string] {
-  const a = Array.from(first);
-  const b = Array.from(second);
-  if (a.length + b.length <= budget) return [first, second];
-  const cap = Math.max(MIN_SPOKEN_NAME, Math.floor(budget / 2));
-  let keepA = cap;
-  let keepB = cap;
-  if (a.length <= cap) { keepA = a.length; keepB = Math.max(MIN_SPOKEN_NAME, budget - a.length); }
-  else if (b.length <= cap) { keepB = b.length; keepA = Math.max(MIN_SPOKEN_NAME, budget - b.length); }
-  return [a.slice(0, keepA).join(""), b.slice(0, keepB).join("")];
+/** "A", "A和B", "A、B和C". */
+function joinNames(names: readonly string[]): string {
+  if (names.length <= 1) return names.join("");
+  return `${names.slice(0, -1).join("、")}和${names[names.length - 1]}`;
+}
+
+/** Shortens names to `budget` characters together, trimming the longest first and never below a few characters, from the front or the back. */
+function fit(names: readonly string[], budget: number, fromEnd: boolean): string[] {
+  const parts = names.map((name) => Array.from(name));
+  const keep = parts.map((part) => part.length);
+  const total = () => keep.reduce((sum, length) => sum + length, 0);
+  while (total() > budget) {
+    let longest = 0;
+    keep.forEach((length, index) => { if (length > keep[longest]) longest = index; });
+    if (keep[longest] <= MIN_SPOKEN_NAME) break;
+    keep[longest]--;
+  }
+  return parts.map((part, index) => keep[index] === part.length ? part.join("")
+    : (fromEnd ? part.slice(part.length - keep[index]) : part.slice(0, keep[index])).join(""));
+}
+
+const distinct = (names: readonly string[]) => new Set(names).size === names.length;
+
+/**
+ * The names as they are spoken: whole, or trimmed to the budget. Two members must never sound the same,
+ * so names that collide after trimming keep their ends instead, and then fall back to the champions.
+ */
+function spokenNames(entries: readonly PartyEntry[], budget: number): string[] {
+  const names = entries.map((entry) => entry.name);
+  const fromFront = fit(names, budget, false);
+  if (distinct(fromFront)) return fromFront;
+  const fromEnd = fit(names, budget, true);
+  if (distinct(fromEnd)) return fromEnd;
+  const champions = fit(entries.map((entry) => entry.champion), budget, false);
+  return distinct(champions) ? champions : fromFront;
 }
 
 /**
@@ -114,19 +162,33 @@ export function buildPartyRanking(input: PartyInput): PartyRanking | undefined {
   });
   if (entries.length < 2) return undefined;
 
-  const mvp = entries[0];
-  const scapegoat = entries[entries.length - 1];
-  const relative = scapegoat.tier === "特等马" || scapegoat.tier === "上等马";
-  const best = choose(SPOKEN_BEST);
-  const blame = relative ? choose(RELATIVE_BLAME) : BLAME;
-  // The words around the two names decide how many characters the names may take.
-  const fixed = `车队内战，${best}，${blame}。`.length;
-  const [bestName, blameName] = fitNames(mvp.name, scapegoat.name, PARTY_SENTENCE_LIMIT - fixed);
+  const top = entries[0].score;
+  const bottom = entries[entries.length - 1].score;
+  const tiedAll = top === bottom;
+  const best = tiedAll ? entries : entries.filter((entry) => entry.score === top);
+  const worst = tiedAll ? [] : entries.filter((entry) => entry.score === bottom);
+  const modest = !tiedAll && best[0].tier !== "特等马" && best[0].tier !== "上等马";
+  const single = worst.length === 1;
+  const relative = single && (worst[0].tier === "特等马" || worst[0].tier === "上等马");
+
+  // Words are drawn in a fixed order, so the same match always gets the same sentence.
+  const bestWord = best.length > 1 ? (modest ? TIED_MODEST_BEST : TIED_BEST) : modest ? MODEST_BEST : choose(SPOKEN_BEST);
+  const blameWord = relative ? choose(RELATIVE_BLAME) : BLAME;
+  const say = (names: readonly string[]) => {
+    if (tiedAll) return `车队内战，${joinNames(names)}并列。`;
+    const leaders = joinNames(names.slice(0, best.length));
+    const laggards = joinNames(names.slice(best.length));
+    return `车队内战，${leaders}${bestWord}，${laggards}${single ? blameWord : TIED_WORST}。`;
+  };
+  const spoken = [...best, ...worst];
+  // The words around the names decide how many characters the names may take.
+  const fixed = say(spoken.map(() => "")).length;
+  const sentence = say(spokenNames(spoken, PARTY_SENTENCE_LIMIT - fixed));
+
   return {
-    entries, mvp, scapegoat, relative,
-    sentence: `车队内战，${bestName}${best}，${blameName}${blame}。`,
-    mvpLine: choose(MVP_LINES),
-    scapegoatLine: choose(relative ? RELATIVE_BLAME_LINES : BLAME_LINES),
+    entries, best, worst, tiedAll, modest, relative, sentence,
+    bestLine: tiedAll ? ALL_TIED_LINE : choose(best.length > 1 ? TIED_BEST_LINES : modest ? MODEST_MVP_LINES : MVP_LINES),
+    worstLine: tiedAll ? "" : !single ? TIED_WORST_LINE : choose(relative ? RELATIVE_BLAME_LINES : BLAME_LINES),
     mock,
   };
 }
