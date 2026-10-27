@@ -61,7 +61,8 @@ export function parseLeagueEntries(body: unknown): LeagueEntries {
 
 /**
  * The account's ranked entries from league-v4, read through the league requester (one attempt, 5 second timeout).
- * In mock mode it reads the mutable mock ranked state instead; in real mode it never does, and a failure is thrown.
+ * In mock mode it reads the mutable mock ranked state instead and the injected `request` is ignored; in real mode it
+ * never reads mock state, and a failure is thrown.
  * An unranked account has an empty list.
  */
 export async function getLeagueEntries(puuid: string, request: <T>(url: string) => Promise<T> = leagueRequester): Promise<LeagueEntries> {

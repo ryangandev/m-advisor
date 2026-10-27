@@ -87,9 +87,9 @@ function rankStep(entry: Pick<RankedEntry, "tier" | "rank">): number | null {
 
 /**
  * Whether going from one rung to another is a promotion or demotion worth announcing.
- * Ryan has not yet decided between "every division or tier change" (this) and "only a tier change". To switch, compare
- * `Math.floor(step / DIVISIONS.length)` instead of the step itself; this is the only place that decides it.
- * An apex to apex move has the same step, so it is never a promotion or demotion.
+ * Ryan's decision (2026-10-27): every division change and every tier change counts, flex included.
+ * Moves between MASTER, GRANDMASTER and CHALLENGER happen through cutoffs, so they share one rung and are never a
+ * promotion or demotion; they show only the current rank.
  */
 function countsAsRankMove(beforeStep: number, afterStep: number): boolean {
   return afterStep !== beforeStep;
