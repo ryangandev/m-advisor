@@ -262,7 +262,8 @@ Mock reports keep their mock label.
 ## 段位变化
 
 A finished solo/duo (queue 420) or flex (queue 440) match that is not a remake or aborted gets one more field on the horse embed, `段位变化`.
-It is text only: the spoken report never mentions LP, so it stays the same length whether or not LP is ready.
+The field is text only: the spoken report never mentions LP, so it stays the same length whether or not LP is ready.
+A promotion or demotion additionally gets its own [段位播报](#段位播报).
 How the reads are made, paced and retried is in [Riot data](riot-data.md#rank-tracking); this section covers when they happen and what the report shows.
 
 ### Reads around a game
@@ -317,6 +318,58 @@ Every division and tier change counts as a promotion or demotion, in both queues
 No row is shown for an account that is unranked before and after, whose entry disappeared, whose tier is unknown, that has no before-value at all, or when LP is off after a 401 or 403.
 A mock before-value is never used in real mode, or the reverse.
 
+## 段位播报
+
+A bound member on the reported team whose row in a ranked match (420 单双排 or 440 灵活组排) is a promotion or a demotion gets a separate announcement, in addition to the `段位变化` row.
+Every division and tier change counts, in both queues.
+A move among MASTER, GRANDMASTER and CHALLENGER happens through cutoffs, so it is a plain change and is never announced.
+A row that is unattributable (several games since the before-value), placed, pending, stale or unavailable is never announced either.
+`src/services/rankText.ts` owns the decision (`rankMoveOf`) and the wording.
+
+### Text
+
+The announcement is its own embed in the report's channel, titled `段位播报`, or `模拟数据 · 段位播报` in mock mode.
+It has one line per announced member, in party order, with tiers as `黄金 II` and the current LP:
+
+| Case | Line |
+| --- | --- |
+| Promotion | `<@id> 单双排 晋级：黄金 I → 铂金 IV · 7 LP` |
+| Demotion | `<@id> 单双排 掉段：黄金 IV → 白银 I · 86 LP` |
+
+A demotion shows no LP change number, for the same reason as the `段位变化` row: the ladder distance is not the LP Riot actually takes until a real demotion has been measured.
+The members are mentions inside the embed, which notifies nobody, and the message carries no content and an `allowedMentions` that pings no one.
+Strangers, enemies and a friend on the other team are never listed.
+
+### When it is sent
+
+It is sent after the report's text, once per match:
+
+- as soon as the first LP reads show a promotion or demotion, or
+- when the late update lands, if the first reads showed none.
+
+Whichever comes first decides the match: a member whose row only settles later is not announced, though the `段位变化` field still shows them.
+A message that fails to send is logged and never retried, and it never affects the report.
+
+### Voice
+
+The voice line is one short plain job in the shared voice queue, with one attempt and no retry, like the 锦囊.
+
+- It is queued only after the report's own voice has finished, never before it and never ahead of it, or, when the late update lands after that, at once.
+- It is queued only if a member of the reported team is still in a usable voice channel and still owns the account; an enemy or a stranger in voice does not count. Otherwise the announcement stays text only, with one info line.
+- It speaks tiers as `黄金二`, for example `军师贺喜！小明单双排升到铂金四了。` or `小明单双排掉回黄金一，别急，军师陪你重新上马。`
+- Each sentence is chosen from a small pool, seeded by `rank:<matchId>:<puuid>`, so the same match always says the same thing.
+- Several members go into one line of at most two sentences, about 15 seconds. Further members are in the text only.
+- Mock lines start with `模拟段位播报，`.
+- A voice failure is logged and never counts toward the report's voice attempts.
+
+### /simulate
+
+`/simulate outcome:晋级（模拟）` and `掉段（模拟）` work only in mock mode and are refused in real mode like the other choices.
+They place the first bound mock account of the earliest-bound member in the test channel at GOLD I 90 LP (solo) or GOLD IV 5 LP, keeping its games.
+They make that entry the before-value of the next game, then simulate a win (+22, so PLATINUM IV 12) or a loss (-19, so SILVER I 86).
+The result is the `段位变化` row and the `段位播报` with its voice line.
+Adding the choices changes the registered command definition, so `npm run register` has to run once after this change.
+
 ## Diagnostics
 
 The bot logs to the terminal and its daily log file, described in [Runtime](runtime.md#logs).
@@ -332,6 +385,7 @@ After playback it logs how many seconds speech generation and playback took afte
 It logs once when it gives up on a match's voice after three failed attempts.
 For a game start it logs the detection, a skipped game once with the reason, the posted card, when the line starts and ends, and a dropped line.
 For LP it logs, once per account and match, `league-v4 caught up N s after game end (read k)` or that it had not caught up after the last read, a row left out as `none/entry_lost`, and the late `段位变化` edit; see [Riot data](riot-data.md#rank-tracking).
+It also logs a posted `段位播报`, one that stays text only, a spoken one, and a voice line that was not played or failed.
 Together they show whether a slow announcement waited on Riot's match data, the poll interval or speech.
 A saved mock account skipped in real mode is logged as a monitoring failure that names the account.
 Startup in real mode and `npm run doctor` also warn about each saved mock account before anyone joins voice.
@@ -414,6 +468,8 @@ Before fixing the old monitor, a reproduction through the then-public `startPoll
 `tests/monitor.test.ts` exercises complete sessions using the real state store and shared queue with fake external I/O, for one member and for several members across channels.
 It also pins the text-first order, the once-only text and 马厩 write across voice retries, the timeline fallback and its prompt end on a stop, the sticky speaker, records written after the voice when the text fails, the three-attempt cap for voice and report-building failures but not a full queue, and the silent mock baseline after a restart.
 It also pins the `段位变化` rows of the reported team only, a stuck LP read that still posts within the timeline wait, LP failures that never fail the report, an LP 403 that turns off only LP, and the single late edit with the same mentions.
+It also pins the `段位播报`: the separate mock-labeled message right after the report, the voice line queued only after the report's voice finished, no announcement for a move among the apex tiers, text only when nobody of the team is in voice, a single announcement per match, and a failed line that is neither retried nor counted against the report.
+`tests/rankText.test.ts` pins which rows are announced, the line wording, the seeded and capped voice wording and the mock prefix, and `tests/commands.test.ts` pins `/simulate` 晋级 and 掉段.
 `tests/rankTracker.test.ts` pins the row wording, the mode-keyed snapshots, the 60 second floor and the 4-read cap under fake timers, serialized reads and each failure kind.
 `tests/partyRanking.test.ts` pins the 车队内战 order, the 背锅 wording, the sentence length, the exclusion of other-team friends and the embed, and `tests/monitor.test.ts` pins the second embed and the unchanged ping set.
 `tests/voicePresence.test.ts` drives voice events through the real lifecycle into a monitor with fake Riot I/O.

@@ -6,7 +6,7 @@ import type { HorseTier } from "../services/horseRanking";
 import type { PartyEntry, PartyRanking } from "../services/partyRanking";
 import type { MonitorStatus } from "../services/gameMonitor";
 import { RECAP_FIELD_NAME } from "../services/pregameRecap";
-import { RANK_FIELD_NAME } from "../services/rankText";
+import { RANK_ANNOUNCEMENT_TITLE, RANK_FIELD_NAME } from "../services/rankText";
 import { isAnnouncedQueue } from "./riotMatchApi";
 
 // Verified against the official versions endpoint on 2026-10-02; configurable without changing code.
@@ -118,6 +118,18 @@ export function buildPartyEmbed(party: PartyRanking): EmbedBuilder {
     .setDescription(`本局 ${party.entries.length} 位车队成员同队开黑，只在车队内部排名，对面不计分。`)
     .addFields({ name: "车队内部排名", value: party.entries.map(row).join("\n") }, ...verdict)
     .setFooter({ text: party.mock ? "模拟数据 / Mock data • 策马军师" : "Riot 实时数据 • 策马军师" });
+}
+
+/**
+ * The separate 段位播报 message about promotions and demotions, one line per announced member (see rankMoveText).
+ * Members are mentions inside the embed, which notifies nobody.
+ */
+export function buildRankAnnouncementEmbed(lines: readonly string[], mock: boolean): EmbedBuilder {
+  return new EmbedBuilder()
+    .setTitle(`${mock ? "模拟数据 · " : ""}${RANK_ANNOUNCEMENT_TITLE}`)
+    .setColor(mock ? 0x95A5A6 : 0xC9A227)
+    .setDescription(lines.join("\n").slice(0, 4096))
+    .setFooter({ text: mock ? "模拟数据 / Mock data • 策马军师" : "Riot 实时数据 • 策马军师" });
 }
 
 const QUEUE_NAMES: Readonly<Record<number, string>> = {

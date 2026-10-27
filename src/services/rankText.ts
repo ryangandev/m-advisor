@@ -1,5 +1,6 @@
 import type { RankedEntry } from "../types";
 import type { RankRow } from "./rankTracker";
+import { readableName, seededChooser } from "./announcementText";
 
 /**
  * Chinese names for league-v4 ranks and queues. rankMath.ts keeps Riot's enums; every display name lives here.
@@ -90,4 +91,83 @@ export function rankRowText(memberId: string, row: RankRow): string | null {
       return state.kind === "promoted" ? `${line} · 晋级！` : line;
     }
   }
+}
+
+/** The title of the separate message about a promotion or demotion; mock mode puts `模拟数据 · ` in front. */
+export const RANK_ANNOUNCEMENT_TITLE = "段位播报";
+/** The spoken line of a mock 段位播报 starts with this, like `模拟锦囊，`. */
+export const MOCK_RANK_VOICE_PREFIX = "模拟段位播报，";
+/** The voice line speaks at most this many members, so it stays about 15 seconds; the text lists every one. */
+export const MAX_SPOKEN_RANK_MOVES = 2;
+
+/** A promotion or demotion of one bound member in one ranked match: what a 段位播报 is about. */
+export interface RankMove {
+  kind: "promoted" | "demoted";
+  queueType: string;
+  before: RankedEntry;
+  after: RankedEntry;
+}
+
+/**
+ * The promotion or demotion a row stands for, or null for every row that is never announced: a plain change (which
+ * includes a move among MASTER, GRANDMASTER and CHALLENGER, made by cutoffs), placements, a gap of several games, and
+ * pending, stale or unavailable rows. Also null when a rank or queue has no name.
+ */
+export function rankMoveOf(row: RankRow): RankMove | null {
+  const { state } = row;
+  if (state.kind !== "promoted" && state.kind !== "demoted") return null;
+  if (!queueLabel(row.queueType) || !rankName(state.before) || !rankName(state.after)) return null;
+  return { kind: state.kind, queueType: row.queueType, before: state.before, after: state.after };
+}
+
+/**
+ * One line of the 段位播报 message. A promotion shows the new LP; a demotion shows the new rank and its LP but no change
+ * number, for the same reason as the 段位变化 row (orchestrator ruling of 2026-10-27).
+ */
+export function rankMoveText(memberId: string, move: RankMove): string | null {
+  const queue = queueLabel(move.queueType);
+  const from = rankName(move.before);
+  const to = rankName(move.after);
+  if (!queue || !from || !to) return null;
+  return `<@${memberId}> ${queue} ${move.kind === "promoted" ? "晋级" : "掉段"}：${from} → ${to} · ${move.after.leaguePoints} LP`;
+}
+
+type MovePhrase = (name: string, queue: string, rank: string) => string;
+
+/** Play-only wording, no em dash. A demotion comforts, and the 军师 stays by the player. */
+const PROMOTION_PHRASES: readonly MovePhrase[] = [
+  (name, queue, rank) => `军师贺喜！${name}${queue}升到${rank}了。`,
+  (name, queue, rank) => `${name}${queue}晋级${rank}，军师备好了新鞍。`,
+  (name, queue, rank) => `恭喜${name}，${queue}升到${rank}，军师给你牵马。`,
+];
+const DEMOTION_PHRASES: readonly MovePhrase[] = [
+  (name, queue, rank) => `${name}${queue}掉回${rank}，别急，军师陪你重新上马。`,
+  (name, queue, rank) => `${name}${queue}退到${rank}，胜负兵家常事，军师陪你再战。`,
+  (name, queue, rank) => `${name}${queue}落到${rank}，不要紧，军师陪你重整旗鼓。`,
+];
+
+export interface RankVoiceMove extends RankMove {
+  puuid: string;
+  /** The name the report shows for the player; sanitized here. */
+  name: string;
+}
+
+/**
+ * The one spoken line of a match's 段位播报: a sentence for each of the first MAX_SPOKEN_RANK_MOVES members, with tiers as
+ * `黄金二`. Each sentence is chosen from a small pool, seeded by `rank:<matchId>:<puuid>`, so the same match always says
+ * the same thing. Mock lines start with MOCK_RANK_VOICE_PREFIX. Empty when no member can be spoken.
+ */
+export function buildRankVoiceLine(input: { matchId: string; mock: boolean; moves: readonly RankVoiceMove[] }): string {
+  const sentences: string[] = [];
+  for (const move of input.moves) {
+    if (sentences.length >= MAX_SPOKEN_RANK_MOVES) break;
+    const queue = queueLabel(move.queueType);
+    const rank = spokenRankName(move.after);
+    if (!queue || !rank) continue;
+    const choose = seededChooser(`rank:${input.matchId}:${move.puuid}`);
+    const phrase = choose(move.kind === "promoted" ? PROMOTION_PHRASES : DEMOTION_PHRASES);
+    sentences.push(phrase(readableName(move.name), queue, rank));
+  }
+  if (sentences.length === 0) return "";
+  return `${input.mock ? MOCK_RANK_VOICE_PREFIX : ""}${sentences.join("")}`;
 }

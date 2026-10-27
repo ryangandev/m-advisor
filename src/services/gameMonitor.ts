@@ -22,7 +22,7 @@ import type { MatchEvent } from "./matchEvents";
 import { buildHorseRecords } from "./horseRecords";
 import { listHorseRecords, recordHorseRecords } from "../store/horseRecordStore";
 import type { HorseRecord } from "../store/horseRecordStore";
-import { buildHorseReportEmbed, buildPartyEmbed } from "../utils/embeds";
+import { buildHorseReportEmbed, buildPartyEmbed, buildRankAnnouncementEmbed, NO_MENTIONS } from "../utils/embeds";
 import { AnnouncementCancelledError, AnnouncementQueueFullError, announceTextToCurrentChannel } from "./voiceAnnouncements";
 import { logError, logInfo } from "../utils/log";
 import { boundParticipants, chooseChannel, liveParticipantIds, liveParticipants, perspective } from "./channelChoice";
@@ -34,7 +34,8 @@ import { getLeagueEntries } from "../utils/riotLeagueApi";
 import { rankedQueueFor } from "./rankMath";
 import { RankTracker } from "./rankTracker";
 import type { RankTracking } from "./rankTracker";
-import { rankRowText } from "./rankText";
+import { buildRankVoiceLine, rankMoveOf, rankMoveText, rankRowText } from "./rankText";
+import type { RankMove, RankVoiceMove } from "./rankText";
 
 /** What the game start watcher needs beyond what the match monitor already has. */
 export type GameStartWatcherInputs = Pick<GameStartDependencies, "activeGame" | "records" | "pregameVoice" | "voiceStyle" | "now"> & {
@@ -96,6 +97,31 @@ export type { BoundParticipant } from "./channelChoice";
 interface RankMember {
   memberId: string;
   puuid: string;
+}
+
+/**
+ * The 段位播报 of one match: a separate message, and a short voice line after the report's own voice.
+ * It outlives the match's progress entry, so a late update can still send it after the report was consumed.
+ */
+interface RankCast {
+  matchId: string;
+  client: Client;
+  guildId: string;
+  session: MonitorSession;
+  /** Where the report was posted, and where the message goes. */
+  channel: VoiceChannel;
+  detail: MatchDetail;
+  party: readonly RankMember[];
+  /** The poll's channel guard, copied: a /simulate poll pins the authorized channel. */
+  requiredTargets: ReadonlySet<string>;
+  /** The message was sent (or tried) once; it is never sent again for this match. */
+  decided: boolean;
+  /** The spoken line, set with the message. */
+  line?: string;
+  /** The report's own voice has finished: the line is never queued before. */
+  reportVoiceDone: boolean;
+  /** One attempt: the line was handed to the voice queue. */
+  voiceStarted: boolean;
 }
 
 /**
@@ -168,6 +194,8 @@ interface MatchProgress {
   textPosted: boolean;
   /** The posted report, kept so a late 段位变化 can edit it once. */
   reportMessage?: Message;
+  /** The match's 段位播报, kept across voice retries so it is sent once. */
+  rankCast?: RankCast;
   /**
    * Attempts that failed once the match had a channel, whether building the report or speaking it.
    * Cancellations and a full voice queue do not count.
@@ -738,9 +766,15 @@ export class GameMonitor {
       && Boolean(resolveTarget());
     // The text goes out only when the voice is about to be queued, so a report that cannot play yet posts nothing.
     if (!canPlay()) throw new AnnouncementCancelledError();
+    if (!progress.rankCast && this.dependencies.rank) {
+      progress.rankCast = {
+        matchId: match.matchId, client, guildId, session, channel: initial, detail, party,
+        requiredTargets: new Set(requiredTargets), decided: false, reportVoiceDone: false, voiceStarted: false,
+      };
+    }
     if (!progress.textPosted) {
       await this.postReport(guildId, initial, boundParticipants, progress, announcement, speaker.puuid, result,
-        this.pregameRecap(guildId, match.matchId, announcement), { matchId: match.matchId, party });
+        this.pregameRecap(guildId, match.matchId, announcement), { matchId: match.matchId, party, cast: progress.rankCast });
       if (!this.current(guildId, session)) throw new AnnouncementCancelledError();
     }
     await this.dependencies.announce(
@@ -752,6 +786,11 @@ export class GameMonitor {
       session.controller.signal,
     );
     if (!this.current(guildId, session)) throw new AnnouncementCancelledError();
+    // Only now may the 段位播报 line be queued, behind nothing: it never plays before or over the report.
+    if (progress.rankCast) {
+      progress.rankCast.reportVoiceDone = true;
+      this.speakRank(progress.rankCast);
+    }
     // The text could not be posted, for example without Send Messages, but the voice was heard: record what it said.
     if (!progress.textPosted) this.recordHorses(guildId, progress, announcement, speaker.puuid);
     this.consume(guildId, session, match);
@@ -829,9 +868,9 @@ export class GameMonitor {
     perspectivePuuid: string,
     result: PollResult,
     recap?: string,
-    rank: { matchId: string; party: readonly RankMember[] } = { matchId: progress.detail.metadata.matchId, party: [] },
+    rank: { matchId: string; party: readonly RankMember[]; cast?: RankCast } = { matchId: progress.detail.metadata.matchId, party: [] },
   ): Promise<void> {
-    const { matchId, party } = rank;
+    const { matchId, party, cast } = rank;
     const mentions = this.liveParticipantIds(guildId, boundParticipants).filter((memberId) => channel.members.has(memberId));
     const message = (rankRows: readonly string[]): MessageCreateOptions => ({
       ...(mentions.length > 0 ? { content: mentions.map((memberId) => `<@${memberId}>`).join(" ") } : {}),
@@ -854,7 +893,9 @@ export class GameMonitor {
     }
     progress.textPosted = true;
     progress.reportMessage = posted;
-    if (rows.pending) this.editRankLater(progress, matchId, party, message);
+    // A promotion or demotion the first reads already show goes out right after the report's text.
+    if (cast) void this.castRank(cast);
+    if (rows.pending) this.editRankLater(progress, matchId, party, message, cast);
     this.recordHorses(guildId, progress, announcement, perspectivePuuid);
   }
 
@@ -952,6 +993,7 @@ export class GameMonitor {
     matchId: string,
     party: readonly RankMember[],
     message: (rankRows: readonly string[]) => MessageCreateOptions,
+    cast?: RankCast,
   ): void {
     const rank = this.dependencies.rank!;
     void Promise.resolve()
@@ -959,16 +1001,113 @@ export class GameMonitor {
       .then(async () => {
         const posted = progress.reportMessage;
         if (this.closed || !posted) return;
-        const { content, embeds, allowedMentions } = message(this.rankRows(matchId, party).lines);
-        await posted.edit({ ...(content === undefined ? {} : { content }), embeds, allowedMentions });
-        this.dependencies.info(`Updated the 段位变化 of match ${matchId}.`);
+        try {
+          const { content, embeds, allowedMentions } = message(this.rankRows(matchId, party).lines);
+          await posted.edit({ ...(content === undefined ? {} : { content }), embeds, allowedMentions });
+          this.dependencies.info(`Updated the 段位变化 of match ${matchId}.`);
+        } catch (error) {
+          if ((error as { code?: unknown } | null)?.code === RESTJSONErrorCodes.UnknownMessage) {
+            this.dependencies.info(`The report of match ${matchId} was deleted, so its 段位变化 was not updated.`);
+          } else {
+            this.dependencies.log(new Error(`The 段位变化 of match ${matchId} was not updated: ${errorMessage(error)}`));
+          }
+        }
+        // The rows have settled, whether or not the edit went out: a promotion or demotion that only the late read
+        // shows is announced now, unless the first reads already announced this match.
+        if (cast) await this.castRank(cast);
       })
       .catch((error: unknown) => {
-        if ((error as { code?: unknown } | null)?.code === RESTJSONErrorCodes.UnknownMessage) {
-          this.dependencies.info(`The report of match ${matchId} was deleted, so its 段位变化 was not updated.`);
+        this.dependencies.log(new Error(`The 段位变化 of match ${matchId} was not updated: ${errorMessage(error)}`));
+      });
+  }
+
+  /**
+   * The bound members of the reported team whose row in this match is a promotion or demotion, in party order.
+   * A failure here is logged and announces nothing.
+   */
+  private rankMoves(matchId: string, party: readonly RankMember[]): Array<RankMember & RankMove> {
+    const rank = this.dependencies.rank;
+    if (!rank) return [];
+    try {
+      const moves: Array<RankMember & RankMove> = [];
+      for (const member of party) {
+        const row = rank.row(matchId, member.puuid);
+        const move = row && rankMoveOf(row);
+        if (move) moves.push({ ...member, ...move });
+      }
+      return moves;
+    } catch (error) {
+      this.dependencies.log(new Error(`The LP 段位播报 of match ${matchId} was left out: ${errorMessage(error)}`));
+      return [];
+    }
+  }
+
+  /**
+   * Sends the match's 段位播报 once: one embed with a line for every announced member, in the report's channel, then its
+   * voice line when the report's voice is already done. Whatever the first reads or the late update show, a match
+   * announces once; a member whose row settles later than that is not announced (the 段位变化 field still shows it).
+   * It never rejects: a failure is logged and changes nothing else.
+   */
+  private async castRank(cast: RankCast): Promise<void> {
+    try {
+      if (cast.decided || this.closed) return;
+      const moves = this.rankMoves(cast.matchId, cast.party);
+      const lines = moves.flatMap((move) => rankMoveText(move.memberId, move) ?? []);
+      if (lines.length === 0) return;
+      cast.decided = true;
+      const mock = this.dependencies.mock();
+      const spoken: RankVoiceMove[] = moves.map((move) => ({
+        ...move,
+        name: cast.detail.info.participants.find((participant) => participant.puuid === move.puuid)?.riotIdGameName ?? "",
+      }));
+      cast.line = buildRankVoiceLine({ matchId: cast.matchId, mock, moves: spoken }) || undefined;
+      try {
+        await cast.channel.send({ embeds: [buildRankAnnouncementEmbed(lines, mock)], allowedMentions: NO_MENTIONS });
+        this.dependencies.info(`Posted the 段位播报 of match ${cast.matchId}.`);
+      } catch (error) {
+        this.dependencies.log(new Error(`The 段位播报 of match ${cast.matchId} was not posted: ${errorMessage(error)}`));
+      }
+      this.speakRank(cast);
+    } catch (error) {
+      this.dependencies.log(new Error(`The LP 段位播报 of match ${cast.matchId} failed: ${errorMessage(error)}`));
+    }
+  }
+
+  /**
+   * Queues the 段位播报 voice line: one plain job in the guild's voice queue, one attempt, no retry. It needs the line,
+   * a finished report voice, a live session and a member of the reported team who is still in a usable voice channel;
+   * otherwise the announcement stays text only. A failure here is logged and never counts toward the report's attempts.
+   */
+  private speakRank(cast: RankCast): void {
+    if (!cast.line || !cast.reportVoiceDone || cast.voiceStarted || this.closed) return;
+    const { client, guildId, session } = cast;
+    if (!this.current(guildId, session)) return;
+    let pick: string | undefined;
+    // Only the reported team's members, still bound to their account, count: an enemy or a stranger in voice does not.
+    const ids = () => cast.party.filter(({ memberId, puuid }) => this.ownerOf(guildId, puuid) === memberId).map(({ memberId }) => memberId);
+    const resolveTarget = (): VoiceChannel | null => {
+      const chosen = this.chooseChannel(client, guildId, ids(), pick);
+      if (!chosen) return null;
+      pick = chosen.id;
+      if ([...cast.requiredTargets].some((id) => chosen.id !== id)) return null;
+      return chosen;
+    };
+    const canPlay = () => this.current(guildId, session) && Boolean(resolveTarget());
+    if (!canPlay()) {
+      this.dependencies.info(`The 段位播报 of match ${cast.matchId} is text only: nobody of the team is in a voice channel announcements can use.`);
+      return;
+    }
+    cast.voiceStarted = true;
+    void Promise.resolve()
+      .then(() => this.dependencies.announce(guildId, cast.line!, getAnnouncerState(guildId).voiceStyle, resolveTarget, canPlay, session.controller.signal))
+      .then(() => {
+        this.dependencies.info(`Spoke the 段位播报 of match ${cast.matchId}.`);
+      }, (error: unknown) => {
+        if (error instanceof AnnouncementCancelledError || error instanceof AnnouncementQueueFullError) {
+          this.dependencies.info(`The 段位播报 voice line of match ${cast.matchId} was not played: ${errorMessage(error)}`);
           return;
         }
-        this.dependencies.log(new Error(`The 段位变化 of match ${matchId} was not updated: ${errorMessage(error)}`));
+        this.dependencies.log(new Error(`The 段位播报 voice line of match ${cast.matchId} failed: ${errorMessage(error)}`));
       });
   }
 
@@ -1094,6 +1233,11 @@ export function pollGuildNow(client: Client, guildId: string, requiredVoiceChann
 /** Check the guild's present accounts for a game on its loading screen now and wait for the 锦囊 of `matchId`; see /simulate. */
 export function pollGameStartNow(guildId: string, matchId?: string, requiredVoiceChannelId?: string): ReturnType<GameMonitor["pollGameStart"]> {
   return monitor.pollGameStart(guildId, matchId, requiredVoiceChannelId);
+}
+
+/** Mock mode only, for /simulate: makes the accounts' current mock entries the before-value of their next game. */
+export function rebaseMockRank(puuids: readonly string[]): Promise<void> {
+  return rankTracker.rebase(puuids);
 }
 
 /** At shutdown: stops every session and the LP tracker, so no queued read or late edit outlives the bot. */

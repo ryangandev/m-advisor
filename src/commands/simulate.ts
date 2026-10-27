@@ -1,8 +1,9 @@
 import { MessageFlags, PermissionFlagsBits, SlashCommandBuilder } from "discord.js";
 import { BotCommand } from "../types";
 import { listTrackedMembers } from "../store/bindingStore";
-import { getRiotMode, RiotApiError, simulateMockGameStart, simulateMockMatch } from "../services/riotData";
-import { pollGameStartNow, pollGuildNow } from "../services/gameMonitor";
+import { getRiotMode, RiotApiError, setMockRankedEntry, simulateMockGameStart, simulateMockMatch } from "../services/riotData";
+import { pollGameStartNow, pollGuildNow, rebaseMockRank } from "../services/gameMonitor";
+import { getLeagueEntries } from "../utils/riotLeagueApi";
 import { reconcileGuildMonitoring } from "../services/monitorLifecycle";
 import { getAuthorizedTestChannel, safeTestError } from "../utils/testChannel";
 import { withSimulationLock } from "../services/simulationLock";
@@ -15,11 +16,39 @@ import { NO_MENTIONS } from "../utils/embeds";
 const TEAM_SIZE = 5;
 const FAILED = "模拟比赛暂未播报成功，请稍后重试或查看本地日志。";
 
+/**
+ * The two rank simulations: the bound mock account is placed at a rank where one more win (+22 LP) or loss (-19 LP) crosses
+ * a tier line, and then plays that game. Each produces a 段位变化 row and a 段位播报.
+ */
+const RANK_SIMULATIONS = {
+  promote: { result: "win", label: "晋级", tier: "GOLD", rank: "I", leaguePoints: 90 },
+  demote: { result: "loss", label: "掉段", tier: "GOLD", rank: "IV", leaguePoints: 5 },
+} as const;
+type RankSimulation = keyof typeof RANK_SIMULATIONS;
+/** The solo/duo queue every mock match is played in. */
+const SOLO_QUEUE = "RANKED_SOLO_5x5";
+
+/** Places the account's mock solo entry at the simulation's rank, keeping its games, and makes it the next game's before-value. */
+async function placeMockRank(puuid: string, simulation: typeof RANK_SIMULATIONS[RankSimulation]): Promise<void> {
+  const { entries } = await getLeagueEntries(puuid);
+  const current = entries.find((entry) => entry.queueType === SOLO_QUEUE);
+  setMockRankedEntry(puuid, {
+    queueType: SOLO_QUEUE,
+    tier: simulation.tier,
+    rank: simulation.rank,
+    leaguePoints: simulation.leaguePoints,
+    wins: current?.wins ?? 10,
+    losses: current?.losses ?? 10,
+  });
+  await rebaseMockRank([puuid]);
+}
+
 const command: BotCommand = {
   data: new SlashCommandBuilder().setName("simulate").setDescription("用模拟比赛验证完整赛后播报流程")
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .addStringOption(option => option.setName("outcome").setDescription("模拟赛果").setRequired(true)
-      .addChoices({ name: "胜利", value: "win" }, { name: "失败", value: "loss" }, { name: "开局（赛前锦囊）", value: "start" })) as SlashCommandBuilder,
+      .addChoices({ name: "胜利", value: "win" }, { name: "失败", value: "loss" }, { name: "开局（赛前锦囊）", value: "start" },
+        { name: "晋级（模拟）", value: "promote" }, { name: "掉段（模拟）", value: "demote" })) as SlashCommandBuilder,
   async execute(interaction) {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     try {
@@ -40,7 +69,7 @@ const command: BotCommand = {
         if (!binding) throw new Error("请先让被追踪成员进入同一个测试语音频道。");
         await reconcileGuildMonitoring(interaction.client, channel.guild.id);
         assertRunning();
-        const outcome = interaction.options.getString("outcome", true) as "win" | "loss" | "start";
+        const outcome = interaction.options.getString("outcome", true) as "win" | "loss" | "start" | RankSimulation;
         if (outcome === "start") {
           // Every tracked member in the test channel joins the mock game on their first account, in bind order.
           const blue = [...new Set(inChannel.map((member) => member.accounts[0].puuid))].slice(0, TEAM_SIZE);
@@ -65,11 +94,14 @@ const command: BotCommand = {
         const baseline = await pollGuildNow(interaction.client, channel.guild.id, channel.id);
         assertRunning();
         if (baseline.errors > 0) throw new Error(FAILED);
-        const simulated = simulateMockMatch(binding.accounts[0].puuid, outcome);
+        const simulation = outcome === "promote" || outcome === "demote" ? RANK_SIMULATIONS[outcome] : undefined;
+        if (simulation) await placeMockRank(binding.accounts[0].puuid, simulation);
+        assertRunning();
+        const simulated = simulateMockMatch(binding.accounts[0].puuid, simulation ? simulation.result : outcome as "win" | "loss");
         const result = await pollGuildNow(interaction.client, channel.guild.id, channel.id);
         assertRunning();
         if (result.announced < 1 || result.errors > 0 || getLastMatchId(channel.guild.id, binding.accounts[0].puuid) !== simulated.matchId) throw new Error(FAILED);
-        await interaction.editReply({ content: `模拟数据：${outcome === "win" ? "胜利" : "失败"}比赛播报完成。此结果不是实际战绩。`, allowedMentions: NO_MENTIONS });
+        await interaction.editReply({ content: `模拟数据：${simulation ? simulation.label : outcome === "win" ? "胜利" : "失败"}比赛播报完成。此结果不是实际战绩。`, allowedMentions: NO_MENTIONS });
       });
     } catch (error) {
       logError(`Simulation test failed: ${error instanceof Error ? error.name : "unknown error"}`);

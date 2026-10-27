@@ -252,6 +252,23 @@ export class RankTracker implements RankTracking {
     }
   }
 
+  /**
+   * Mock mode only, for /simulate: forgets the accounts' earlier reads, reads their entries again now and settles once
+   * that is done, so a mock entry that was just set is the before-value of the next simulated game. Without it a second
+   * /simulate would compare the new entry with the previous game's after-read. Does nothing in real mode, where the
+   * 60 second floor and the history protect the Riot rate limit.
+   */
+  async rebase(puuids: readonly string[]): Promise<void> {
+    if (this.off() || this.mode() !== "mock") return;
+    for (const puuid of new Set(puuids)) {
+      const account = this.account("mock", puuid);
+      account.snapshots = [];
+      account.lastReadAt = undefined;
+    }
+    this.snapshot(puuids);
+    await this.queue;
+  }
+
   matchFinished(match: FinishedRankedMatch): void {
     if (this.off()) return;
     const queueType = rankedQueueFor(match.queueId);
