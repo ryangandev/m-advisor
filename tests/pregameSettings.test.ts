@@ -156,7 +156,7 @@ test("a version 4 database upgrades to version 5 with a backup, default on and i
   writeVersionFourDatabase(filePath);
 
   assert.equal(getPregameVoiceEnabled("guild-one"), true);
-  assert.equal(getDatabase().pragma("user_version", { simple: true }), 5);
+  assert.equal(getDatabase().pragma("user_version", { simple: true }), 6);
   assert.deepEqual(getDatabase().prepare("SELECT * FROM pregame_settings").all(), []);
   assert.deepEqual(listTrackedMembers("guild-one").map((member) => member.discordUserId), ["laowang"]);
   assert.equal(getAnnouncerState("guild-one").voiceStyle, "sweet");

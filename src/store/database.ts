@@ -132,6 +132,20 @@ const MIGRATIONS: readonly string[] = [
       voice_enabled INTEGER NOT NULL CHECK(voice_enabled IN (0, 1))
     ) STRICT;
   `,
+  // 5 -> 6: closed /why appeal cases, so one member appeals one match once even across restarts.
+  // Deliberately no foreign key to horse_records or tracked_members: /unbind keeps history, and only /stable-erase removes the cases.
+  // Only a new table, so every existing row is untouched.
+  `
+    CREATE TABLE appeal_cases (
+      guild_id TEXT NOT NULL CHECK(length(trim(guild_id)) > 0),
+      discord_user_id TEXT NOT NULL CHECK(length(trim(discord_user_id)) > 0),
+      match_id TEXT NOT NULL CHECK(length(trim(match_id)) > 0),
+      mock INTEGER NOT NULL CHECK(mock IN (0, 1)),
+      closed_at INTEGER NOT NULL,
+      PRIMARY KEY (guild_id, discord_user_id, match_id, mock)
+    ) STRICT;
+    CREATE INDEX appeal_cases_by_time ON appeal_cases(closed_at);
+  `,
 ];
 const SCHEMA_VERSION = MIGRATIONS.length;
 let database: Database.Database | undefined;

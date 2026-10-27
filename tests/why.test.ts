@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
 import { ButtonStyle, MessageFlags } from "discord.js";
-import whyCommand, { choiceName, resetAppealDocket, whyDependencies } from "../src/commands/why";
+import whyCommand, { choiceName, whyDependencies } from "../src/commands/why";
+import { isAppealClosed, reopenAppeal } from "../src/store/appealStore";
 import { closeDatabase } from "../src/store/database";
 import { eraseMemberHorseRecords, listHorseRecords } from "../src/store/horseRecordStore";
 import type { HorseRecord } from "../src/store/horseRecordStore";
@@ -23,7 +24,6 @@ const errors: string[] = [];
 
 beforeEach(() => {
   closeDatabase();
-  resetAppealDocket();
   directory = mkdtempSync(join(tmpdir(), "m-advisor-why-"));
   saved = { DATABASE_PATH: process.env.DATABASE_PATH, RIOT_MODE: process.env.RIOT_MODE };
   process.env.DATABASE_PATH = join(directory, "bot.sqlite3");
@@ -259,11 +259,29 @@ test("an appeal is upheld in public, closes the case and never changes the recor
   assert.equal(buttonOf(payload).disabled, true);
   assert.deepEqual(listHorseRecords(GUILD, { mock: false }), before);
 
-  // The ruling is deterministic: a fresh process hears it the same way.
-  resetAppealDocket();
+  // The case is closed in the database, not in memory: it stays closed after the connection is reopened.
+  closeDatabase();
+  const afterRestart = button("why-appeal:r:support-friend:NA1_5100000001", "support-friend");
+  await whyCommand.handleButton!(afterRestart.stub);
+  assert.deepEqual(afterRestart.calls.map((call) => call.kind), ["reply"]);
+  assert.equal(afterRestart.calls[0].payload.content, "本案已结，维持原判。");
+  assert.equal(buttonOf(await verdictFor()).disabled, true);
+
+  // The ruling is deterministic: once reopened, the case is heard the same way.
+  assert.equal(reopenAppeal({ guildId: GUILD, discordUserId: "support-friend", matchId: "NA1_5100000001", mock: false }), true);
   const replay = button("why-appeal:r:support-friend:NA1_5100000001", "support-friend");
   await whyCommand.handleButton!(replay.stub);
   assert.equal(embedOf(replay.calls[1].payload).description, text);
+});
+
+test("mock and real cases of the same match are separate", async () => {
+  seed([seededSupport(), seededSupport({ mock: true })]);
+  const mock = button("why-appeal:m:support-friend:NA1_5100000001", "support-friend");
+  await whyCommand.handleButton!(mock.stub);
+  assert.deepEqual(mock.calls.map((call) => call.kind), ["update", "followUp"]);
+  const real = button("why-appeal:r:support-friend:NA1_5100000001", "support-friend");
+  await whyCommand.handleButton!(real.stub);
+  assert.deepEqual(real.calls.map((call) => call.kind), ["update", "followUp"], "the mock case did not close the real one");
 });
 
 test("a mock appeal is labeled and reads only mock records", async () => {
@@ -340,6 +358,14 @@ test("a case is reopened when the ruling could not be sent", async () => {
   assert.deepEqual(retry.calls.map((call) => call.kind), ["update", "followUp"], "the member can appeal again");
 });
 
+test("a case is reopened when the ruling follow-up fails after the button was disabled", async () => {
+  seed([seededSupport()]);
+  const stub = button("why-appeal:r:support-friend:NA1_5100000001", "support-friend");
+  (stub.stub as unknown as { followUp: () => Promise<void> }).followUp = async () => { throw new Error("Missing Permissions"); };
+  await assert.rejects(whyCommand.handleButton!(stub.stub), /Missing Permissions/);
+  assert.equal(isAppealClosed({ guildId: GUILD, discordUserId: "support-friend", matchId: "NA1_5100000001", mock: false }), false);
+});
+
 test("an appeal after /stable-erase finds no case and closes nothing", async () => {
   seed([seededSupport()]);
   const payload = await verdictFor();
@@ -351,4 +377,5 @@ test("an appeal after /stable-erase finds no case and closes nothing", async () 
   assert.equal(late.calls[0].payload.content, "这一局的档案已经不在马厩里了，无案可审。");
   assert.equal(late.calls[0].payload.flags, MessageFlags.Ephemeral);
   assert.deepEqual(listHorseRecords(GUILD, { mock: false }), []);
+  assert.equal(isAppealClosed({ guildId: GUILD, discordUserId: "support-friend", matchId: "NA1_5100000001", mock: false }), false, "nothing was closed");
 });

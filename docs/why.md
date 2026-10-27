@@ -80,11 +80,11 @@ The button's custom ID is `why-appeal:<r|m>:<member>:<match>`, so the handler kn
 - It cites the costliest dimension with its percentile, its share of the position's score and its statistics; a 特等马 is told there is nothing higher, and a verdict with nothing below the median cites the gap instead.
 - It admits 惜败 or 险胜 under the same `CLOSE_GAP`.
 - After the ruling the button turns into a disabled 本案已结 · 维持原判.
-- The case is closed before the reply is sent, so a double click is heard once; if disabling the button or sending the ruling fails, the case is reopened and the member can appeal again.
+- The case is closed in the database before the reply is sent, so a double click is heard once; if disabling the button or sending the ruling fails, the case is reopened and the member can appeal again.
 - An appeal whose record was erased with `/stable-erase` gets a private 无案可审 and closes nothing.
 - One member appeals one match once: a repeat appeal, even from another `/why` message, gets a private 本案已结，维持原判。
-  Closed cases are kept in memory only, at most 5000, so nothing new is written to the database.
-  After a restart a repeat appeal is heard again and, being deterministic, gets the same ruling.
+  Closed cases are stored in the `appeal_cases` table (see [Local storage](storage.md#appeal-cases)), so a restart does not reopen them.
+  A case is forgotten a year after it closed, which bounds the table, and `/stable-erase` deletes the member's cases together with their records.
 - A mock verdict's appeal reads only mock records and carries the mock title and footer.
 
 ## Wording
@@ -99,5 +99,6 @@ Every reply uses `allowedMentions` with nothing allowed, so a quoted member is s
 `tests/whyRadar.test.ts` compares the SVG with `tests/snapshots/why-radar-support.svg`, checks labels, the mock badge and escaping, renders PNGs of the expected size and checks that Chinese labels draw ink on macOS.
 After reviewing an intended change to the image, run it with `UPDATE_SNAPSHOTS=1` to refresh the snapshot.
 It writes review images of a 没有马 support, a 特等马 jungler and a mock record to the ignored `test-results/why/`.
-`tests/why.test.ts` covers the command, the empty states, mock labeling, autocomplete, the appeal permission, the closed case and that the record is unchanged.
+`tests/why.test.ts` covers the command, the empty states, mock labeling, autocomplete, the appeal permission, the closed case, reopening after a failed send, mock and real cases staying separate and that the record is unchanged.
+`tests/appealStore.test.ts` covers the version 5 to 6 migration, cases surviving a restart, the one-year pruning and `/stable-erase`.
 `tests/interaction-handler.test.ts` covers button and autocomplete routing.

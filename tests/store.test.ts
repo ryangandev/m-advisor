@@ -374,8 +374,8 @@ test("a version 1 database upgrades in place when a separate process opens it", 
       { guildId: "guild-two", members: [{ discordUserId: "member-two", accounts: [accountA] }] },
     ],
     styles: ["sweet", "old"],
-    version: 5,
-    tables: ["guild_preferences", "horse_records", "member_accounts", "pregame_settings", "report_marks", "report_settings", "tracked_members"],
+    version: 6,
+    tables: ["appeal_cases", "guild_preferences", "horse_records", "member_accounts", "pregame_settings", "report_marks", "report_settings", "tracked_members"],
   });
   if (process.platform !== "win32") assert.equal(statSync(filePath).mode & 0o777, 0o600);
   assert.deepEqual(backupFiles(filePath), ["v1.sqlite3.v1.bak"]);
@@ -390,7 +390,7 @@ test("upgrading writes a private consistent backup first and a second open adds 
   process.env.DATABASE_PATH = filePath;
   writeVersionOneDatabase(filePath);
   // Rows that exist only in the uncheckpointed -wal must be in the backup.
-  assert.equal(getDatabase().pragma("user_version", { simple: true }), 5);
+  assert.equal(getDatabase().pragma("user_version", { simple: true }), 6);
   const backupPath = `${filePath}.v1.bak`;
   assert.deepEqual(backupFiles(filePath), ["v1-backup.sqlite3.v1.bak"]);
   if (process.platform !== "win32") assert.equal(statSync(backupPath).mode & 0o777, 0o600);
@@ -424,7 +424,7 @@ test("a fresh database and an in-memory database are not backed up", () => {
   closeDatabase();
   assert.deepEqual(backupFiles(filePath), []);
   process.env.DATABASE_PATH = ":memory:";
-  assert.equal(getDatabase().pragma("user_version", { simple: true }), 5);
+  assert.equal(getDatabase().pragma("user_version", { simple: true }), 6);
   assert.deepEqual(backupFiles(filePath), []);
 });
 
@@ -471,7 +471,7 @@ test("two processes opening the same version 1 file at once both succeed and mig
   for (const run of runs) {
     assert.equal(run.status, 0, run.stderr);
     const lastLine = run.stdout.trim().split("\n").at(-1)!;
-    assert.deepEqual(JSON.parse(lastLine), { version: 5, members: ["member-one", "member-two"] });
+    assert.deepEqual(JSON.parse(lastLine), { version: 6, members: ["member-one", "member-two"] });
   }
   assert.equal(getDatabase().pragma("integrity_check", { simple: true }), "ok");
   assert.deepEqual(listAllTracking().map((guild) => guild.members.length), [1, 1]);
@@ -507,9 +507,9 @@ test("reopening a current-version database changes nothing", () => {
   setMemberAccounts("stable-guild", "member", [accountA, accountB]);
   setVoiceStyle("stable-guild", "sweet");
   const schemaBefore = getDatabase().prepare("SELECT type, name, sql FROM sqlite_master ORDER BY name").all();
-  assert.equal(getDatabase().pragma("user_version", { simple: true }), 5);
+  assert.equal(getDatabase().pragma("user_version", { simple: true }), 6);
   closeDatabase();
-  assert.equal(getDatabase().pragma("user_version", { simple: true }), 5);
+  assert.equal(getDatabase().pragma("user_version", { simple: true }), 6);
   assert.deepEqual(getDatabase().prepare("SELECT type, name, sql FROM sqlite_master ORDER BY name").all(), schemaBefore);
   assert.deepEqual(listTrackedMembers("stable-guild"), [{ discordUserId: "member", accounts: [accountA, accountB] }]);
   assert.equal(getAnnouncerState("stable-guild").voiceStyle, "sweet");

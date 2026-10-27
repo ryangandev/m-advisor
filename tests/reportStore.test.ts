@@ -155,7 +155,7 @@ test("a version 3 database upgrades to the current version with a backup and kee
   writeVersionThreeDatabase(filePath);
 
   assert.equal(getReportSettings("guild-one"), undefined);
-  assert.equal(getDatabase().pragma("user_version", { simple: true }), 5);
+  assert.equal(getDatabase().pragma("user_version", { simple: true }), 6);
   assert.deepEqual(listTrackedMembers("guild-one").map((member) => member.discordUserId), ["laowang", "xiaoli"]);
   assert.equal((getDatabase().prepare("SELECT voice_style FROM guild_preferences").get() as { voice_style: string }).voice_style, "sweet");
   const history = listHorseRecords("guild-one", { mock: false });
@@ -205,7 +205,7 @@ test("a failed version 4 step rolls back and leaves the version 3 database intac
 test("a fresh database has the report tables and is not backed up", () => {
   const filePath = process.env.DATABASE_PATH!;
   const db = getDatabase();
-  assert.equal(db.pragma("user_version", { simple: true }), 5);
+  assert.equal(db.pragma("user_version", { simple: true }), 6);
   assert.deepEqual(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'report_%' ORDER BY name").all(),
     [{ name: "report_marks" }, { name: "report_settings" }]);
   closeDatabase();
