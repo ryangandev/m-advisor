@@ -34,7 +34,7 @@ function seedBinding(databasePath: string): void {
 
 // Runs the real doctor from an empty working directory so the repository's .env is never loaded.
 function doctor(mode: "mock" | "real", databasePath: string) {
-  const child = spawnSync(process.execPath, ["--import", pathToFileURL(path.join(root, "node_modules/tsx/dist/loader.mjs")).href, path.join(root, "src/cli/doctor.ts")], {
+  const child = spawnSync(process.execPath, ["--import", pathToFileURL(require.resolve("tsx")).href, path.join(root, "src/cli/doctor.ts")], {
     cwd: directory,
     encoding: "utf8",
     timeout: 30_000,
