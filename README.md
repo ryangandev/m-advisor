@@ -6,10 +6,10 @@ The default setup uses mock Riot data and the installed offline Qwen3-TTS model,
 | Command | Access | Behavior |
 | --- | --- | --- |
 | `/profile riotid` | Everyone | Show level, Solo/Duo and Flex statistics |
-| `/bind user riotid` | Administrator | Add or refresh an account for the server's tracked member |
-| `/unbind user` | Administrator | Remove that member's accounts and stop monitoring |
-| `/bindings` | Administrator | Show saved accounts and identify simulated accounts |
-| `/recent count` | Everyone, private reply | Show the bound accounts' recent matches and whether monitoring will announce them |
+| `/bind user riotid` | Administrator | Track a member, or add or refresh one of their accounts; an account another member owns is refused |
+| `/unbind user` | Administrator | Stop tracking that member and remove their accounts; other members stay monitored |
+| `/bindings` | Administrator | Show every tracked member in bind order with their accounts, identifying simulated accounts |
+| `/recent count user` | Everyone, private reply | Show each member's voice and monitoring state and their accounts' recent matches (default: the whole server) |
 | `/stable user` | Everyone, public reply | Show a friend's 马厩 profile: tier counts and rates, average score, streaks, strongest and weakest dimension and recent games (default: you) |
 | `/stable-erase user confirm` | Administrator, private reply | Erase one member's whole 马厩 history; without `confirm` it only counts the records |
 | `/why user match` | Everyone, public reply | Explain a horse verdict with a radar image: the costliest dimensions for the position, the gap to the neighbouring tiers and what the 军师 said, with an 上诉 button only the member can press (default: your latest game) |
@@ -17,10 +17,10 @@ The default setup uses mock Riot data and the installed offline Qwen3-TTS model,
 | `/report-settings` | Administrator, private reply | Choose the channel for the automatic daily and weekly 马报, switch each on or off and optionally manage the 本周特等马 and 本周没有马 roles |
 | `/announcer style` | Everyone | Choose Serena (`sweet`) or Uncle_Fu (`old`, the default) |
 | `/testvoice` | Administrator, configured test server | Play a short announcement in the caller's voice channel |
-| `/simulate outcome` | Administrator, configured test server, mock mode | Run a simulated win or loss through the match announcement pipeline |
+| `/simulate outcome` | Administrator, configured test server, mock mode | Run a simulated win or loss for the earliest-bound tracked member in the test channel through the match announcement pipeline |
 
 Bindings, voice preferences, each tracked member's 马厩 history and the 马报 settings persist in SQLite, and `/unbind` keeps the history.
-Each server tracks one Discord member with multiple LoL accounts.
+Each server can track several Discord members, with at most 10 LoL accounts across them.
 Real profiles currently use the North America region.
 New monitoring sessions establish a baseline, so starting the bot does not replay old games.
 

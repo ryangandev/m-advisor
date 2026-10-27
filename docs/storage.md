@@ -46,7 +46,7 @@ Every one of these failures rolls back the whole replacement, including a newly 
 Different guilds can track the same Riot account independently.
 `removeTrackedMember(guildId, userId)` removes that member and their accounts, returns whether anyone was removed, and leaves other members and the voice preference alone.
 `findAccountOwner(guildId, puuid)` returns the owning member, and `listAllTracking()` returns every guild that has tracked members for startup reconciliation.
-The public command layer still enforces one tracked member per server until the multi-member command changes land.
+`/bind` adds members through `setMemberAccounts` and `/unbind` removes one through `removeTrackedMember`; both then reconcile monitoring.
 Store reads return fresh values, so changing a returned object does not silently modify persisted settings.
 
 `setVoiceStyle` persists its change before updating the runtime state.

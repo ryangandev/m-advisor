@@ -150,8 +150,10 @@ A saved mock account skipped in real mode is logged as a monitoring failure that
 Startup in real mode and `npm run doctor` also warn about each saved mock account before anyone joins voice.
 In real mode `/bind` removes the member's saved mock accounts, names them in its reply and logs the change, as does `/unbind`.
 
-`/recent` replies privately with the monitoring state and the bound accounts' recent matches in every queue.
-The state shows whether monitoring is active, the tracked member's voice channel, the last check and the last error, which survives a stop caused by rejected credentials.
+`/recent [count] [user]` replies privately with the monitoring state and the bound accounts' recent matches in every queue, for the whole server or one member.
+The state shows whether monitoring is active, the last check and the last error, which survives a stop caused by rejected credentials.
+It lists each member shown with their place in the bind order, their voice channel or 不在语音, and whether the session covers them.
+Each account's field starts with its member's number, and the embed shows at most 25 accounts across all members.
 Each match shows the result, champion, K/D/A, queue, length and end time.
 It is marked as the baseline, already announced, due at the next check, or in a mode that is never announced.
 In real mode a saved mock account is flagged without a Riot request.
