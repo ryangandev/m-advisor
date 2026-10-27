@@ -4,9 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
 import { ButtonStyle, MessageFlags } from "discord.js";
-import whyCommand, { choiceName, resetAppealDocket } from "../src/commands/why";
+import whyCommand, { choiceName, resetAppealDocket, whyDependencies } from "../src/commands/why";
 import { closeDatabase } from "../src/store/database";
-import { listHorseRecords } from "../src/store/horseRecordStore";
+import { eraseMemberHorseRecords, listHorseRecords } from "../src/store/horseRecordStore";
 import type { HorseRecord } from "../src/store/horseRecordStore";
 import { setMemberAccounts } from "../src/store/bindingStore";
 import { appealCustomId, parseAppealCustomId } from "../src/utils/whyEmbed";
@@ -17,6 +17,9 @@ const GUILD = "why-guild";
 const NO_MENTIONS = { parse: [], roles: [], users: [], repliedUser: false };
 let directory: string;
 let saved: Record<string, string | undefined>;
+const originalRenderer = whyDependencies.renderRadar;
+let savedError: typeof console.error;
+const errors: string[] = [];
 
 beforeEach(() => {
   closeDatabase();
@@ -25,10 +28,15 @@ beforeEach(() => {
   saved = { DATABASE_PATH: process.env.DATABASE_PATH, RIOT_MODE: process.env.RIOT_MODE };
   process.env.DATABASE_PATH = join(directory, "bot.sqlite3");
   process.env.RIOT_MODE = "real";
+  savedError = console.error;
+  errors.length = 0;
+  console.error = (line: string) => { errors.push(String(line)); };
 });
 
 afterEach(() => {
   closeDatabase();
+  whyDependencies.renderRadar = originalRenderer;
+  console.error = savedError;
   for (const [key, value] of Object.entries(saved)) {
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;
@@ -70,14 +78,17 @@ function command(options: { userId?: string; target?: string; match?: string | n
   return { stub: stub as unknown as Parameters<typeof whyCommand.execute>[0], calls };
 }
 
-function button(customId: string, userId: string) {
+function button(customId: string, userId: string, options: { failUpdate?: boolean } = {}) {
   const calls: Array<{ kind: string; payload: Payload }> = [];
   const stub = {
     customId,
     guildId: GUILD,
     user: { id: userId },
     reply: async (payload: Payload) => { calls.push({ kind: "reply", payload }); },
-    update: async (payload: Payload) => { calls.push({ kind: "update", payload }); },
+    update: async (payload: Payload) => {
+      if (options.failUpdate) throw Object.assign(new Error("Unknown interaction"), { name: "DiscordAPIError" });
+      calls.push({ kind: "update", payload });
+    },
     followUp: async (payload: Payload) => { calls.push({ kind: "followUp", payload }); },
   };
   return { stub: stub as unknown as Parameters<NonNullable<typeof whyCommand.handleButton>>[0], calls };
@@ -116,7 +127,7 @@ test("/why shows the caller's latest real verdict with the radar, the costliest 
   assert.ok(Buffer.isBuffer(payload.files?.[0].attachment));
   assert.match(embed.description!, /^<@support-friend> · 锤石 · 辅助 · 负 · <t:\d+:R>\n🪦 \*\*没有马\*\* · \*\*1\.6\*\* 分 · 队内第 5\/5$/);
   const reasons = fieldText(payload, "拖后腿的维度")!.split("\n");
-  assert.equal(reasons[0], "**视野** 超过 9% 的同位置玩家 · 占辅助评分 22% · 每分钟视野得分 0.8 · 全场 3 个真眼");
+  assert.equal(reasons[0], "**视野** 超过 9% 的同位置玩家 · 占这局辅助评分 22% · 每分钟视野得分 0.8 · 插了 3 个真眼");
   assert.match(reasons[1], /^\*\*参团\*\* 超过 18%/);
   assert.match(reasons[2], /^\*\*功能\*\* 超过 22%/);
   assert.equal(reasons[3], "亮点：**经济** 超过 55% 的同位置玩家");
@@ -135,7 +146,7 @@ test("/why explains a chosen match of another member and names them instead of s
   seed([seededJungler({ dimensions: { ...strong, utility: 0.55 } }), seededJungler({ matchId: "NA1_LATER", playedAt: 1_900_000_000_000, tier: "没有马", teamRank: 5, scoreAbove: 4, scoreBelow: null, score: 1 })]);
   const payload = await verdictFor({ target: "jungle-friend", match: "NA1_5100000002" });
   assert.match(embedOf(payload).description!, /👑 \*\*特等马\*\* · \*\*9\.4\*\* 分/);
-  assert.equal(fieldText(payload, "判决依据"), "没有一项低于同位置中位数。\n亮点：**资源** 超过 97% 的同位置玩家");
+  assert.equal(fieldText(payload, "判决依据"), "每一项都不低于同位置中位数。\n亮点：**资源** 超过 97% 的同位置玩家");
   assert.equal(fieldText(payload, "离上下一档"), "⬆️ 队内第一，上面没有更高的档位了\n⬇️ 领先下一名（上等马）**0.2** 分，险胜");
   assert.ok(!fieldText(payload, "军师判词")!.includes("你"));
   assert.equal(fieldText(payload, "播报时"), undefined, "no commentary was stored for this record");
@@ -284,4 +295,60 @@ test("/why describes its options in Chinese with match autocomplete", () => {
   assert.deepEqual(options.map((option) => option.name), ["user", "match"]);
   assert.equal(options[1].autocomplete, true);
   assert.ok(options.every((option) => !option.required));
+});
+
+test("a failed radar still sends the verdict without its image and logs only the error class", async () => {
+  seed([seededSupport()]);
+  whyDependencies.renderRadar = async () => { throw Object.assign(new Error("private detail NA1_5100000001"), { name: "RenderError" }); };
+  const payload = await verdictFor();
+  const embed = embedOf(payload);
+  assert.equal(embed.image, undefined);
+  assert.deepEqual(payload.files, []);
+  assert.equal(embed.title, "判决书 · 策马军师");
+  assert.match(fieldText(payload, "拖后腿的维度")!, /^\*\*视野\*\*/);
+  assert.equal(buttonOf(payload).label, "上诉");
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /The \/why radar could not be rendered: RenderError$/);
+  assert.doesNotMatch(errors.join("\n"), /private detail/);
+});
+
+test("an ADC whose only red axis does not count is told only the counted items are above the median", async () => {
+  seed([makeHorseRecord({
+    guildId: GUILD, discordUserId: "support-friend", puuid: "puuid-adc", matchId: "NA1_ADC", position: "BOTTOM",
+    tier: "下等马", teamRank: 4, score: 5.2, scoreAbove: 6.5, scoreBelow: 4,
+    dimensions: { damage: 0.6, teamfight: 0.6, survival: 0.6, economy: 0.6, frontline: 0.1, vision: 0.6, objectives: 0.6, utility: 0.6, matchup: 0.6 },
+  })]);
+  const payload = await verdictFor();
+  assert.match(fieldText(payload, "判决依据")!, /^计入评分的每一项都不低于同位置中位数。/);
+  assert.match(fieldText(payload, "军师判词")!, /^计入评分的每一项都在同位置中位数以上/);
+});
+
+test("in a team larger than five the gap names a same-tier neighbour by place", async () => {
+  seed([seededSupport({ tier: "上等马", teamRank: 3, teamSize: 7, score: 6, scoreAbove: 6.2, scoreBelow: 5.9 })]);
+  const payload = await verdictFor();
+  assert.equal(fieldText(payload, "离上下一档"), "⬆️ 离上一名差 **0.2** 分，惜败\n⬇️ 领先下一名（中等马）**0.1** 分，险胜");
+});
+
+test("a case is reopened when the ruling could not be sent", async () => {
+  seed([seededSupport()]);
+  const failed = button("why-appeal:r:support-friend:NA1_5100000001", "support-friend", { failUpdate: true });
+  await assert.rejects(whyCommand.handleButton!(failed.stub), /Unknown interaction/);
+  assert.equal(failed.calls.length, 0);
+
+  const retry = button("why-appeal:r:support-friend:NA1_5100000001", "support-friend");
+  await whyCommand.handleButton!(retry.stub);
+  assert.deepEqual(retry.calls.map((call) => call.kind), ["update", "followUp"], "the member can appeal again");
+});
+
+test("an appeal after /stable-erase finds no case and closes nothing", async () => {
+  seed([seededSupport()]);
+  const payload = await verdictFor();
+  assert.equal(buttonOf(payload).disabled, false);
+  assert.equal(eraseMemberHorseRecords(GUILD, "support-friend"), 1);
+  const late = button(buttonOf(payload).custom_id, "support-friend");
+  await whyCommand.handleButton!(late.stub);
+  assert.deepEqual(late.calls.map((call) => call.kind), ["reply"]);
+  assert.equal(late.calls[0].payload.content, "这一局的档案已经不在马厩里了，无案可审。");
+  assert.equal(late.calls[0].payload.flags, MessageFlags.Ephemeral);
+  assert.deepEqual(listHorseRecords(GUILD, { mock: false }), []);
 });

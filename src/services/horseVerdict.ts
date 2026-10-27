@@ -13,15 +13,13 @@ export const MEDIAN = 0.5;
 /** A position weight at or above this marks a dimension the position is judged on most (2 or 3 per position). */
 export const KEY_WEIGHT = 0.14;
 /**
- * A gap to the neighbouring rank at or below this many points is 惜败 (just missed the tier above) or 险胜
- * (just held off the tier below). 0.3 points is 3 percentile points of same-position players, well under the
- * typical gap between neighbouring teammates.
+ * A gap to the neighbouring rank that prints as at most this many points is 惜败 (just missed the rank above) or
+ * 险胜 (just held off the rank below). 0.3 points is 3 percentile points of same-position players, well under the
+ * typical gap between neighbouring teammates. It is compared with the printed value, so "差 0.3 分" always gets the label.
  */
 export const CLOSE_GAP = 0.3;
 /** How many of the costliest dimensions the verdict names. */
 export const MAX_DRAGS = 3;
-/** Gaps are differences of stored floats, so 0.3 can arrive as 0.30000000000000004. */
-const EPSILON = 1e-9;
 
 export interface VerdictDimension {
   dimension: Dimension;
@@ -36,17 +34,27 @@ export interface VerdictDimension {
 export interface DimensionImpact {
   dimension: Dimension;
   percentile: number;
+  /** The position's weight for the dimension. */
   weight: number;
-  /** Weight times the distance from the median: how much the dimension moved the combined value. */
+  /** One of the dimensions the position is judged on most. */
+  key: boolean;
+  /**
+   * The dimension's share of this record's score: its weight divided by the weights of the dimensions the match had
+   * data for, as the combined value renormalizes them.
+   */
+  share: number;
+  /** Share times the distance from the median: how much the dimension moved the combined value. */
   impact: number;
 }
 
 export interface Neighbour {
   tier: HorseTier;
+  /** True when the neighbour has the same tier, which happens only in teams larger than five. */
+  sameTier: boolean;
   score: number;
   /** Always positive: how far the neighbour is from this record's score. */
   gap: number;
-  /** Within CLOSE_GAP, so the 军师 admits 惜败 (above) or 险胜 (below). */
+  /** The printed gap is within CLOSE_GAP, so the 军师 admits 惜败 (above) or 险胜 (below). */
   close: boolean;
 }
 
@@ -56,8 +64,13 @@ export interface Verdict {
   positionLabel: string;
   /** All nine dimensions in their fixed order, for the radar. */
   dimensions: VerdictDimension[];
-  /** The dimensions below the median that cost the most, costliest first. Empty when none is below the median. */
+  /** The counted dimensions below the median that cost the most, costliest first. Empty when none is below the median. */
   drags: DimensionImpact[];
+  /**
+   * Whether every dimension the match had data for is at or above the median, counted or not. The radar shows them
+   * all, so "每一项" may only be said when this holds; otherwise only the counted ones are meant.
+   */
+  allAboveMedian: boolean;
   /** The dimension that helped the most, when any is above the median. */
   best: DimensionImpact | null;
   /** The teammate ranked one place higher, or null for the 特等马. */
@@ -66,10 +79,17 @@ export interface Verdict {
   below: Neighbour | null;
 }
 
+/** A gap as the announcement rounds scores; a gap that rounds to nothing still says it was not nothing. */
+export function formatGap(gap: number): string {
+  const text = formatScore(gap);
+  return text === "0.0" ? "不到 0.1" : text;
+}
+
 function neighbour(record: HorseRecord, rank: number, score: number | null): Neighbour | null {
   if (score === null || rank < 1 || rank > record.teamSize) return null;
   const gap = Math.abs(score - record.score);
-  return { tier: tierForRank(rank, record.teamSize), score, gap, close: gap <= CLOSE_GAP + EPSILON };
+  const tier = tierForRank(rank, record.teamSize);
+  return { tier, sameTier: tier === record.tier, score, gap, close: Number(formatScore(gap)) <= CLOSE_GAP };
 }
 
 /** Explains one stored record: what it was judged on, what cost it and how close the neighbouring tiers were. */
@@ -81,20 +101,23 @@ export function buildVerdict(record: HorseRecord): Verdict {
     weight: weights[dimension],
     key: weights[dimension] >= KEY_WEIGHT,
   }));
-  // A dimension with no weight for the position did not count, as in the ranking itself.
-  const impacts = dimensions.flatMap((entry): DimensionImpact[] => entry.percentile === undefined || entry.weight <= 0
-    ? []
-    : [{ dimension: entry.dimension, percentile: entry.percentile, weight: entry.weight, impact: entry.weight * (entry.percentile - MEDIAN) }]);
-  const drags = impacts.filter((entry) => entry.impact < 0)
-    .sort((a, b) => a.impact - b.impact || DIMENSIONS.indexOf(a.dimension) - DIMENSIONS.indexOf(b.dimension))
-    .slice(0, MAX_DRAGS);
-  const helps = impacts.filter((entry) => entry.impact > 0)
-    .sort((a, b) => b.impact - a.impact || DIMENSIONS.indexOf(a.dimension) - DIMENSIONS.indexOf(b.dimension));
+  // A dimension with no weight for the position, or no data, did not count, as in the ranking itself.
+  const counted = dimensions.filter((entry): entry is VerdictDimension & { percentile: number } =>
+    entry.percentile !== undefined && entry.weight > 0);
+  const total = counted.reduce((sum, entry) => sum + entry.weight, 0);
+  const impacts = counted.map((entry): DimensionImpact => {
+    const share = entry.weight / total;
+    return { dimension: entry.dimension, percentile: entry.percentile, weight: entry.weight, key: entry.key, share, impact: share * (entry.percentile - MEDIAN) };
+  });
+  const order = (a: DimensionImpact, b: DimensionImpact) => DIMENSIONS.indexOf(a.dimension) - DIMENSIONS.indexOf(b.dimension);
+  const drags = impacts.filter((entry) => entry.impact < 0).sort((a, b) => a.impact - b.impact || order(a, b)).slice(0, MAX_DRAGS);
+  const helps = impacts.filter((entry) => entry.impact > 0).sort((a, b) => b.impact - a.impact || order(a, b));
   return {
     record,
     positionLabel: record.position ? POSITION_LABELS[record.position] : "未知位置",
     dimensions,
     drags,
+    allAboveMedian: dimensions.every((entry) => entry.percentile === undefined || entry.percentile >= MEDIAN),
     best: helps[0] ?? null,
     above: neighbour(record, record.teamRank - 1, record.scoreAbove),
     below: neighbour(record, record.teamRank + 1, record.scoreBelow),
@@ -110,13 +133,21 @@ export function pick<T>(options: readonly T[], seed: string): T {
   return options[(state >>> 0) % options.length];
 }
 
-/** A gap as the announcement rounds scores; a gap that rounds to nothing still says it was not nothing. */
-export function formatGap(gap: number): string {
-  const text = formatScore(gap);
-  return text === "0.0" ? "不到 0.1" : text;
+/** How a neighbour is named: by tier, or by place when it shares the member's tier. */
+export function neighbourName(neighbour: Neighbour, direction: "above" | "below"): string {
+  return neighbour.sameTier ? (direction === "above" ? "上一名" : "下一名") : neighbour.tier;
 }
 
-/** One or two of the record's own statistics behind a dimension, worded for a reader. */
+/** "每一项" when it is true of the whole radar, otherwise only of the dimensions that counted. */
+export function everyItem(verdict: Verdict): string {
+  return verdict.allAboveMedian ? "每一项" : "计入评分的每一项";
+}
+
+/**
+ * Up to two of the record's own statistics behind a weak dimension, worded for a reader. Evidence is only ever quoted
+ * against the member, so a signed statistic that favours them, such as a gold lead, is left out rather than
+ * printed as praise beside a low percentile.
+ */
 export function dimensionEvidence(dimension: Dimension, record: HorseRecord): string[] {
   const f: FeatureValues = record.features;
   const minutes = record.durationSeconds / 60;
@@ -144,26 +175,26 @@ export function dimensionEvidence(dimension: Dimension, record: HorseRecord): st
       break;
     case "vision":
       lines.push(f.visionPerMinute === undefined ? undefined : `每分钟视野得分 ${f.visionPerMinute.toFixed(1)}`);
-      lines.push(f.controlWardsPerMinute === undefined ? undefined : `全场 ${Math.round(f.controlWardsPerMinute * minutes)} 个真眼`);
+      lines.push(f.controlWardsPerMinute === undefined ? undefined : `插了 ${Math.round(f.controlWardsPerMinute * minutes)} 个真眼`);
       break;
     case "objectives":
+      // Building damage is the heaviest objectives feature, then the share of the team's dragons, heralds and barons.
+      lines.push(f.buildingDamagePerMinute === undefined ? undefined : `每分钟 ${Math.round(f.buildingDamagePerMinute)} 建筑伤害`);
+      lines.push(f.epicObjectiveShare === undefined ? undefined : `龙、先锋和大龙参与 ${percent(f.epicObjectiveShare)}`);
       lines.push(f.turretShare === undefined ? undefined : `推塔参与 ${percent(f.turretShare)}`);
-      lines.push(f.epicObjectiveShare === undefined ? undefined : `龙和先锋参与 ${percent(f.epicObjectiveShare)}`);
       break;
     case "utility":
       lines.push(f.healShieldPerMinute === undefined ? undefined : `每分钟治疗护盾 ${Math.round(f.healShieldPerMinute)}`);
       lines.push(f.ccPerMinute === undefined ? undefined : `每分钟控制 ${f.ccPerMinute.toFixed(1)} 秒`);
       break;
     case "matchup": {
-      if (f.goldDiffPerMinute !== undefined) {
-        const total = Math.round(f.goldDiffPerMinute * minutes);
-        lines.push(total >= 0 ? `比对位多 ${total} 经济` : `比对位少 ${-total} 经济`);
-      }
-      lines.push(f.maxCsAdvantage === undefined ? undefined : `最大补刀领先 ${Math.round(f.maxCsAdvantage)}`);
+      const deficit = f.goldDiffPerMinute === undefined ? undefined : Math.round(-f.goldDiffPerMinute * minutes);
+      lines.push(deficit !== undefined && deficit > 0 ? `比对位少 ${deficit} 经济` : undefined);
+      lines.push(f.maxCsAdvantage !== undefined && f.maxCsAdvantage <= 0 ? "补刀从没领先过对位" : undefined);
       break;
     }
   }
-  return lines.filter((line): line is string => line !== undefined);
+  return lines.filter((line): line is string => line !== undefined).slice(0, 2);
 }
 
 /** What to do about a weak dimension, about play only. */
@@ -194,14 +225,17 @@ export function verdictSummary(verdict: Verdict, self: boolean): string {
   }
   if (above.close) {
     const advice = worst ? `${ADVICE[worst.dimension]}就上去了` : "下把再争一口气";
-    return `离${above.tier}只差 ${formatGap(above.gap)} 分，惜败，${advice}。`;
+    return `离${neighbourName(above, "above")}只差 ${formatGap(above.gap)} 分，惜败，${advice}。`;
   }
   if (!worst) {
-    return `每一项都在同位置中位数以上，只是队友更猛，${record.tier}输在了比较上。`;
+    return `${everyItem(verdict)}都在同位置中位数以上，只是队友更猛，${record.tier}输在了比较上。`;
   }
   const line = `${DIMENSION_LABELS[worst.dimension]}只超过 ${percent(worst.percentile)} 的同位置玩家，`;
   if (record.tier === "没有马") {
-    return line + pick([`这是${verdict.positionLabel}最看重的地方之一，判得不冤。`, `军师判${who}没有马，有理有据。`, `下把${ADVICE[worst.dimension]}，马厩还给${who}留着位置。`], seed);
+    const endings = [`军师判${who}没有马，有理有据。`, `下把${ADVICE[worst.dimension]}，马厩还给${who}留着位置。`];
+    // Only a key dimension of a known position is what that position is judged on most.
+    if (worst.key && record.position) endings.unshift(`这是${verdict.positionLabel}最看重的地方之一，判得不冤。`);
+    return line + pick(endings, seed);
   }
   return `${line}${ADVICE[worst.dimension]}，下把就不是${record.tier}了。`;
 }
@@ -227,15 +261,17 @@ export function appealRuling(verdict: Verdict): string {
   } else if (worst) {
     const evidence = dimensionEvidence(worst.dimension, record);
     lines.push(`呈堂证供：${DIMENSION_LABELS[worst.dimension]}只超过 ${percent(worst.percentile)} 的同位置玩家，`
-      + `而这一项占${verdict.positionLabel}评分的 ${percent(worst.weight)}${evidence.length > 0 ? `，${evidence.join("，")}` : ""}。`);
+      + `而这一项在这局${verdict.positionLabel}评分里占 ${percent(worst.share)}${evidence.length > 0 ? `，${evidence.join("，")}` : ""}。`);
   } else {
-    lines.push(`呈堂证供：每一项都在同位置中位数以上，但队内第 ${record.teamRank - 1} 名比你高 ${formatGap(above.gap)} 分，比较之下，${tier}没有判错。`);
+    lines.push(`呈堂证供：${everyItem(verdict)}都在同位置中位数以上，但队内第 ${record.teamRank - 1} 名比你高 ${formatGap(above.gap)} 分，比较之下，${tier}没有判错。`);
   }
 
   if (below?.close) {
-    lines.push(`顺便提醒，你只比${below.tier}多 ${formatGap(below.gap)} 分，这是险胜，再闹下去怕要改判成${below.tier}。`);
+    lines.push(below.sameTier
+      ? `顺便提醒，你只比下一名多 ${formatGap(below.gap)} 分，这是险胜。`
+      : `顺便提醒，你只比${below.tier}多 ${formatGap(below.gap)} 分，这是险胜，再闹下去怕要改判成${below.tier}。`);
   }
-  const admission = above?.close ? `军师承认这一局是惜败，离${above.tier}只差 ${formatGap(above.gap)} 分。可差一点也是差，` : "";
+  const admission = above?.close ? `军师承认这一局是惜败，离${neighbourName(above, "above")}只差 ${formatGap(above.gap)} 分。可差一点也是差，` : "";
   lines.push(`${admission}驳回上诉，维持原判：${tier}。${pick(["退堂！", "此案到此为止，下把峡谷见真章。", "军师的扇子就是法槌。"], seed)}`);
   return lines.join("\n");
 }
