@@ -124,7 +124,7 @@ No Riot name, champion or score is stored in it.
 LP history cannot be backfilled from Riot later, which is why the rows are stored now even though nothing reads them yet; a weekly LP line in the 马报 is planned once a few weeks of rows exist.
 Mock and real rows are separate keys, so the same match number can have both.
 It has no foreign key, like `horse_records`, so `/unbind` keeps the rows.
-The table is STRICT and has an index on (`guild_id`, `discord_user_id`, `mock`, `played_at`).
+The table is STRICT and has two indexes: (`guild_id`, `discord_user_id`, `mock`, `played_at`) for one member's history and (`guild_id`, `mock`, `played_at`) for a server-wide period, such as the planned weekly 马报 line.
 
 | Column | Meaning |
 | --- | --- |
@@ -142,7 +142,7 @@ Table checks pin these rules: a change or promotion needs a delta and a before-v
 `src/store/rankStore.ts` owns the table: `recordRankResults(results)` validates the batch and saves it in one transaction, and `listRankResults(guildId, { mock, discordUserId?, order?, limit? })` requires the `mock` flag so mock and real rows are never returned together.
 `recordRankResults` skips only a key that already exists (`ON CONFLICT DO NOTHING`), so a row that settles twice is stored once and the first row is never changed, while a row that breaks the table's checks throws instead of vanishing.
 `eraseMemberHorseRecords` deletes the member's rank results in the same transaction as their records and appeal cases, so `/stable-erase` leaves nothing behind.
-The monitor writes the rows, as described under [Rows](announcements.md#rows).
+The monitor writes the rows, as described under [Stored results](announcements.md#stored-results).
 No Riot name, champion or account name is stored in it, only the member and the account's PUUID.
 
 ## 马报 (report settings)
