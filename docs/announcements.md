@@ -274,6 +274,10 @@ It reads an account's rank at three points:
 - When the game start watcher first decides about a ranked game, announced or skipped, for every bound player in it on both teams, because LP does not move during a game. This read absorbs a dodge, decay or a remake penalty since the last read. A game whose finished match the session already knows is over and reads nothing.
 - When Phase B detects the finished match, for every bound player of it on both teams. A read that caught up is the before-value of that account's next game, although only the reported team gets a row.
 
+A match's before-value is the newest of the account's recent reads that was sent at or before the game's end, or the newest read when the end time is unknown.
+So when a player requeues and the next game's start is read before the poll detects the last game, that read, which already holds the last game's result, is not compared with it.
+A read sent after the game ended is never its before-value; with nothing older the row is left out.
+
 A remake, an aborted game and every other queue read nothing.
 So a leaver penalty from a remake without a later game start read leaks into the next game's change, a documented limitation.
 
@@ -282,8 +286,10 @@ So a leaver penalty from a remake without a later game start read leaks into the
 The report waits for the first after-reads only inside the timeline's wait: both start together and share the same 8 second limit, so LP never adds to the worst case.
 A row that league-v4 has not updated by then is posted as pending, and the tracker reads it again in the background.
 Once every pending row of the report has settled, the report message is edited once, with the same content, the same embeds apart from `段位变化` and the same `allowedMentions`.
-The posted `Message` is kept in the match's progress for that.
-The edit runs apart from the poll; a failed edit is logged and changes nothing else.
+The posted `Message` is kept in the match's progress, and the edit goes to that message.
+The edit runs apart from the poll and changes nothing else when it fails.
+A report someone deleted (Discord's Unknown Message, code 10008) is one info line, and any other failed edit is logged as an error.
+At shutdown `stopAllPolling` stops the tracker as well: queued reads do nothing, retries are cleared, pending rows settle with no row, and no edit goes out on the closing client.
 A bot restart drops pending reads, so such a row keeps saying it is not updated.
 
 No LP failure delays the report beyond the timeline wait, fails it, counts as an error of the poll or counts toward the voice attempt cap.
@@ -299,14 +305,14 @@ Members appear as mentions inside the embed, which notifies nobody, so `allowedM
 | --- | --- |
 | One game, same division | `<@id> 单双排 黄金 II · 86 LP · 本局 +22` |
 | Promotion | `<@id> 单双排 铂金 IV · 7 LP · 本局 +24 · 晋级！` |
-| Demotion | `<@id> 单双排 白银 I · 本局掉段` |
+| Demotion | `<@id> 单双排 白银 I · 75 LP · 本局掉段` |
 | Several games since the before-value | `<@id> 单双排 黄金 II · 64 LP · 中间隔了几局，本局变化算不出来` |
 | Placements finished | `<@id> 单双排 · 定级完成：黄金 IV` |
 | League-v4 not updated yet | `<@id> 单双排 · 段位还没更新，稍后补上` |
 | Still not updated after the last read | `<@id> 单双排 · 段位一直没更新，本局变化算不出来` |
 | The read failed | `<@id> 单双排 · 段位暂时查不到` |
 
-A demotion shows the new rank without an LP number, because the ladder distance is not the LP Riot actually takes on a demotion until a real one has been measured.
+A demotion shows the new rank and its LP, which are Riot's, but no change, because the ladder distance is not the LP Riot actually takes on a demotion until a real one has been measured.
 Every division and tier change counts as a promotion or demotion, in both queues; a move between MASTER, GRANDMASTER and CHALLENGER happens through cutoffs and shows as a plain change.
 No row is shown for an account that is unranked before and after, whose entry disappeared, whose tier is unknown, that has no before-value at all, or when LP is off after a 401 or 403.
 A mock before-value is never used in real mode, or the reverse.

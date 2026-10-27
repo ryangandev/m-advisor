@@ -1,4 +1,5 @@
 import { Client, VoiceChannel } from "discord.js";
+import { RESTJSONErrorCodes } from "discord.js";
 import type { Message, MessageCreateOptions } from "discord.js";
 import type { MatchDetail, RiotAccount, TrackedMember } from "../types";
 import { listTrackedMembers } from "../store/bindingStore";
@@ -233,6 +234,8 @@ export class GameMonitor {
   private readonly lastErrors = new Map<string, { message: string; at: number }>();
   /** Each guild's game start memory, kept across sessions so leaving and rejoining voice never repeats a 锦囊. */
   private readonly gameStartMemory = new Map<string, GameStartMemory>();
+  /** stopAll ran: the bot is shutting down. */
+  private closed = false;
 
   constructor(private readonly dependencies: MonitorDependencies) {}
 
@@ -316,7 +319,9 @@ export class GameMonitor {
     if (session) this.dependencies.info(`Monitoring stopped: ${reason}.`);
   }
 
+  /** At shutdown: every session stops, and no late 段位变化 edit goes out on the closing client. */
   stopAll(): void {
+    this.closed = true;
     for (const guildId of this.sessions.keys()) this.stop(guildId, "the bot is shutting down");
   }
 
@@ -849,7 +854,7 @@ export class GameMonitor {
     }
     progress.textPosted = true;
     progress.reportMessage = posted;
-    if (rows.pending) this.editRankLater(posted, matchId, party, message);
+    if (rows.pending) this.editRankLater(progress, matchId, party, message);
     this.recordHorses(guildId, progress, announcement, perspectivePuuid);
   }
 
@@ -939,10 +944,11 @@ export class GameMonitor {
 
   /**
    * Edits the posted report once, when the pending rows have settled, with the same mentions and allowedMentions.
-   * It runs apart from the poll, and a failure is only logged.
+   * It runs apart from the poll, and never after the monitor shut down. A deleted report is an info line; any other
+   * failure is logged.
    */
   private editRankLater(
-    posted: Message,
+    progress: MatchProgress,
     matchId: string,
     party: readonly RankMember[],
     message: (rankRows: readonly string[]) => MessageCreateOptions,
@@ -951,11 +957,17 @@ export class GameMonitor {
     void Promise.resolve()
       .then(() => rank.settled(matchId, party.map(({ puuid }) => puuid)))
       .then(async () => {
+        const posted = progress.reportMessage;
+        if (this.closed || !posted) return;
         const { content, embeds, allowedMentions } = message(this.rankRows(matchId, party).lines);
         await posted.edit({ ...(content === undefined ? {} : { content }), embeds, allowedMentions });
         this.dependencies.info(`Updated the 段位变化 of match ${matchId}.`);
       })
       .catch((error: unknown) => {
+        if ((error as { code?: unknown } | null)?.code === RESTJSONErrorCodes.UnknownMessage) {
+          this.dependencies.info(`The report of match ${matchId} was deleted, so its 段位变化 was not updated.`);
+          return;
+        }
         this.dependencies.log(new Error(`The 段位变化 of match ${matchId} was not updated: ${errorMessage(error)}`));
       });
   }
@@ -1029,8 +1041,8 @@ export function logGameStartFailure(error: unknown): void {
   logError(`Game start check failed: ${errorMessage(error)}`);
 }
 
-/** The process-wide LP tracker: one serialized reader for every guild, through the league requester. */
-const rankTracker = new RankTracker({
+/** The process-wide LP tracker: one serialized reader for every guild, through the league requester. Exported for tests. */
+export const rankTracker = new RankTracker({
   readEntries: async (puuid) => {
     const { entries, dropped } = await getLeagueEntries(puuid);
     if (dropped > 0) logInfo(`League-v4 sent ${dropped} malformed ranked entr${dropped === 1 ? "y" : "ies"}; ${dropped === 1 ? "it was" : "they were"} left out.`);
@@ -1084,6 +1096,8 @@ export function pollGameStartNow(guildId: string, matchId?: string, requiredVoic
   return monitor.pollGameStart(guildId, matchId, requiredVoiceChannelId);
 }
 
+/** At shutdown: stops every session and the LP tracker, so no queued read or late edit outlives the bot. */
 export function stopAllPolling(): void {
   monitor.stopAll();
+  rankTracker.stop();
 }

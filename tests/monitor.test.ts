@@ -1782,3 +1782,34 @@ test("a remake, an aborted game and a queue without LP read nothing and show no 
   assert.equal(rank.reads.length, 1, "only the baseline");
   assert.ok(bot.messages.every((message) => rankFieldOf(message) === undefined));
 });
+
+test("no late 段位变化 edit goes out after the monitor shut down", async () => {
+  const { bot, rank } = await rankedTrio("rank-shutdown-guild", { retryFloorMs: 30 });
+  assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
+  assert.match(rankFieldOf(bot.messages[0])!, /稍后补上/);
+  bot.monitor.stopAll();
+  rank.league.set("alice", [ranked("GOLD", "II", 86, 11, 10)]);
+  rank.league.set("bob", [ranked("SILVER", "I", 12, 10, 11)]);
+  await until(() => rank.tracker.row("ranked-trio", "alice")?.state.kind === "change", "the rows settling");
+  await delay(100);
+  assert.equal(bot.edits.length, 0);
+});
+
+test("a deleted report is an info line, not a monitoring failure; another edit failure is still logged", async () => {
+  for (const [code, deleted] of [[10008, true], [50013, false]] as const) {
+    const { bot, rank } = await rankedTrio(`rank-deleted-${code}-guild`, { retryFloorMs: 30 });
+    const original = bot.channel("x").send;
+    bot.channel("x").send = async (message) => {
+      await original(message);
+      return { edit: async () => { throw Object.assign(new Error(code === 10008 ? "Unknown Message" : "Missing Permissions"), { code }); } };
+    };
+    assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
+    rank.league.set("alice", [ranked("GOLD", "II", 86, 11, 10)]);
+    rank.league.set("bob", [ranked("SILVER", "I", 12, 10, 11)]);
+    const infoLine = "The report of match ranked-trio was deleted, so its 段位变化 was not updated.";
+    const logged = () => bot.errors.some((error) => /段位变化 of match ranked-trio was not updated/.test((error as Error).message));
+    await until(() => bot.infos.includes(infoLine) || logged(), "the edit failing");
+    assert.equal(bot.infos.includes(infoLine), deleted, `code ${code}`);
+    assert.equal(logged(), !deleted, `code ${code}`);
+  }
+});

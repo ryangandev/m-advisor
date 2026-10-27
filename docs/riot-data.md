@@ -183,10 +183,13 @@ An account without an entry in that queue stays unranked.
 It depends on an injected `readEntries(puuid)`, which is `getLeagueEntries` in production, and never on a requester directly.
 
 - Snapshots live in memory, keyed by data mode and PUUID, so a mock read is never a real before-value, and in real mode a saved `MOCK-` account is never read.
+- Each account keeps its last 4 successful reads with the time each was sent, so a match's before-value can be the newest read from before it ended.
 - Reads run one at a time across every guild. Each is also bounded by the tracker's own 10 second guard, so a stuck dependency cannot hold the queue.
-- The first after-read of a match goes out at detection. While league-v4 has not caught up (`wins + losses` unchanged), the account is read again no sooner than 60 seconds after its previous read, at most 4 reads per account per match.
-- A snapshot read is skipped while the account's last successful read is younger than 60 seconds, and only one snapshot read per account waits in the queue.
-- For 10 accounts that caps LP at about 20 reads per 2 minutes, leaving room under the na1 app limit for `/profile` and `/bind`.
+- Every read of an account comes at least 60 seconds after its previous read of any kind, failed reads included, checked when it is queued and again when its turn comes. The only exception is a match's first after-read, which goes out at detection.
+- While league-v4 has not caught up (`wins + losses` unchanged), the account is read again on that floor, at most 4 reads per account per match.
+- Only one snapshot read per account waits in the queue.
+- The worst case is therefore 3 reads per account in any 2 minutes (two reads a floor apart plus one first after-read), 30 for 10 accounts, and in practice about 2 per account. That leaves room under the na1 app limit of 100 per 2 minutes next to spectator's 60 for `/profile` and `/bind`.
+- At shutdown `stop()` turns every queued read into a no-op, clears the retry timers and settles every pending row with no row; a read already sent is ignored when it answers.
 
 Failures never reach the report as an error:
 

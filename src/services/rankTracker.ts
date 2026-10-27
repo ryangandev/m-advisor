@@ -78,14 +78,21 @@ type Mode = "mock" | "real";
 
 interface Snapshot {
   entries: readonly RankedEntry[];
+  /** When the read was sent, compared with a match's end time to pick its before-value. */
   at: number;
 }
 
+/** Successful reads kept per account. */
+const SNAPSHOT_HISTORY = 4;
+
 /** One account in one data mode. Snapshots are keyed by mode, so a mock read is never a real before-value. */
 interface AccountReads {
-  /** The latest successful read: the before-value of the account's next game. */
-  snapshot?: Snapshot;
-  /** When the latest read of any kind started, for the retry floor. */
+  /**
+   * The latest successful reads, oldest first, at most SNAPSHOT_HISTORY. More than one is kept because the next game's
+   * start can be read before the poll detects the previous game: its before-value is the newest read from before it ended.
+   */
+  snapshots: Snapshot[];
+  /** When the latest read of any kind started: no read but a match's first after-read comes sooner than the floor after it. */
   lastReadAt?: number;
   /** A snapshot read is already queued, so another one is not. */
   snapshotQueued?: boolean;
@@ -139,12 +146,32 @@ export class RankTracker implements RankTracking {
   private readonly loggedErrors = new Set<string>();
   private queue: Promise<void> = Promise.resolve();
   private disabled = false;
+  private stopped = false;
 
   constructor(private readonly dependencies: RankTrackerDependencies) {}
 
   /** Whether Riot rejected the key for league-v4, which turns LP off until the bot restarts. */
   get isDisabled(): boolean {
     return this.disabled;
+  }
+
+  /** Whether the bot is shutting down: nothing is read any more. */
+  get isStopped(): boolean {
+    return this.stopped;
+  }
+
+  /**
+   * At shutdown: queued reads do nothing, retry timers are cleared and every pending row settles with no row.
+   * A read already sent is ignored when it answers.
+   */
+  stop(): void {
+    this.stopped = true;
+    for (const read of this.matches.values()) this.finish(read, null);
+  }
+
+  /** No read happens after a stop or once Riot rejected the key. */
+  private off(): boolean {
+    return this.disabled || this.stopped;
   }
 
   private now(): number {
@@ -159,10 +186,31 @@ export class RankTracker implements RankTracking {
     const key = `${mode}:${puuid}`;
     let account = this.accounts.get(key);
     if (!account) {
-      account = {};
+      account = { snapshots: [] };
       this.accounts.set(key, account);
     }
     return account;
+  }
+
+  private remember(account: AccountReads, snapshot: Snapshot): void {
+    account.snapshots.push(snapshot);
+    if (account.snapshots.length > SNAPSHOT_HISTORY) account.snapshots.shift();
+  }
+
+  /**
+   * The before-value of a match: the newest read sent at or before its end, so a read of the next game's start that
+   * already holds this game's result is never compared with it. With no known end time, the newest read.
+   */
+  private beforeOf(account: AccountReads, gameEndTimestamp: number | null): Snapshot | null {
+    const { snapshots } = account;
+    if (gameEndTimestamp === null) return snapshots.at(-1) ?? null;
+    for (let index = snapshots.length - 1; index >= 0; index--) if (snapshots[index].at <= gameEndTimestamp) return snapshots[index];
+    return null;
+  }
+
+  /** Too soon after the account's previous read: every read but a match's first after-read waits for the floor. */
+  private tooSoon(account: AccountReads): boolean {
+    return account.lastReadAt !== undefined && this.now() - account.lastReadAt < this.floor();
   }
 
   /** In real mode a saved mock account never reaches Riot. */
@@ -171,22 +219,26 @@ export class RankTracker implements RankTracking {
   }
 
   snapshot(puuids: readonly string[]): void {
-    if (this.disabled) return;
+    if (this.off()) return;
     const mode = this.mode();
     for (const puuid of new Set(puuids)) {
       if (this.skipped(mode, puuid)) continue;
       const account = this.account(mode, puuid);
-      // LP cannot move between two reads less than a minute apart without a finished game, whose after-read covers it.
-      if (account.snapshotQueued || (account.snapshot && this.now() - account.snapshot.at < this.floor())) continue;
+      // A hard cap of one snapshot read per floor per account, failed reads included: LP cannot move between two reads
+      // less than a minute apart without a finished game, whose after-read covers it.
+      if (account.snapshotQueued || this.tooSoon(account)) continue;
       account.snapshotQueued = true;
       this.enqueue(async () => {
         account.snapshotQueued = false;
-        if (this.disabled) return;
-        account.lastReadAt = this.now();
+        // Checked again when its turn comes: an after-read may have run while it waited.
+        if (this.off() || this.tooSoon(account)) return;
+        const startedAt = this.now();
+        account.lastReadAt = startedAt;
         const outcome = await this.read(puuid);
+        if (this.stopped) return;
         if ("entries" in outcome) {
           this.recovered();
-          account.snapshot = { entries: outcome.entries, at: this.now() };
+          this.remember(account, { entries: outcome.entries, at: startedAt });
           return;
         }
         if (isAuthError(outcome.error)) {
@@ -201,7 +253,7 @@ export class RankTracker implements RankTracking {
   }
 
   matchFinished(match: FinishedRankedMatch): void {
-    if (this.disabled) return;
+    if (this.off()) return;
     const queueType = rankedQueueFor(match.queueId);
     if (!queueType) return;
     const mode = this.mode();
@@ -275,12 +327,17 @@ export class RankTracker implements RankTracking {
   /** One after-read of a match: classify it, or schedule the next read while league-v4 lags. */
   private async afterRead(read: MatchRead): Promise<void> {
     if (read.outcome !== undefined) return;
-    if (this.disabled) {
+    if (this.off()) {
       this.finish(read, null);
       return;
     }
     const account = this.account(read.mode, read.puuid);
-    if (read.before === undefined) read.before = account.snapshot ?? null;
+    // Only the first after-read may come sooner than the floor; a retry that another read overtook waits again.
+    if (read.reads > 0 && this.tooSoon(account)) {
+      this.schedule(read, account);
+      return;
+    }
+    if (read.before === undefined) read.before = this.beforeOf(account, read.gameEndTimestamp);
     read.reads++;
     const startedAt = this.now();
     account.lastReadAt = startedAt;
@@ -302,10 +359,10 @@ export class RankTracker implements RankTracking {
       return;
     }
     this.recovered();
-    const after: Snapshot = { entries: outcome.entries, at: this.now() };
+    const after: Snapshot = { entries: outcome.entries, at: startedAt };
     if (!read.before) {
       // Nothing to compare with, so no row; this read is the next game's before-value.
-      account.snapshot = after;
+      this.remember(account, after);
       this.dependencies.info(`LP of match ${read.matchId} for ${read.label} has no before-read, so the report shows no row.`);
       this.finish(read, null);
       return;
@@ -316,7 +373,7 @@ export class RankTracker implements RankTracking {
       return;
     }
     // A read that caught up is the next game's before-value.
-    account.snapshot = after;
+    this.remember(account, after);
     if (change.kind === "none") {
       if (change.reason !== "no_entry") {
         this.dependencies.info(`LP of match ${read.matchId} for ${read.label} shows no row: none/${change.reason}.`);
@@ -341,7 +398,12 @@ export class RankTracker implements RankTracking {
       this.finish(read, { kind: "stale" });
       return;
     }
-    const wait = Math.max(0, (account.lastReadAt ?? startedAt) + this.floor() - this.now());
+    this.schedule(read, account);
+  }
+
+  /** The next after-read of a match, no sooner than the floor after the account's last read. */
+  private schedule(read: MatchRead, account: AccountReads): void {
+    const wait = Math.max(0, (account.lastReadAt ?? this.now()) + this.floor() - this.now());
     read.timer = setTimeout(() => {
       read.timer = undefined;
       this.enqueue(() => this.afterRead(read));

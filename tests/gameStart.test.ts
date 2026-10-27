@@ -1267,7 +1267,10 @@ test("a ranked game's start reads every bound player's rank, so a dodge before i
 
   league.set("acct-a", [solo("GOLD", "II", 81, 11, 10)]);
   league.set("acct-f", [solo("SILVER", "I", 12, 10, 11)]);
+  bot.advance(25 * 60_000);
   await finishGame(bot, "NA1_7001", ["acct-a"], (detail) => {
+    // On the tracker's clock, which is the watcher's fake one.
+    detail.info.gameEndTimestamp = bot.now();
     detail.info.participants[5].puuid = "acct-f";
     detail.metadata.participants = detail.info.participants.map((player) => player.puuid);
   });

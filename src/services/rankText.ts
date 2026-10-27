@@ -55,8 +55,8 @@ function signed(delta: number): string {
 
 /**
  * One row of the 段位变化 field, or null when the row would show nothing. The member is a mention, which an embed
- * never pings. A demotion shows the new rank without an LP number: the ladder distance is not the LP Riot actually
- * took until a real demotion has been measured (orchestrator ruling of 2026-10-27).
+ * never pings. A demotion shows the new rank and its LP but no change: the LP after the game is Riot's, but the ladder
+ * distance is not the LP Riot actually took until a real demotion has been measured (orchestrator ruling of 2026-10-27).
  */
 export function rankRowText(memberId: string, row: RankRow): string | null {
   const queue = queueLabel(row.queueType);
@@ -80,7 +80,7 @@ export function rankRowText(memberId: string, row: RankRow): string | null {
     }
     case "demoted": {
       const name = rankName(state.after);
-      return name ? `${head} ${name} · 本局掉段` : null;
+      return name ? `${head} ${name} · ${state.after.leaguePoints} LP · 本局掉段` : null;
     }
     case "change":
     case "promoted": {
