@@ -15,7 +15,7 @@ import {
   setReportRoleHolders,
   setReportRoles,
 } from "../src/store/reportStore";
-import { latestDuePeriod } from "../src/services/reports";
+import { periodOf } from "../src/services/reports";
 import { HIERARCHY_PROBLEM, MISSING_MANAGE_ROLES, NONE_ROLE_NAME, TOP_ROLE_NAME } from "../src/services/reportRoles";
 import { pacificDay, pacificWeek } from "../src/utils/pacificTime";
 import { FakeRoleGuild, discordError } from "./helpers/fakeRoleGuild";
@@ -26,6 +26,7 @@ const NO_MENTIONS = { parse: [], roles: [], users: [], repliedUser: false };
 let directory: string;
 let saved: Record<string, string | undefined>;
 let savedLog: typeof console.log;
+let savedError: typeof console.error;
 
 beforeEach(() => {
   closeDatabase();
@@ -35,11 +36,14 @@ beforeEach(() => {
   process.env.RIOT_MODE = "real";
   savedLog = console.log;
   console.log = () => undefined;
+  savedError = console.error;
+  console.error = () => undefined;
 });
 
 afterEach(() => {
   closeDatabase();
   console.log = savedLog;
+  console.error = savedError;
   for (const [key, value] of Object.entries(saved)) {
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;
@@ -136,6 +140,7 @@ test("the settings command is Administrator-only both in its definition and when
   assert.equal(getReportSettings(GUILD), undefined);
   const dm = await run("show", {}, { guild: false });
   assert.equal(dm.replies.length, 1);
+  assert.deepEqual(dm.replies[0].allowedMentions, NO_MENTIONS, "even the error reply sets allowedMentions");
 });
 
 test("setting the channel checks the bot can post there and saves nothing when it cannot", async () => {
@@ -157,8 +162,8 @@ test("a first channel starts reports from the next period instead of replaying t
   assert.match(replies[0].content!, /已设置马报频道 <#channel-1>/);
   assert.equal(getReportSettings(GUILD)?.channelId, "channel-1");
   for (const mock of [false, true]) {
-    assert.equal(getReportMark(GUILD, mock, "day"), latestDuePeriod("day", before).start);
-    assert.equal(getReportMark(GUILD, mock, "week"), latestDuePeriod("week", before).start);
+    assert.equal(getReportMark(GUILD, mock, "day"), periodOf("day", periodOf("day", before).start - 1).start);
+    assert.equal(getReportMark(GUILD, mock, "week"), periodOf("week", periodOf("week", before).start - 1).start);
   }
   // Moving it later keeps everything else and says so.
   const moved = await run("channel", { channel: "channel-2" });
@@ -336,4 +341,116 @@ test("/report works only in a server", async () => {
   const { stub, replies } = reportInteraction("day", null, false);
   await reportCommand.execute(stub);
   assert.equal(replies[0].flags, MessageFlags.Ephemeral);
+  assert.deepEqual(replies[0].allowedMentions, NO_MENTIONS);
+});
+
+/** A server with both weekly roles in place and holders recorded, as after a rotation. */
+function rolesInUse(): FakeRoleGuild {
+  const roles = new FakeRoleGuild();
+  roles.addRole("role-top", TOP_ROLE_NAME, 1);
+  roles.addRole("role-none", NONE_ROLE_NAME, 1);
+  roles.addMember("alice", ["role-top"]);
+  roles.addMember("bob", ["role-none"]);
+  setReportChannel(GUILD, "channel-1");
+  setReportRoles(GUILD, { enabled: true, topRoleId: "role-top", noneRoleId: "role-none" });
+  setReportRoleHolders(GUILD, { top: ["alice"], none: ["bob"] });
+  return roles;
+}
+
+test("switching to other roles takes the old ones back from their holders first", async () => {
+  const roles = rolesInUse();
+  roles.addRole("new-top", "头马", 2);
+  const { replies } = await run("roles", { enabled: true, top: "new-top" }, { roles });
+  assert.deepEqual(roles.changes, ["remove:role-top:alice"], "only the replaced role is released; the unchanged one keeps its holder");
+  const settings = getReportSettings(GUILD)!;
+  assert.deepEqual([settings.topRoleId, settings.noneRoleId, settings.topHolderIds, settings.noneHolderIds], ["new-top", "role-none", [], ["bob"]]);
+  assert.match(replies[0].content!, /已开启每周身份组：<@&new-top> 和 <@&role-none>/);
+  assert.ok(!roles.members.get("alice")!.has("role-top"));
+});
+
+test("holders who cannot be released from a replaced role are listed for manual cleanup", async () => {
+  const roles = rolesInUse();
+  roles.addRole("new-top", "头马", 2);
+  roles.failures.remove = discordError(50013);
+  const { replies } = await run("roles", { enabled: true, top: "new-top" }, { roles });
+  assert.match(replies[0].content!, /还拿着换下来的身份组 <@&role-top>，请手动收回：<@alice>/);
+  assert.equal(getReportSettings(GUILD)?.topRoleId, "new-top");
+});
+
+test("clearing the channel while roles are on takes the roles back and turns them off", async () => {
+  const roles = rolesInUse();
+  const { replies } = await run("channel-clear", {}, { roles });
+  assert.deepEqual(roles.changes, ["remove:role-top:alice", "remove:role-none:bob"]);
+  assert.match(replies[0].content!, /已清除马报频道/);
+  assert.match(replies[0].content!, /每周身份组跟着每周马报换人，所以也一并关闭了/);
+  assert.match(replies[0].content!, /\/report-settings roles/);
+  const settings = getReportSettings(GUILD)!;
+  assert.deepEqual([settings.channelId, settings.rolesEnabled, settings.topRoleId, settings.topHolderIds], [null, false, "role-top", []]);
+});
+
+test("switching weekly reports off while roles are on does the same, and switching them on again does not", async () => {
+  const roles = rolesInUse();
+  const { replies } = await run("weekly", { enabled: false }, { roles });
+  assert.deepEqual(roles.changes, ["remove:role-top:alice", "remove:role-none:bob"]);
+  assert.match(replies[0].content!, /每周马报已关闭/);
+  assert.match(replies[0].content!, /一并关闭了/);
+  assert.deepEqual([getReportSettings(GUILD)!.weeklyEnabled, getReportSettings(GUILD)!.rolesEnabled], [false, false]);
+  await run("weekly", { enabled: true }, { roles });
+  assert.equal(getReportSettings(GUILD)!.rolesEnabled, false, "roles stay off until they are enabled again");
+});
+
+test("clearing the channel or switching weekly off without roles touches no roles", async () => {
+  const roles = new FakeRoleGuild();
+  setReportChannel(GUILD, "channel-1");
+  await run("weekly", { enabled: false }, { roles });
+  await run("channel-clear", {}, { roles });
+  assert.deepEqual(roles.changes, []);
+});
+
+test("a failed release when clearing the channel is reported and the holders stay recorded", async () => {
+  const roles = rolesInUse();
+  roles.failures.remove = discordError(50013);
+  const { replies } = await run("channel-clear", {}, { roles });
+  assert.match(replies[0].content!, /没能收回全部身份组/);
+  const settings = getReportSettings(GUILD)!;
+  assert.deepEqual([settings.channelId, settings.rolesEnabled, settings.topHolderIds], [null, false, ["alice"]]);
+});
+
+test("only an off-to-on switch skips the finished periods, so saying on again never drops a due report", async () => {
+  setReportChannel(GUILD, "channel-1");
+  await run("daily", { enabled: true });
+  await run("weekly", { enabled: true });
+  assert.equal(getReportMark(GUILD, false, "day"), undefined, "already on, nothing skipped");
+  assert.equal(getReportMark(GUILD, false, "week"), undefined);
+  await run("daily", { enabled: false });
+  const on = await run("daily", { enabled: true });
+  assert.match(on.replies[0].content!, /开启，从下一个结算时间开始发/);
+  const now = Date.now();
+  assert.equal(getReportMark(GUILD, false, "day"), periodOf("day", periodOf("day", now).start - 1).start);
+  assert.equal(getReportMark(GUILD, false, "week"), undefined, "the other kind is untouched");
+});
+
+test("enabling inside the grace window skips the period that just ended instead of posting it", async () => {
+  // Ten minutes after Pacific midnight the day that just ended is not yet due, and a switch-on still must not queue it.
+  const justAfterMidnight = pacificDay(Date.now()).start + 10 * 60_000;
+  const { skipFinishedPeriods } = await import("../src/services/reports");
+  skipFinishedPeriods(GUILD, ["day"], justAfterMidnight);
+  assert.equal(getReportMark(GUILD, false, "day"), pacificDay(pacificDay(justAfterMidnight).start - 1).start);
+  assert.equal(getReportMark(GUILD, true, "day"), pacificDay(pacificDay(justAfterMidnight).start - 1).start);
+});
+
+test("a role created before a failure is remembered, and the next try reuses it", async () => {
+  const roles = new FakeRoleGuild();
+  roles.createLimit = 1;
+  const first = await run("roles", { enabled: true }, { roles });
+  assert.match(first.replies[0].content!, /没能完成身份组设置/);
+  assert.deepEqual(roles.changes, [`create:${TOP_ROLE_NAME}`]);
+  const afterFailure = getReportSettings(GUILD)!;
+  assert.deepEqual([afterFailure.rolesEnabled, afterFailure.topRoleId, afterFailure.noneRoleId], [false, "created-1", null]);
+  roles.createLimit = undefined;
+  roles.changes.length = 0;
+  const second = await run("roles", { enabled: true }, { roles });
+  assert.deepEqual(roles.changes, [`create:${NONE_ROLE_NAME}`], "the first role is reused, not created twice");
+  assert.match(second.replies[0].content!, /<@&created-1> 和 <@&created-2>/);
+  assert.equal(getReportSettings(GUILD)?.rolesEnabled, true);
 });

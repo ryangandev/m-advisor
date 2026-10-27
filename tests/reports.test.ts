@@ -68,15 +68,15 @@ test("a week becomes due after Sunday ends, and an outage of several weeks still
 
 test("the next due time lands just after Pacific midnight and follows daylight saving", () => {
   // Ordinary day: midnight PDT is 07:00Z.
-  assert.equal(nextReportDueAt(utc("2026-10-27T19:00:00Z")), utc("2026-10-28T07:05:00Z"));
+  assert.equal(nextReportDueAt(utc("2026-10-27T19:00:00Z")), utc("2026-10-28T07:30:00Z"));
   // The 25-hour day daylight saving ends: the next midnight is 08:00Z (PST).
-  assert.equal(nextReportDueAt(utc("2026-11-01T12:00:00Z")), utc("2026-11-02T08:05:00Z"));
+  assert.equal(nextReportDueAt(utc("2026-11-01T12:00:00Z")), utc("2026-11-02T08:30:00Z"));
   // The 23-hour day daylight saving starts: the next midnight is 07:00Z (PDT) after an 08:00Z one.
-  assert.equal(nextReportDueAt(utc("2026-03-08T20:00:00Z")), utc("2026-03-09T07:05:00Z"));
+  assert.equal(nextReportDueAt(utc("2026-03-08T20:00:00Z")), utc("2026-03-09T07:30:00Z"));
   // Inside the grace period the day that just ended is still waiting, so the due time is now close ahead.
-  assert.equal(nextReportDueAt(utc("2026-10-27T07:01:00Z")), utc("2026-10-27T07:05:00Z"));
+  assert.equal(nextReportDueAt(utc("2026-10-27T07:11:00Z")), utc("2026-10-27T07:30:00Z"));
   // Exactly at the due time the next one is a day later, never the same instant.
-  assert.equal(nextReportDueAt(utc("2026-10-27T07:05:00Z")), utc("2026-10-28T07:05:00Z"));
+  assert.equal(nextReportDueAt(utc("2026-10-27T07:30:00Z")), utc("2026-10-28T07:30:00Z"));
   for (const instant of [utc("2026-11-01T08:30:00Z"), utc("2026-03-08T09:59:59Z"), utc("2026-12-31T23:59:59Z")]) {
     assert.ok(nextReportDueAt(instant) > instant);
   }
@@ -96,8 +96,8 @@ test("the daily report counts games, tiers, averages and the best and worst game
   assert.equal(data.totalGames, 5);
   assert.deepEqual(data.tierTotals, { 特等马: 1, 上等马: 1, 中等马: 1, 下等马: 1, 没有马: 1 });
   assert.deepEqual(data.members.map((member) => [member.discordUserId, member.games, member.averageScore]), [["a", 2, 8], ["c", 2, 4], ["b", 1, 1.5]]);
-  assert.equal(data.topHorse?.discordUserId, "a");
-  assert.equal(data.noneHorse?.discordUserId, "b");
+  assert.deepEqual(data.topHorses.map((member) => member.discordUserId), ["a"]);
+  assert.deepEqual(data.noneHorses.map((member) => member.discordUserId), ["b"]);
   assert.equal(data.bestGame?.score, 9);
   assert.equal(data.worstGame?.score, 1.5);
   assert.equal(data.members[0].best.score, 9);
@@ -119,8 +119,8 @@ test("the weekly leaderboard ranks by average score and leaves out members below
     ["steady", true], ["middle", true], ["rough", true], ["lucky", false], ["unlucky", false],
   ]);
   assert.equal(data.members[0].averageScore, 8);
-  assert.equal(data.topHorse?.discordUserId, "steady");
-  assert.equal(data.noneHorse?.discordUserId, "rough");
+  assert.deepEqual(data.topHorses.map((member) => member.discordUserId), ["steady"]);
+  assert.deepEqual(data.noneHorses.map((member) => member.discordUserId), ["rough"]);
   assert.equal(data.bestGame?.score, 10, "the best single game still counts everyone");
   assert.equal(data.worstGame?.score, 0);
 });
@@ -136,18 +136,18 @@ test("weekly streaks are the longest run inside the week, in play order", () => 
 
 test("nobody is crowned or shamed with fewer than two ranked members or when everyone tied", () => {
   const alone = buildReportData({ kind: "day", range: DAY, mock: false, records: [game("a", "特等马", 9, DAY.start + HOUR)], memberIds: ["a"] });
-  assert.equal(alone.topHorse, null);
-  assert.equal(alone.noneHorse, null);
+  assert.deepEqual(alone.topHorses, []);
+  assert.deepEqual(alone.noneHorses, []);
   const tied = buildReportData({
     kind: "day", range: DAY, mock: false, memberIds: ["a", "b"],
     records: [game("a", "中等马", 5, DAY.start + HOUR), game("b", "中等马", 5, DAY.start + 2 * HOUR)],
   });
-  assert.equal(tied.topHorse, null);
+  assert.deepEqual(tied.topHorses, []);
   const onlyOneWeekly = buildReportData({
     kind: "week", range: WEEK, mock: false, memberIds: ["a", "b"],
     records: [...[8, 8, 8].map((score, index) => game("a", "上等马", score, WEEK.start + index * HOUR)), game("b", "没有马", 0, WEEK.start + 5 * HOUR)],
   });
-  assert.equal(onlyOneWeekly.topHorse, null, "one ranked member is not enough to name a champion");
+  assert.deepEqual(onlyOneWeekly.topHorses, [], "one ranked member is not enough to name a champion");
 });
 
 test("only real records of currently tracked members make a real report", () => {
@@ -197,8 +197,8 @@ test("the embed shows the leaderboard, the named horses and safe mentions", () =
     "🥇 <@111> · 3 局 3 胜 · 均分 **9.0** · 👑3 🐎0 🐴0 🫏0 🪦0",
     "🥈 <@222> · 3 局 3 胜 · 均分 **1.2** · 👑0 🐎0 🐴0 🫏0 🪦3",
   ].join("\n"));
-  assert.match(field("本周特等马"), /^<@111>：本周 3 局均分 9\.0/);
-  assert.match(field("本周没有马"), /^<@222>：本周 3 局均分只有 1\.2/);
+  assert.match(field("当周特等马"), /^<@111>：当周 3 局均分 9\.0/);
+  assert.match(field("当周没有马"), /^<@222>：当周 3 局均分只有 1\.2/);
   assert.match(field("单局之最"), /最佳：<@111>.*9\.5 分\n🪦 最差：<@222>.*0\.5 分/);
   assert.match(field("军师总评"), /共鉴定 6 局：👑3 🐎0 🐴0 🫏0 🪦3/);
   // Same input, same words; a different week may read differently.
@@ -225,8 +225,8 @@ test("an empty period explains itself, and a lone player gets a plain note inste
   assert.equal(empty.fields, undefined);
   const alone = buildReportEmbed(buildReportData({ kind: "day", range: DAY, mock: false, memberIds: ["a"], records: [game("a", "特等马", 9, DAY.start + HOUR)] }), { final: true }).toJSON();
   const note = alone.fields!.find((entry) => entry.name.includes("特等马 / 没有马"))?.value;
-  assert.match(note!, /今天只有 1 位参评，至少要两位/);
-  assert.ok(!alone.fields!.some((entry) => entry.name === "🪦 今日没有马"));
+  assert.match(note!, /当日只有 1 位参评，至少要两位/);
+  assert.ok(!alone.fields!.some((entry) => entry.name === "🪦 当日没有马"));
 });
 
 test("a full ten-member week stays inside Discord's field limits", () => {

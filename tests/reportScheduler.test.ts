@@ -4,10 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
 import { setMemberAccounts } from "../src/store/bindingStore";
-import { closeDatabase } from "../src/store/database";
+import { closeDatabase, getDatabase } from "../src/store/database";
 import type { HorseRecord } from "../src/store/horseRecordStore";
 import type { HorseTier } from "../src/services/horseRanking";
-import { ReportChannelError, ReportScheduler, MAX_SEND_ATTEMPTS, REPORT_TICK_MS } from "../src/services/reportScheduler";
+import { GIVE_UP_AFTER_MS, ReportChannelError, ReportScheduler, REPORT_TICK_MS, reportNonce } from "../src/services/reportScheduler";
 import type { ReportPayload, ReportSchedulerDeps } from "../src/services/reportScheduler";
 import { REPORT_GRACE_MS } from "../src/services/reports";
 import { NONE_ROLE_NAME, TOP_ROLE_NAME } from "../src/services/reportRoles";
@@ -17,6 +17,7 @@ import {
   markReportHandled,
   setReportChannel,
   setReportKindEnabled,
+  setReportRoleHolders,
   setReportRoles,
 } from "../src/store/reportStore";
 import { pacificDay, pacificWeek } from "../src/utils/pacificTime";
@@ -27,8 +28,8 @@ const utc = (iso: string) => Date.parse(iso);
 const HOUR = 3_600_000;
 const GUILD = "scheduler-guild";
 const CHANNEL = "report-channel";
-// Wednesday 2026-10-28 00:10 PDT: Tuesday 10-27 has just become due, and so has the week of 10-19 to 10-25.
-const NOW = utc("2026-10-28T07:10:00Z");
+// Wednesday 2026-10-28 01:00 PDT, past the 30 minute grace: Tuesday 10-27 has just become due, and so has the week of 10-19 to 10-25.
+const NOW = utc("2026-10-28T08:00:00Z");
 const DUE_DAY = pacificDay(utc("2026-10-27T19:00:00Z"));
 const DUE_WEEK = pacificWeek(utc("2026-10-21T19:00:00Z"));
 
@@ -237,7 +238,7 @@ test("a temporary failure is retried and then posted exactly once", async () => 
   state.failures.push(new Error("network down"));
   await scheduler.runDue();
   assert.equal(getReportMark(GUILD, false, "day"), undefined, "not marked, so the next check tries again");
-  assert.ok(output.some((line) => line.includes("will retry")));
+  assert.ok(output.some((line) => line.includes("will keep retrying")));
   await scheduler.runDue();
   assert.equal(state.sent.length, 1);
   assert.equal(getReportMark(GUILD, false, "day"), DUE_DAY.start);
@@ -245,14 +246,103 @@ test("a temporary failure is retried and then posted exactly once", async () => 
   assert.equal(state.sent.length, 1);
 });
 
-test("a failure that never goes away is dropped after a few attempts", async () => {
+test("a Mac that wakes without a network keeps its period for hours and posts once the network is back", async () => {
   seedGames(DUE_DAY.start + HOUR);
   setReportKindEnabled(GUILD, "week", false);
   const { state, scheduler } = harness();
-  for (let attempt = 0; attempt < MAX_SEND_ATTEMPTS + 2; attempt += 1) state.failures.push(new Error("still down"));
-  for (let attempt = 0; attempt < MAX_SEND_ATTEMPTS; attempt += 1) await scheduler.runDue();
+  // Two hours of one failed check per minute: far more checks than any attempt counter would allow.
+  for (let minute = 0; minute < 120; minute += 1) {
+    state.failures.push(new Error("getaddrinfo ENOTFOUND discord.com"));
+    state.now = NOW + minute * 60_000;
+    await scheduler.runDue();
+  }
+  assert.equal(getReportMark(GUILD, false, "day"), undefined, "still waiting for the network");
+  assert.deepEqual(state.sent, []);
+  assert.equal(output.filter((line) => line.includes("Could not post")).length, 1, "the trouble is logged once, not every minute");
+  state.now = NOW + 121 * 60_000;
+  await scheduler.runDue();
+  assert.equal(state.sent.length, 1);
+  assert.equal(getReportMark(GUILD, false, "day"), DUE_DAY.start);
+});
+
+test("a failure that lasts six hours drops the period and says so once", async () => {
+  seedGames(DUE_DAY.start + HOUR);
+  setReportKindEnabled(GUILD, "week", false);
+  const { state, scheduler } = harness();
+  state.failures.push(new Error("still down"), new Error("still down"), new Error("still down"));
+  await scheduler.runDue();
+  state.now = NOW + GIVE_UP_AFTER_MS - 1;
+  await scheduler.runDue();
+  assert.equal(getReportMark(GUILD, false, "day"), undefined);
+  state.now = NOW + GIVE_UP_AFTER_MS;
+  await scheduler.runDue();
   assert.equal(getReportMark(GUILD, false, "day"), DUE_DAY.start);
   assert.deepEqual(state.sent, []);
+  assert.equal(output.filter((line) => line.includes("Could not post")).length, 2, "one line when it started failing and one when it gave up");
+  assert.ok(output.some((line) => line.includes("giving up")));
+});
+
+test("every report is sent with the same nonce for the same period, so a repeated request cannot post twice", async () => {
+  seedGames(DUE_DAY.start + HOUR);
+  seedGames(DUE_WEEK.start + 5 * HOUR);
+  const { state, scheduler } = harness();
+  await scheduler.runDue();
+  const [daily, weekly] = state.sent.map((message) => message.payload.nonce!);
+  assert.equal(daily, reportNonce(GUILD, false, "day", DUE_DAY.start));
+  assert.equal(weekly, reportNonce(GUILD, false, "week", DUE_WEEK.start));
+  assert.ok(daily.length <= 25 && weekly.length <= 25);
+  assert.equal(new Set([daily, weekly, reportNonce(GUILD, true, "day", DUE_DAY.start), reportNonce("other", false, "day", DUE_DAY.start), reportNonce(GUILD, false, "day", DUE_DAY.end)]).size, 5);
+  assert.equal(reportNonce(GUILD, false, "day", DUE_DAY.start), daily, "deterministic");
+});
+
+test("a timed-out send that was retried carries the nonce both times", async () => {
+  seedGames(DUE_DAY.start + HOUR);
+  setReportKindEnabled(GUILD, "week", false);
+  const { state, deps, scheduler } = harness();
+  const nonces: Array<string | undefined> = [];
+  const send = deps.send;
+  deps.send = async (guildId, channelId, payload) => {
+    nonces.push(payload.nonce);
+    await send(guildId, channelId, payload);
+  };
+  state.failures.push(new Error("The operation was aborted due to timeout"));
+  await scheduler.runDue();
+  await scheduler.runDue();
+  assert.equal(nonces.length, 2);
+  assert.equal(nonces[0], nonces[1]);
+  assert.ok(nonces[0]);
+});
+
+test("a database failure after a successful post does not repost every minute", async () => {
+  seedGames(DUE_DAY.start + HOUR);
+  setReportKindEnabled(GUILD, "week", false);
+  getDatabase().exec("CREATE TRIGGER refuse_marks BEFORE INSERT ON report_marks BEGIN SELECT RAISE(ABORT, 'marks are read-only'); END;");
+  const { state, scheduler } = harness();
+  await scheduler.runDue();
+  assert.equal(state.sent.length, 1);
+  assert.ok(output.some((line) => line.includes("Could not record") && line.includes("until the bot restarts")));
+  for (let minute = 1; minute <= 5; minute += 1) {
+    state.now = NOW + minute * 60_000;
+    await scheduler.runDue();
+  }
+  assert.equal(state.sent.length, 1, "this process leaves the period alone");
+});
+
+test("a late record still counts: a game recorded 20 minutes after midnight is in the report posted at 00:30", async () => {
+  const midnight = DUE_DAY.end;
+  // The game ended at 23:58, but it only reached the 马厩 twenty minutes after midnight.
+  setReportKindEnabled(GUILD, "week", false);
+  const { state, scheduler } = harness({ now: midnight + 20 * 60_000 });
+  await scheduler.runDue();
+  assert.equal(state.sent.length, 0, "twenty minutes in, the day is not due yet");
+  recordTracked([
+    game("alice", "特等马", 9, midnight - 2 * 60_000, { matchId: "NA1_LATE_A" }),
+    game("bob", "没有马", 1, midnight - 3 * 60_000, { matchId: "NA1_LATE_B" }),
+  ]);
+  state.now = midnight + 30 * 60_000;
+  await scheduler.runDue();
+  assert.equal(state.sent.length, 1);
+  assert.match(state.sent[0].payload.embeds![0].toJSON().description!, /共 \*\*2\*\* 局/);
 });
 
 test("one server failing does not stop the next server's report", async () => {
@@ -281,14 +371,14 @@ test("the timer wakes at most a minute ahead and exactly at the next due time wh
   assert.equal(state.timers[0].delay, REPORT_TICK_MS, "far from the next midnight it only ticks, so waking from sleep is noticed");
   await scheduler.stop();
 
-  const close = harness({ now: utc("2026-10-29T06:59:30Z") });
+  const close = harness({ now: utc("2026-10-29T07:20:00Z") });
   close.scheduler.start();
   await settle();
-  // Midnight is 07:00:00Z and the report is due five minutes later, which is more than a tick away.
+  // Midnight was 07:00:00Z and the report is due at 07:30:00Z, ten minutes away, which is more than a tick.
   assert.equal(close.state.timers[0].delay, REPORT_TICK_MS);
   await close.scheduler.stop();
 
-  const nearDue = harness({ now: utc("2026-10-29T07:04:45Z") });
+  const nearDue = harness({ now: utc("2026-10-29T07:29:45Z") });
   nearDue.scheduler.start();
   await settle();
   assert.equal(nearDue.state.timers[0].delay, 15_000);
@@ -502,4 +592,78 @@ test("when the bot has left the server the report is posted and roles are skippe
   await scheduler.runDue();
   assert.equal(state.sent.length, 1);
   assert.ok(output.some((line) => line.includes("no longer in that server")));
+});
+
+test("an empty week still moves the roles on, silently: the old holders lose them and nobody gains any", async () => {
+  setReportKindEnabled(GUILD, "day", false);
+  const guild = enableRoles();
+  guild.members.get("alice")!.add("role-top");
+  guild.members.get("bob")!.add("role-none");
+  setReportRoleHolders(GUILD, { top: ["alice"], none: ["bob"] });
+  const { state, scheduler } = harness();
+  state.roleGuild = guild;
+  await scheduler.runDue();
+  assert.deepEqual(state.sent, [], "no post for an empty week, and no note either");
+  assert.deepEqual(guild.changes, ["remove:role-top:alice", "remove:role-none:bob"]);
+  assert.deepEqual([getReportSettings(GUILD)!.topHolderIds, getReportSettings(GUILD)!.noneHolderIds], [[], []]);
+  assert.equal(getReportMark(GUILD, false, "week"), DUE_WEEK.start);
+  // Handled once: the next check does nothing.
+  guild.changes.length = 0;
+  await scheduler.runDue();
+  assert.deepEqual(guild.changes, []);
+});
+
+test("an empty week with nobody holding a role makes no Discord calls, and a failure there stays silent", async () => {
+  setReportKindEnabled(GUILD, "day", false);
+  const guild = enableRoles();
+  const { state, scheduler } = harness();
+  state.roleGuild = guild;
+  await scheduler.runDue();
+  assert.deepEqual(guild.changes, []);
+
+  const failing = enableRoles();
+  failing.members.get("alice")!.add("role-top");
+  failing.failures.remove = discordError(50013);
+  setReportRoleHolders(GUILD, { top: ["alice"], none: [] });
+  const later = harness({ now: NOW + 7 * 24 * HOUR });
+  later.state.roleGuild = failing;
+  await later.scheduler.runDue();
+  assert.deepEqual(later.state.sent, [], "even a failed rotation posts nothing after an empty week");
+  assert.deepEqual(getReportSettings(GUILD)!.topHolderIds, ["alice"], "the holder is kept for the next try");
+  assert.ok(output.some((line) => line.includes("not fully updated")));
+});
+
+test("tied weekly champions all get the role", async () => {
+  setReportKindEnabled(GUILD, "day", false);
+  setMemberAccounts(GUILD, "carol", [{ puuid: "puuid-carol", gameName: "Carol", tagLine: "NA1" }]);
+  const records: HorseRecord[] = [];
+  for (let index = 0; index < 3; index += 1) {
+    records.push(
+      game("alice", "特等马", 8, DUE_WEEK.start + (index + 1) * HOUR),
+      game("carol", "特等马", 8, DUE_WEEK.start + (index + 5) * HOUR),
+      game("bob", "没有马", 1, DUE_WEEK.start + (index + 9) * HOUR),
+    );
+  }
+  recordTracked(records);
+  const guild = enableRoles();
+  const { state, scheduler } = harness();
+  state.roleGuild = guild;
+  await scheduler.runDue();
+  assert.deepEqual(guild.changes.sort(), ["add:role-none:bob", "add:role-top:alice", "add:role-top:carol"]);
+  assert.deepEqual(getReportSettings(GUILD)!.topHolderIds.sort(), ["alice", "carol"]);
+});
+
+test("halting stops everything at once, and stopping gives up waiting on a send that hangs", async () => {
+  seedGames(DUE_DAY.start + HOUR);
+  setReportKindEnabled(GUILD, "week", false);
+  const { state, deps, scheduler } = harness();
+  deps.send = () => new Promise<void>(() => undefined);
+  scheduler.start();
+  await settle();
+  scheduler.halt();
+  assert.equal(state.timers.length, 0);
+  const started = Date.now();
+  await scheduler.stop(50);
+  assert.ok(Date.now() - started < 1_000, "a hung send cannot hold shutdown for long");
+  assert.equal(getReportMark(GUILD, false, "day"), undefined, "the unfinished post was not marked");
 });
