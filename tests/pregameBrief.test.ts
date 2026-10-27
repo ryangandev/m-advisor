@@ -352,6 +352,7 @@ test("the card stays inside Discord's limits and nothing in it uses an em dash",
     assert.ok((card.description ?? "").length <= 4096);
     for (const field of card.fields ?? []) assert.ok(field.value.length <= 1024 && field.name.length <= 256);
     assert.ok((card.footer?.text.length ?? 0) <= 2048);
-    assert.ok(!JSON.stringify(card).includes("—") && !result.speech.includes("—"));
+    const dash = String.fromCharCode(0x2014);
+    assert.ok(!JSON.stringify(card).includes(dash) && !result.speech.includes(dash));
   }
 });
