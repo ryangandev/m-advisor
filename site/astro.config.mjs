@@ -1,10 +1,15 @@
 // @ts-check
 import { defineConfig } from "astro/config";
 import starlight from "@astrojs/starlight";
+import { satteri } from "@astrojs/markdown-satteri";
+import { joinCjkLines } from "./plugins/join-cjk-lines.mjs";
 
 // The custom domain is served from the root, so there is deliberately no `base`.
 export default defineConfig({
   site: "https://madvisor.rystudio.app",
+  // Astro's default Markdown processor, plus a plugin that joins source lines between Chinese sentences.
+  // .mdx pages inherit this processor.
+  markdown: { processor: satteri({ mdastPlugins: [joinCjkLines] }) },
   integrations: [
     starlight({
       title: "策马军师",

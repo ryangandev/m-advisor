@@ -2,8 +2,12 @@
 title: 策马军师
 description: 策马军师（M-Advisor）是 Discord 里的 LoL 军师：开黑打完一局，用中文语音和文字把队友排成特等马到没有马。
 template: splash
+# The site name is the page title here, so the browser title carries it once.
+head:
+  - tag: title
+    content: 策马军师 - Discord 里的英雄联盟军师
 hero:
-  tagline: 开黑打完一局，军师羽扇一挥，把五位队友排成特等马、上等马、中等马、下等马和没有马，再用中文语音念给全频道听。
+  tagline: 开黑打完一局，军师羽扇一挥，把你们这一队五个人排成特等马、上等马、中等马、下等马和没有马，再用中文语音念给全频道听。
   image:
     file: ../../assets/logo.svg
     alt: 策马军师头像
@@ -20,7 +24,7 @@ import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
 
 ## 军师能做什么
 
-<CardGrid stagger>
+<CardGrid>
   <Card title="终局播报" icon="star">
     一局打完，先发一张马匹排行的文字卡片，再用语音播报，还会点出一两个关键时刻。
     [看终局播报](/features/game-end/)

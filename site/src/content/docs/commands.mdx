@@ -10,26 +10,33 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## 一览表
 
-| 命令 | 谁能用 | 回复 | 一句话 |
-| --- | --- | --- | --- |
-| [`/profile`](#profile) | 所有人 | 公开 | 查一个玩家的等级和单双排、灵活组排战绩 |
-| [`/recent`](#recent) | 所有人 | 私下 | 看成员的语音状态和最近的对局 |
-| [`/stable`](#stable) | 所有人 | 公开 | 看一位朋友的马厩档案 |
-| [`/why`](#why) | 所有人 | 公开 | 一局的判决书和上诉 |
-| [`/report`](#report) | 所有人 | 公开 | 看今天或本周的马报 |
-| [`/announcer`](#announcer) | `style` 所有人，`pregame_voice` 管理员 | 私下 | 换军师的声音，开关赛前语音 |
-| [`/bind`](#bind) | 管理员 | 私下 | 绑定成员和 Riot 账号 |
-| [`/unbind`](#unbind) | 管理员 | 私下 | 解除一位成员的全部绑定 |
-| [`/bindings`](#bindings) | 管理员 | 私下 | 列出所有被绑定的成员 |
-| [`/report-settings`](#report-settings) | 管理员 | 私下 | 设置马报的频道、开关和每周身份组 |
-| [`/stable-erase`](#stable-erase) | 管理员 | 私下 | 清除一位成员的全部马厩记录 |
-| [`/testvoice`](#testvoice) | 管理员，仅测试服务器 | 私下 | 测试语音播放，仅用于测试 |
-| [`/simulate`](#simulate) | 管理员，仅测试服务器，仅模拟模式 | 私下 | 跑一局模拟对局，仅用于测试 |
+<div class="cmd-table">
+
+| 命令 | 谁能用 | 回复 |
+| --- | --- | --- |
+| [`/profile`](#profile) | 所有人 | 公开 |
+| [`/recent`](#recent) | 所有人 | 私下 |
+| [`/stable`](#stable) | 所有人 | 公开 |
+| [`/why`](#why) | 所有人 | 公开 |
+| [`/report`](#report) | 所有人 | 公开 |
+| [`/announcer`](#announcer) | 所有人，部分选项限管理员 | 私下 |
+| [`/bind`](#bind) | 管理员 | 私下 |
+| [`/unbind`](#unbind) | 管理员 | 私下 |
+| [`/bindings`](#bindings) | 管理员 | 私下 |
+| [`/report-settings`](#report-settings) | 管理员 | 私下 |
+| [`/stable-erase`](#stable-erase) | 管理员 | 私下 |
+| [`/testvoice`](#testvoice) | 管理员，仅测试 | 私下 |
+| [`/simulate`](#simulate) | 管理员，仅测试 | 私下 |
+
+</div>
+
+每个命令的用途和选项，见下面各自的小节。
 
 <Aside type="note" title="管理员命令的权限">
 `/report-settings`、`/stable-erase`、`/testvoice` 和 `/simulate` 对非管理员默认是隐藏的。
 `/bind`、`/unbind`、`/bindings` 在命令列表里大家都看得到，但非管理员运行时会被拒绝。
 `/announcer` 的 `pregame_voice` 选项同理，非管理员填了会被拒绝。
+`/testvoice` 和 `/simulate` 只用于测试，只能在配置了测试服务器的那个服务器里用。
 </Aside>
 
 ## 所有人可用
@@ -83,12 +90,10 @@ import { Aside } from '@astrojs/starlight/components';
 
 看 [马报](/features/ma-bao/)，用法是 `/report day` 或 `/report week`。
 
-| 子命令 | 选项 | 说明 |
-| --- | --- | --- |
-| `day` | `when`：进行中的今天 / 上一个完整的一天 | 太平洋时间的一天 |
-| `week` | `when`：进行中的本周 / 上一个完整的一周 | 太平洋时间周一到周日 |
+- `/report day`：太平洋时间的一天。
+- `/report week`：太平洋时间周一到周日的一周。
+- 两个子命令都有可选的 `when`：「进行中的今天 / 本周」（默认）或「上一个完整的一天 / 一周」。
 
-`when` 默认是进行中的这一期。
 回复是公开的，看马报不会改变自动发布的进度，也不会动身份组。
 
 ### /announcer
@@ -96,10 +101,10 @@ import { Aside } from '@astrojs/starlight/components';
 设置军师的声音和赛前语音。
 两个选项至少要填一个。
 
-| 选项 | 谁能改 | 说明 |
-| --- | --- | --- |
-| `style` | 所有人 | Sweet Girl（甜美女声）或 Old Man（大叔声，默认），对整个服务器生效 |
-| `pregame_voice` | 管理员 | 开或关 [军师赛前锦囊](/features/pregame/) 的语音，默认开，关掉后锦囊只发卡片 |
+- `style`：所有人都能改。
+  选 Sweet Girl（甜美女声）或 Old Man（大叔声，默认），对整个服务器生效。
+- `pregame_voice`：只有管理员能改。
+  开或关 [军师赛前锦囊](/features/pregame/) 的语音，默认开，关掉后锦囊只发卡片。
 
 回复只有你自己看得到。
 
@@ -141,14 +146,13 @@ import { Aside } from '@astrojs/starlight/components';
 设置 [马报](/features/ma-bao/) 的自动发布。
 子命令：
 
-| 子命令 | 选项 | 说明 |
-| --- | --- | --- |
-| `show` | 无 | 看当前的频道、开关和身份组设置 |
-| `channel` | `channel`（必填） | 设置自动发马报的文字频道，会先检查机器人在那里的权限 |
-| `channel-clear` | 无 | 清除频道，停止自动发布，其他设置保留 |
-| `daily` | `enabled`（必填） | 开关日报 |
-| `weekly` | `enabled`（必填） | 开关周报 |
-| `roles` | `enabled`（必填），`top-role`、`none-role`（可选） | 开关每周身份组，可以指定已有的身份组，不指定就自动创建 本周特等马 和 本周没有马 |
+- `/report-settings show`：看当前的频道、开关和身份组设置。
+- `/report-settings channel`：设置自动发马报的文字频道，选项 `channel` 必填，会先检查机器人在那里的权限。
+- `/report-settings channel-clear`：清除频道，停止自动发布，其他设置保留。
+- `/report-settings daily`：开关日报，选项 `enabled` 必填。
+- `/report-settings weekly`：开关周报，选项 `enabled` 必填。
+- `/report-settings roles`：开关每周身份组，选项 `enabled` 必填。
+  可以用 `top-role` 和 `none-role` 指定已有的身份组，不指定就自动创建「本周特等马」和「本周没有马」。
 
 没设频道之前不会自动发布。
 设好频道之后，日报和周报默认都是开的。
@@ -180,6 +184,6 @@ import { Aside } from '@astrojs/starlight/components';
 
 | 选项 | 必填 | 说明 |
 | --- | --- | --- |
-| `outcome` | 是 | 胜利、失败，或者 开局（赛前锦囊） |
+| `outcome` | 是 | 「胜利」「失败」或「开局（赛前锦囊）」 |
 
 模拟出来的内容都会明确标注为模拟数据，详见 [隐私与公平](/privacy/)。
