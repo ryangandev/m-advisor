@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import { chmodSync, existsSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { logInfo } from "../utils/log";
 
 /**
  * Entry i upgrades a database from schema version i to i + 1.
@@ -71,6 +72,27 @@ export function getDatabasePath(): string {
   return resolve(process.env.BOT_DATA_DIR?.trim() || ".data", "bot.sqlite3");
 }
 
+/**
+ * A consistent copy of the database next to it, written before any migration step.
+ * An existing backup is never overwritten: a later name is used instead.
+ */
+function backUpBeforeMigration(connection: Database.Database, filePath: string, version: number): string {
+  for (let attempt = 1; attempt <= 100; attempt += 1) {
+    const backupPath = attempt === 1 ? `${filePath}.v${version}.bak` : `${filePath}.v${version}.${attempt}.bak`;
+    if (existsSync(backupPath)) continue;
+    try {
+      connection.prepare("VACUUM INTO ?").run(backupPath);
+    } catch (error) {
+      // Another process may have taken this name between the check and the copy.
+      if (existsSync(backupPath)) continue;
+      throw error;
+    }
+    chmodSync(backupPath, 0o600);
+    return backupPath;
+  }
+  throw new Error(`Could not find an unused backup name for ${filePath}.`);
+}
+
 /** The process owns one connection, opened only on the first store operation. */
 export function getDatabase(): Database.Database {
   if (database) {
@@ -101,12 +123,19 @@ export function getDatabase(): Database.Database {
       throw new Error(`Database schema ${version} is newer than this bot supports (${SCHEMA_VERSION}).`);
     }
 
+    if (fileBacked && version > 0 && version < SCHEMA_VERSION) {
+      const backupPath = backUpBeforeMigration(connection, filePath, version);
+      logInfo(`Backed up the version ${version} database to ${backupPath} before upgrading it.`);
+    }
     for (let from = version; from < MIGRATIONS.length; from += 1) {
-      // Each step and its version bump commit together, so a failure leaves the file at the previous version.
+      // The write lock is taken up front and the version re-read under it, so a process that opens the
+      // same file at the same moment applies each step once. A failure rolls the step and its version bump back together.
       connection.transaction(() => {
+        const current = connection!.pragma("user_version", { simple: true }) as number;
+        if (current !== from) return;
         connection!.exec(MIGRATIONS[from]);
         connection!.pragma(`user_version = ${from + 1}`);
-      })();
+      }).immediate();
     }
     connection.pragma("journal_mode = WAL");
     connection.pragma("synchronous = FULL");

@@ -66,8 +66,18 @@ Shipped migrations are never edited; a new schema change appends a new entry.
 
 The 1 to 2 step copies each `guild_bindings` row into `tracked_members` at position 0 and each `bound_accounts` row into `member_accounts` with its account order, then drops the two old tables.
 `guild_preferences` is unchanged, so the voice choice carries over.
-Migration happens on the first launch of the new version, in place, with no downgrade path.
-Copy `bot.sqlite3` to a safe place before the first launch of the new version, because an older bot cannot open the upgraded file.
+Migration happens in place, with no downgrade path, the first time any command opens an existing older database file.
+That includes `npm start`, `npm run dev`, `npm run doctor` (which only opens a file that already exists) and the `verify:*` scripts.
+`npm run register` does not open the database.
+Each step takes the write lock before it checks the version, so two processes opening the same old file at the same moment apply each step once and both succeed.
+
+Before the first step, a file whose version is between 1 and the current version is copied with `VACUUM INTO` to `<database path>.v<old version>.bak`, for example `.data/bot.sqlite3.v1.bak`.
+The copy is consistent even when the bot left an uncheckpointed `-wal` file, it has mode `0600`, and it is made outside the migration transaction.
+The bot never overwrites an existing backup: if that name is taken it uses `<database path>.v<old version>.2.bak`, then `.3.bak`, and so on.
+A fresh database and `:memory:` are not backed up, and once the file is current, later opens create no backup.
+The backup is not deleted automatically; remove it once the upgraded bot has run well.
+An older bot cannot open the upgraded file, so to go back, stop the bot and restore the `.bak` file as `bot.sqlite3`.
+Copying `bot.sqlite3` yourself before the first launch of the new version is optional extra safety.
 
 ## Durability and shutdown
 
@@ -87,6 +97,7 @@ To restore, stop the bot and place the saved database at the configured path bef
 
 `tests/store.test.ts` uses temporary databases and separate Node processes to verify real restart behavior.
 It covers member and account ordering, guild isolation, cross-member PUUID rejection, the 10-account cap, atomic rollback, member removal, voice preferences, runtime reset, filesystem permissions, configuration precedence, and visible failures for corrupt or unsupported database files.
-Migration tests build a literal version 1 file, upgrade it from a separate process, and check that members, account order, voice styles and file mode survive and the old tables are gone.
-They also check that a failing migration rolls back to version 1 and that reopening a version 2 file changes nothing.
+Migration tests build a literal version 1 file in WAL mode, written by a process that exits without closing so rows remain in an uncheckpointed `-wal` file, and upgrade it from a separate process.
+They check that members, account order, voice styles and file mode survive and the old tables are gone.
+They also check the automatic backup (present, mode `0600`, holding the version 1 data, never overwritten, not repeated), two processes opening the same old file concurrently, that a failing migration rolls back to version 1, and that reopening a version 2 file changes nothing.
 The tests do not write to the bot's actual data directory.

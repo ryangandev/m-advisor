@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import Database from "better-sqlite3";
@@ -310,22 +310,38 @@ const SCHEMA_V1 = `
   PRAGMA user_version = 1;
 `;
 
+/**
+ * Writes the way a running v1 bot leaves its file: WAL journal mode, and a process that exits without
+ * closing the connection, so the rows sit in an uncheckpointed -wal file next to the main file.
+ */
 function writeVersionOneDatabase(filePath: string, extraSql = ""): void {
-  const v1 = new Database(filePath);
-  try {
-    v1.exec(SCHEMA_V1);
-    v1.exec(`
+  runSeparateProcess(`
+    const Database = require('better-sqlite3');
+    const db = new Database(${JSON.stringify(filePath)});
+    db.pragma('journal_mode = WAL');
+    db.pragma('wal_autocheckpoint = 0');
+    db.exec(${JSON.stringify(SCHEMA_V1)});
+    db.exec(${JSON.stringify(`
       INSERT INTO guild_bindings VALUES ('guild-one', 'member-one'), ('guild-two', 'member-two');
       INSERT INTO bound_accounts VALUES
         ('guild-one', 'account-b', 'Player B', 'NA2', 0),
         ('guild-one', 'account-a', '玩家 A', 'NA1', 1),
         ('guild-two', 'account-a', '玩家 A', 'NA1', 0);
       INSERT INTO guild_preferences VALUES ('guild-one', 'sweet'), ('guild-two', 'old');
-    `);
-    if (extraSql) v1.exec(extraSql);
-  } finally {
-    v1.close();
-  }
+    `)});
+    if (${JSON.stringify(extraSql)}) db.exec(${JSON.stringify(extraSql)});
+    process.exit(0);
+  `);
+  assert.ok(existsSync(`${filePath}-wal`) && statSync(`${filePath}-wal`).size > 0, "the fixture must leave an uncheckpointed WAL");
+}
+
+function lastLine(output: string): string {
+  return output.split("\n").at(-1)!;
+}
+
+function backupFiles(filePath: string): string[] {
+  const prefix = `${basename(filePath)}.v`;
+  return readdirSync(dirname(filePath)).filter((name) => name.startsWith(prefix) && name.endsWith(".bak")).sort();
 }
 
 test("a version 1 database upgrades in place when a separate process opens it", () => {
@@ -334,7 +350,7 @@ test("a version 1 database upgrades in place when a separate process opens it", 
   writeVersionOneDatabase(filePath);
   if (process.platform !== "win32") chmodSync(filePath, 0o644);
 
-  const migrated = JSON.parse(runSeparateProcess(`
+  const migrated = JSON.parse(lastLine(runSeparateProcess(`
     const binding = require('./src/store/bindingStore.ts');
     const announcer = require('./src/store/announcerStore.ts');
     const database = require('./src/store/database.ts');
@@ -347,7 +363,7 @@ test("a version 1 database upgrades in place when a separate process opens it", 
       tables: db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all().map((row) => row.name),
     }));
     database.closeDatabase();
-  `));
+  `)));
   assert.deepEqual(migrated, {
     tracking: [
       { guildId: "guild-one", members: [{ discordUserId: "member-one", accounts: [accountB, accountA] }] },
@@ -358,10 +374,103 @@ test("a version 1 database upgrades in place when a separate process opens it", 
     tables: ["guild_preferences", "member_accounts", "tracked_members"],
   });
   if (process.platform !== "win32") assert.equal(statSync(filePath).mode & 0o777, 0o600);
+  assert.deepEqual(backupFiles(filePath), ["v1.sqlite3.v1.bak"]);
 
   // The upgraded file behaves like any v2 file: another member can join the first guild.
   setMemberAccounts("guild-one", "member-three", [{ puuid: "account-c", gameName: "Player C", tagLine: "NA3" }]);
   assert.deepEqual(listTrackedMembers("guild-one").map((member) => member.discordUserId), ["member-one", "member-three"]);
+});
+
+test("upgrading writes a private consistent backup first and a second open adds none", () => {
+  const filePath = join(temporaryDirectory, "v1-backup.sqlite3");
+  process.env.DATABASE_PATH = filePath;
+  writeVersionOneDatabase(filePath);
+  // Rows that exist only in the uncheckpointed -wal must be in the backup.
+  assert.equal(getDatabase().pragma("user_version", { simple: true }), 2);
+  const backupPath = `${filePath}.v1.bak`;
+  assert.deepEqual(backupFiles(filePath), ["v1-backup.sqlite3.v1.bak"]);
+  if (process.platform !== "win32") assert.equal(statSync(backupPath).mode & 0o777, 0o600);
+  const backup = new Database(backupPath, { readonly: true });
+  try {
+    assert.equal(backup.pragma("user_version", { simple: true }), 1);
+    assert.deepEqual(backup.prepare("SELECT guild_id, discord_user_id FROM guild_bindings ORDER BY guild_id").all(), [
+      { guild_id: "guild-one", discord_user_id: "member-one" },
+      { guild_id: "guild-two", discord_user_id: "member-two" },
+    ]);
+    assert.deepEqual(backup.prepare("SELECT puuid FROM bound_accounts WHERE guild_id = 'guild-one' ORDER BY position").all(), [
+      { puuid: "account-b" },
+      { puuid: "account-a" },
+    ]);
+    assert.deepEqual(backup.prepare("SELECT voice_style FROM guild_preferences ORDER BY guild_id").all(), [
+      { voice_style: "sweet" },
+      { voice_style: "old" },
+    ]);
+  } finally {
+    backup.close();
+  }
+  closeDatabase();
+  getDatabase();
+  closeDatabase();
+  assert.deepEqual(backupFiles(filePath), ["v1-backup.sqlite3.v1.bak"]);
+});
+
+test("a fresh database and an in-memory database are not backed up", () => {
+  const filePath = process.env.DATABASE_PATH!;
+  getDatabase();
+  closeDatabase();
+  assert.deepEqual(backupFiles(filePath), []);
+  process.env.DATABASE_PATH = ":memory:";
+  assert.equal(getDatabase().pragma("user_version", { simple: true }), 2);
+  assert.deepEqual(backupFiles(filePath), []);
+});
+
+test("an existing backup is never overwritten", () => {
+  const filePath = join(temporaryDirectory, "v1-existing.sqlite3");
+  process.env.DATABASE_PATH = filePath;
+  writeVersionOneDatabase(filePath);
+  writeFileSync(`${filePath}.v1.bak`, "older backup, keep me");
+  getDatabase();
+  assert.equal(readFileSync(`${filePath}.v1.bak`, "utf8"), "older backup, keep me");
+  assert.deepEqual(backupFiles(filePath), ["v1-existing.sqlite3.v1.2.bak", "v1-existing.sqlite3.v1.bak"]);
+  const backup = new Database(`${filePath}.v1.2.bak`, { readonly: true });
+  try {
+    assert.equal((backup.prepare("SELECT count(*) AS count FROM bound_accounts").get() as { count: number }).count, 3);
+  } finally {
+    backup.close();
+  }
+});
+
+test("two processes opening the same version 1 file at once both succeed and migrate once", async () => {
+  const filePath = join(temporaryDirectory, "v1-concurrent.sqlite3");
+  process.env.DATABASE_PATH = filePath;
+  writeVersionOneDatabase(filePath);
+  const startAt = Date.now() + 1500;
+  const source = `
+    const binding = require('./src/store/bindingStore.ts');
+    const database = require('./src/store/database.ts');
+    while (Date.now() < ${startAt}) { /* open at the same moment as the other process */ }
+    const db = database.getDatabase();
+    console.log(JSON.stringify({
+      version: db.pragma('user_version', { simple: true }),
+      members: binding.listAllTracking().flatMap((guild) => guild.members.map((member) => member.discordUserId)),
+    }));
+    database.closeDatabase();
+  `;
+  const runs = await Promise.all([0, 1].map(() => new Promise<{ status: number | null; stdout: string; stderr: string }>((resolveRun) => {
+    const child = spawn(process.execPath, ["--import", "tsx", "--eval", source], { cwd: resolve(__dirname, ".."), env: { ...process.env } });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.on("close", (status) => resolveRun({ status, stdout, stderr }));
+  })));
+  for (const run of runs) {
+    assert.equal(run.status, 0, run.stderr);
+    const lastLine = run.stdout.trim().split("\n").at(-1)!;
+    assert.deepEqual(JSON.parse(lastLine), { version: 2, members: ["member-one", "member-two"] });
+  }
+  assert.equal(getDatabase().pragma("integrity_check", { simple: true }), "ok");
+  assert.deepEqual(listAllTracking().map((guild) => guild.members.length), [1, 1]);
 });
 
 test("a failed migration rolls back completely and leaves the version 1 database intact", () => {
@@ -370,6 +479,7 @@ test("a failed migration rolls back completely and leaves the version 1 database
   // A stray table with the new name makes the second migration step fail midway.
   writeVersionOneDatabase(filePath, "CREATE TABLE tracked_members (stray TEXT);");
   assert.throws(() => getDatabase(), /Could not open the bot database.*tracked_members/);
+  assert.deepEqual(backupFiles(filePath), ["v1-conflict.sqlite3.v1.bak"]);
 
   const verifyDb = new Database(filePath, { readonly: true });
   try {
