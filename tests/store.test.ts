@@ -375,7 +375,7 @@ test("a version 1 database upgrades in place when a separate process opens it", 
     ],
     styles: ["sweet", "old"],
     version: SCHEMA_VERSION,
-    tables: ["appeal_cases", "guild_preferences", "horse_records", "member_accounts", "pregame_settings", "report_marks", "report_settings", "tracked_members"],
+    tables: ["appeal_cases", "guild_preferences", "horse_records", "member_accounts", "pregame_settings", "rank_results", "report_marks", "report_settings", "tracked_members"],
   });
   if (process.platform !== "win32") assert.equal(statSync(filePath).mode & 0o777, 0o600);
   assert.deepEqual(backupFiles(filePath), ["v1.sqlite3.v1.bak"]);
