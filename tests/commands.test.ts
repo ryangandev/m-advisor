@@ -39,6 +39,12 @@ function stubModule(relativePath: string, exports: Record<string, unknown>): voi
     exports, children: [], paths: [] } as unknown as NodeJS.Module;
 }
 
+interface FakeMember {
+  id: string;
+  voice: { channelId: string | null; channel: VoiceChannel | null };
+}
+type FakeClient = { guilds: { cache: Map<string, { members: { cache: Map<string, FakeMember> } }> } };
+
 // Install stubs before loading commands or monitorLifecycle, keeping GPU and voice/network code out of this process.
 stubModule("../src/services/voiceAnnouncements.ts", {
   announceTextInVoiceChannel: async (channel: VoiceChannel, text: string, style: string, canPlay: () => boolean) => {
@@ -51,7 +57,12 @@ stubModule("../src/services/voiceAnnouncements.ts", {
 stubModule("../src/services/gameMonitor.ts", {
   POLL_INTERVAL_MS: 45_000,
   getMonitorStatus: () => ({ active: calls.starts.length > 0, startedAt: 1, lastPollAt: 2, announced: new Set() }),
-  startPolling: (_client: unknown, guildId: string, channelId: string) => calls.starts.push({ guildId, channelId }),
+  // The real lifecycle passes the tracked members in voice; record the first one's channel as the session's start.
+  syncMonitoring: (client: FakeClient, guildId: string, memberIds: string[]) => {
+    if (memberIds.length === 0) { calls.stops.push(guildId); return; }
+    const member = client.guilds.cache.get(guildId)!.members.cache.get(memberIds[0])!;
+    calls.starts.push({ guildId, channelId: member.voice.channelId! });
+  },
   stopPolling: (guildId: string) => calls.stops.push(guildId),
   pollGuildNow: async (_client: unknown, guildId: string, expectedChannelId?: string) => {
     const binding = firstMember(guildId)!;
@@ -130,10 +141,6 @@ afterEach(() => {
   console.log = savedConsoleLog;
 });
 
-interface FakeMember {
-  id: string;
-  voice: { channelId: string | null; channel: VoiceChannel | null };
-}
 
 function interactionFixture(options: { admin?: boolean; voice?: boolean; permissions?: boolean; channelId?: string; riotId?: string; outcome?: string; style?: string; targetId?: string; count?: number } = {}) {
   const channelId = options.channelId ?? "test-channel";

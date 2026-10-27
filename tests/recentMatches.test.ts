@@ -19,7 +19,7 @@ function account(): RecentAccountView {
 function view(overrides: Partial<RecentMatchesView> = {}): RecentMatchesView {
   return {
     mock: false, memberId: "member-1", voiceChannelId: "voice-1", pollIntervalSeconds: 45,
-    status: { active: true, startedAt: ENDED, lastPollAt: ENDED + 30_000, announced: new Set() },
+    status: { active: true, startedAt: ENDED, lastPollAt: ENDED + 30_000, announced: new Set(), presentMemberIds: ["member-1"] },
     accounts: [account()], ...overrides,
   };
 }
@@ -43,18 +43,18 @@ test("each match shows the result, champion, queue, end time and what the monito
 
 test("an announced match is marked as announced instead of the baseline", () => {
   const embed = buildRecentMatchesEmbed(view({
-    status: { active: true, startedAt: ENDED, lastPollAt: ENDED, announced: new Set(["NA1_4"]) },
+    status: { active: true, startedAt: ENDED, lastPollAt: ENDED, announced: new Set(["NA1_4"]), presentMemberIds: ["member-1"] },
   }));
   assert.match(rows(embed)[1], /📢 已播报$/);
 });
 
 test("without monitoring the reply explains why and shows the last error", () => {
   const absent = buildRecentMatchesEmbed(view({ voiceChannelId: null,
-    status: { active: false, announced: new Set() }, accounts: [{ ...account(), lastMatchId: undefined }] }));
+    status: { active: false, announced: new Set(), presentMemberIds: [] }, accounts: [{ ...account(), lastMatchId: undefined }] }));
   assert.match(absent.toJSON().description!, /^⚪ 没在监听：<@member-1> 不在语音频道。进入语音频道后才开始监听，之前结束的对局不会补播。$/);
   assert.ok(rows(absent).every((row) => !/监听起点|下次检查/.test(row)));
   const stopped = buildRecentMatchesEmbed(view({
-    status: { active: false, lastError: { message: "Riot API key is invalid.", at: ENDED }, announced: new Set() },
+    status: { active: false, lastError: { message: "Riot API key is invalid.", at: ENDED }, announced: new Set(), presentMemberIds: [] },
   }));
   assert.match(stopped.toJSON().description!, /监听已停止/);
   assert.match(stopped.toJSON().description!, /⚠️ 上次错误 <t:1759500000:R>：Riot API key is invalid\./);

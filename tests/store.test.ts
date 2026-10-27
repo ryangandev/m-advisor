@@ -21,7 +21,7 @@ import {
   getAnnouncerState,
   getLastMatchId,
   resetAnnouncerRuntime,
-  setActiveVoiceChannel,
+  clearLastMatchIds,
   setLastMatchId,
   setPollingInterval,
   setVoiceStyle,
@@ -195,7 +195,6 @@ test("fresh processes restore members and voice styles with empty monitoring sta
     binding.setMemberAccounts('restart-guild', 'member-1', ${JSON.stringify([accountA, accountB])});
     announcer.setVoiceStyle('restart-guild', 'sweet');
     announcer.setLastMatchId('restart-guild', 'account-a', 'NA1_historical');
-    announcer.setActiveVoiceChannel('restart-guild', 'voice-channel-1');
     require('./src/store/database.ts').closeDatabase();
   `);
   const restored = JSON.parse(runSeparateProcess(`
@@ -206,7 +205,6 @@ test("fresh processes restore members and voice styles with empty monitoring sta
       members: binding.listTrackedMembers('restart-guild'),
       style: state.voiceStyle,
       matchIds: [...state.lastMatchIds],
-      voiceChannel: state.activeVoiceChannelId,
       pollingInterval: state.pollingInterval,
       otherStyle: announcer.getAnnouncerState('untouched-guild').voiceStyle,
     }));
@@ -216,7 +214,6 @@ test("fresh processes restore members and voice styles with empty monitoring sta
     members: [{ discordUserId: "member-1", accounts: [accountA, accountB] }],
     style: "sweet",
     matchIds: [],
-    voiceChannel: null,
     pollingInterval: null,
     otherStyle: "old",
   });
@@ -226,7 +223,6 @@ test("runtime reset clears timers and match baseline while retaining voice prefe
   const guildId = "runtime-reset-guild";
   setVoiceStyle(guildId, "sweet");
   setLastMatchId(guildId, "puuid", "NA1_match");
-  setActiveVoiceChannel(guildId, "voice-channel");
   let pollingCalls = 0;
   const interval = setInterval(() => { pollingCalls += 1; }, 5);
   setPollingInterval(guildId, interval);
@@ -234,10 +230,18 @@ test("runtime reset clears timers and match baseline while retaining voice prefe
   const state = getAnnouncerState(guildId);
   assert.equal(state.voiceStyle, "sweet");
   assert.equal(getLastMatchId(guildId, "puuid"), undefined);
-  assert.equal(state.activeVoiceChannelId, null);
   assert.equal(state.pollingInterval, null);
   await delay(20);
   assert.equal(pollingCalls, 0);
+});
+
+test("clearing named baselines keeps every other account's baseline", () => {
+  const guildId = "partial-clear-guild";
+  setLastMatchId(guildId, "leaving", "NA1_left");
+  setLastMatchId(guildId, "staying", "NA1_stay");
+  clearLastMatchIds(guildId, ["leaving", "never-set"]);
+  assert.equal(getLastMatchId(guildId, "leaving"), undefined);
+  assert.equal(getLastMatchId(guildId, "staying"), "NA1_stay");
 });
 
 test("a failed preference write does not update the runtime voice style", () => {

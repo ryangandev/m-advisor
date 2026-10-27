@@ -3,7 +3,7 @@ import { afterEach, beforeEach, test } from "node:test";
 import { VoiceChannel, type Client, type MessageCreateOptions } from "discord.js";
 import type { MatchDetail, TrackedMember } from "../src/types";
 import { GameMonitor, resolveMonitoredVoiceChannel, type MonitorDependencies } from "../src/services/gameMonitor";
-import { VoiceAnnouncementService } from "../src/services/voiceAnnouncements";
+import { VoiceAnnouncementService, type VoiceAnnouncementDependencies } from "../src/services/voiceAnnouncements";
 import { RiotApiError } from "../src/services/riotData";
 import { getAnnouncerState, getLastMatchId } from "../src/store/announcerStore";
 import { closeDatabase } from "../src/store/database";
@@ -34,21 +34,54 @@ function deferred<T>() {
   const promise = new Promise<T>((accept, fail) => { resolve = accept; reject = fail; });
   return { promise, resolve, reject };
 }
+const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+/** Longer than the voice queue's 100 ms channel watch. */
+const WATCH = 250;
 
-function harness(guildId: string, puuids = ["tracked"]) {
-  let binding: TrackedMember | undefined = {
-    discordUserId: "member-1",
-    accounts: puuids.map((puuid) => ({ puuid, gameName: puuid, tagLine: "NA1" })),
+interface MemberSpec { id: string; puuids: string[]; channel: string | null }
+interface FakeChannel { id: string; guild: { id: string }; members: Map<string, { user: { bot: boolean } }>; send: (message: MessageCreateOptions) => Promise<unknown> }
+
+/**
+ * A guild with tracked members in fake voice channels, the real announcer store and voice queue, and fake Riot, speech and Discord.
+ * Called with PUUIDs it keeps the original single-member shape: member-1 owns them all and sits in first-channel.
+ */
+function harness(guildId: string, specs: string[] | MemberSpec[] = ["tracked"]) {
+  const memberSpecs: MemberSpec[] = typeof specs[0] === "string"
+    ? [{ id: "member-1", puuids: specs as string[], channel: "first-channel" }]
+    : specs as MemberSpec[];
+  let members: TrackedMember[] = memberSpecs.map((spec) => ({
+    discordUserId: spec.id,
+    accounts: spec.puuids.map((puuid) => ({ puuid, gameName: puuid, tagLine: "NA1" })),
+  }));
+  const sent: Array<{ channelId: string; message: MessageCreateOptions }> = [];
+  const channels = new Map<string, FakeChannel>();
+  const channel = (id: string): FakeChannel => {
+    let existing = channels.get(id);
+    if (!existing) {
+      const created: FakeChannel = {
+        id,
+        guild: { id: guildId },
+        members: new Map(),
+        send: async (message) => { sent.push({ channelId: created.id, message }); return {}; },
+      };
+      existing = created;
+      channels.set(id, existing);
+    }
+    return existing;
   };
-  const messages: MessageCreateOptions[] = [];
-  const channel = (id: string): VoiceChannel => ({
-    id,
-    guild: { id: guildId },
-    members: new Map([["member-1", {}]]),
-    send: async (message: MessageCreateOptions) => { messages.push(message); return {}; },
-  }) as unknown as VoiceChannel;
-  let currentChannel: VoiceChannel | null = channel("first-channel");
-  const latestIds = new Map(puuids.map((puuid) => [puuid, "historical-match" as string | null]));
+  const location = new Map<string, string | null>();
+  /** Channels announcements may not use, like the TEST_VOICE_CHANNEL_ID restriction in mock mode. */
+  const blocked = new Set<string>();
+  const move = (memberId: string, channelId: string | null) => {
+    const previous = location.get(memberId);
+    if (previous) channel(previous).members.delete(memberId);
+    location.set(memberId, channelId);
+    if (channelId) channel(channelId).members.set(memberId, { user: { bot: false } });
+  };
+  for (const spec of memberSpecs) move(spec.id, spec.channel);
+  const allPuuids = [...new Set(memberSpecs.flatMap((spec) => spec.puuids))];
+  const latestIds = new Map(allPuuids.map((puuid) => [puuid, "historical-match" as string | null]));
+  const matches = new Map<string, MatchDetail>();
   const lookups: string[] = [];
   const generated: string[] = [];
   const played: string[] = [];
@@ -56,18 +89,22 @@ function harness(guildId: string, puuids = ["tracked"]) {
   const errors: unknown[] = [];
   const infos: string[] = [];
   let generate = async (text: string): Promise<string> => { generated.push(text); return "mock-audio.wav"; };
+  let play: VoiceAnnouncementDependencies["play"] = async (target) => { played.push(target.id); };
   const service = new VoiceAnnouncementService({
     // Monitor tests inspect the whole report as one request; sentence chunking is covered in voiceAnnouncements tests.
     split: (text) => [text],
     generate: (text) => generate(text),
-    play: async (target) => { played.push(target.id); },
+    play: (...args) => play(...args),
     cleanup: async (path) => { cleaned.push(path); },
   });
   const dependencies: MonitorDependencies = {
     latest: async (puuid) => { lookups.push(puuid); return latestIds.get(puuid) ?? null; },
-    detail: async (matchId): Promise<MatchDetail> => testMatch(matchId, [...new Set(puuids)]),
-    binding: () => binding,
-    resolveChannel: () => currentChannel,
+    detail: async (matchId): Promise<MatchDetail> => matches.get(matchId) ?? testMatch(matchId, allPuuids),
+    members: () => members,
+    resolveChannel: (_client, _guildId, userId) => {
+      const channelId = location.get(userId);
+      return channelId && !blocked.has(channelId) ? channel(channelId) as unknown as VoiceChannel : null;
+    },
     announce: (...args) => service.announce(...args),
     mock: () => true,
     log: (error) => { errors.push(error); },
@@ -76,20 +113,65 @@ function harness(guildId: string, puuids = ["tracked"]) {
   const monitor = new GameMonitor(dependencies);
   monitors.push(monitor);
   const client = {} as Client;
+  const inVoice = () => members.filter((member) => location.get(member.discordUserId)).map((member) => member.discordUserId);
   return {
-    guildId, monitor, client, dependencies, latestIds, lookups, generated, played, cleaned, errors, infos, messages, channel,
-    get binding() { return binding; },
-    set binding(value: TrackedMember | undefined) { binding = value; },
-    get currentChannel() { return currentChannel; },
-    set currentChannel(value: VoiceChannel | null) { currentChannel = value; },
+    guildId, monitor, client, dependencies, latestIds, matches, lookups, generated, played, cleaned, errors, infos, sent, channel, move, blocked,
+    get messages() { return sent.map((entry) => entry.message); },
+    get members() { return members; },
+    set members(value: TrackedMember[]) { members = value; },
     set generate(value: (text: string) => Promise<string>) { generate = value; },
+    set play(value: VoiceAnnouncementDependencies["play"]) { play = value; },
+    /** What the voice event does: sync the session to every tracked member who is in voice. */
+    sync: () => monitor.sync(client, guildId, inVoice()),
     start: async () => {
-      monitor.start(client, guildId, currentChannel!.id);
+      monitor.sync(client, guildId, inVoice());
       return monitor.poll(client, guildId);
     },
     poll: () => monitor.poll(client, guildId),
+    status: () => monitor.status(guildId),
   };
 }
+
+/**
+ * A parsed match where `allies` share the first team and `enemies` play on the other team.
+ * Each tracked participant is named after its PUUID so speech shows whose view it uses.
+ */
+function match(matchId: string, allies: string[], enemies: string[] = [], endedAt: number | null = Date.now()): MatchDetail {
+  const detail = testMatch(matchId, allies);
+  allies.forEach((puuid, index) => { detail.info.participants[index].riotIdGameName = puuid; });
+  enemies.forEach((puuid, index) => {
+    detail.info.participants[5 + index].puuid = puuid;
+    detail.info.participants[5 + index].riotIdGameName = puuid;
+  });
+  detail.metadata.participants = detail.info.participants.map((participant) => participant.puuid);
+  detail.info.gameEndTimestamp = endedAt;
+  return detail;
+}
+
+/** Playback that lasts until released, and stops like the real transport when its signal aborts. */
+function heldPlayback(bot: ReturnType<typeof harness>) {
+  const waiters: Array<() => void> = [];
+  let starts = 0;
+  let awaited = 0;
+  let release = () => {};
+  bot.play = (target, _path, _timeout, signal) => new Promise<void>((resolve, reject) => {
+    bot.played.push(target.id);
+    release = resolve;
+    signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+    starts++;
+    waiters.splice(0).forEach((wake) => wake());
+  });
+  return {
+    /** Resolves once the next playback, counted from the previous call, has started. */
+    nextStart: async () => {
+      const target = ++awaited;
+      while (starts < target) await new Promise<void>((wake) => waiters.push(wake));
+    },
+    release: () => release(),
+  };
+}
+
+// Single-member behaviour, unchanged from before several members could be tracked.
 
 test("starting a monitoring session establishes a baseline without speaking history", async () => {
   const bot = harness("baseline-guild");
@@ -132,26 +214,28 @@ test("monitoring logs its start, baseline, detections, completions and stop", as
 
 test("status reports the active session, its last check and the last error after it stops", async () => {
   const bot = harness("status-guild");
-  assert.deepEqual({ ...bot.monitor.status(bot.guildId), announced: [] }, {
-    active: false, startedAt: undefined, lastPollAt: undefined, lastError: undefined, announced: [] });
+  assert.deepEqual({ ...bot.status(), announced: [] }, {
+    active: false, startedAt: undefined, lastPollAt: undefined, lastError: undefined, announced: [], presentMemberIds: [] });
   const before = Date.now();
   await bot.start();
-  const started = bot.monitor.status(bot.guildId);
+  const started = bot.status();
   assert.equal(started.active, true);
+  assert.deepEqual(started.presentMemberIds, ["member-1"]);
   assert.ok(started.startedAt! >= before && started.lastPollAt! >= started.startedAt!);
   bot.latestIds.set("tracked", "announced-match");
   await bot.poll();
-  assert.deepEqual([...bot.monitor.status(bot.guildId).announced], ["announced-match"]);
+  assert.deepEqual([...bot.status().announced], ["announced-match"]);
   bot.dependencies.latest = async () => { throw new RiotApiError("Update RIOT_API_KEY", "unauthorized", 401); };
   await bot.poll();
-  const stopped = bot.monitor.status(bot.guildId);
+  const stopped = bot.status();
   assert.equal(stopped.active, false);
+  assert.deepEqual(stopped.presentMemberIds, []);
   assert.equal(stopped.lastError?.message, "Update RIOT_API_KEY");
   assert.match(bot.infos.at(-1)!, /^Monitoring stopped: Riot rejected the credentials/);
   // A later clean session clears the old error.
   bot.dependencies.latest = async () => "announced-match";
   await bot.start();
-  assert.equal(bot.monitor.status(bot.guildId).lastError, undefined);
+  assert.equal(bot.status().lastError, undefined);
 });
 
 test("tracked defeat remains defeat even when the enemy has the highest KDA", async () => {
@@ -210,7 +294,7 @@ test("concurrent manual polls await one baseline and one announcement", async ()
   const baseline = deferred<string | null>();
   let latestCalls = 0;
   bot.dependencies.latest = async () => { latestCalls++; return baseline.promise; };
-  bot.monitor.start(bot.client, bot.guildId, bot.currentChannel!.id);
+  bot.sync();
   const first = bot.poll();
   const second = bot.poll();
   assert.equal(first, second);
@@ -259,7 +343,6 @@ test("stop and restart create a new baseline instead of replaying an offline mat
   const bot = harness("restart-monitor-guild");
   await bot.start();
   bot.monitor.stop(bot.guildId);
-  assert.equal(getAnnouncerState(bot.guildId).activeVoiceChannelId, null);
   assert.equal(getAnnouncerState(bot.guildId).pollingInterval, null);
   bot.latestIds.set("tracked", "offline-match");
   assert.deepEqual(await bot.start(), { announced: 0, errors: 0 });
@@ -320,13 +403,17 @@ test("rebind during TTS cancels the old member's pending announcement", async ()
   bot.generate = async () => { started.resolve(); return speech.promise; };
   const poll = bot.poll();
   await started.promise;
-  bot.binding = { ...bot.binding!, discordUserId: "member-2" };
+  bot.members = [{ ...bot.members[0], discordUserId: "member-2" }];
   speech.resolve("rebound-audio.wav");
   assert.deepEqual(await poll, { announced: 0, errors: 0 });
   assert.deepEqual(bot.played, []);
   assert.deepEqual(bot.cleaned, ["rebound-audio.wav"]);
+  // The new owner starts from a fresh baseline instead of inheriting the old member's pending match.
+  bot.move("member-2", "first-channel");
   await bot.start();
+  await bot.poll();
   assert.equal(bot.played.length, 0);
+  assert.equal(getLastMatchId(bot.guildId, "tracked"), "new-match");
 });
 
 test("channel moves during TTS play and mention only in the member's new channel", async () => {
@@ -338,11 +425,12 @@ test("channel moves during TTS play and mention only in the member's new channel
   bot.generate = async () => { started.resolve(); return speech.promise; };
   const poll = bot.poll();
   await started.promise;
-  bot.currentChannel = bot.channel("second-channel");
-  bot.monitor.start(bot.client, bot.guildId, "second-channel");
+  bot.move("member-1", "second-channel");
+  bot.sync();
   speech.resolve("moved-audio.wav");
   assert.equal((await poll).announced, 1);
   assert.deepEqual(bot.played, ["second-channel"]);
+  assert.deepEqual(bot.sent.map((entry) => entry.channelId), ["second-channel"]);
 });
 
 test("a simulation poll pinned to its authorized channel cancels a move during TTS", async () => {
@@ -354,7 +442,7 @@ test("a simulation poll pinned to its authorized channel cancels a move during T
   bot.generate = async () => { started.resolve(); return speech.promise; };
   const poll = bot.monitor.poll(bot.client, bot.guildId, "first-channel");
   await started.promise;
-  bot.currentChannel = bot.channel("unauthorized-channel");
+  bot.move("member-1", "unauthorized-channel");
   speech.resolve("pinned-simulation.wav");
   assert.deepEqual(await poll, { announced: 0, errors: 0 });
   assert.deepEqual(bot.played, []);
@@ -373,7 +461,7 @@ test("a manual poll adds its channel guard to an already running automatic poll"
   await started.promise;
   const manual = bot.monitor.poll(bot.client, bot.guildId, "first-channel");
   assert.equal(automatic, manual);
-  bot.currentChannel = bot.channel("unauthorized-channel");
+  bot.move("member-1", "unauthorized-channel");
   speech.resolve("inflight-pinned.wav");
   assert.deepEqual(await manual, { announced: 0, errors: 0 });
   assert.deepEqual(bot.played, []);
@@ -404,7 +492,7 @@ test("a member leaving during TTS cancels playback without consuming the match",
   bot.generate = async () => { started.resolve(); return speech.promise; };
   const poll = bot.poll();
   await started.promise;
-  bot.currentChannel = null;
+  bot.move("member-1", null);
   speech.resolve("left-audio.wav");
   assert.deepEqual(await poll, { announced: 0, errors: 0 });
   assert.equal(getLastMatchId(bot.guildId, "tracked"), "historical-match");
@@ -415,7 +503,7 @@ test("text send failure is reported after successful audio without repeating voi
   const bot = harness("text-failure-guild");
   await bot.start();
   bot.latestIds.set("tracked", "new-match");
-  bot.currentChannel!.send = async () => { throw new Error("Missing SendMessages permission"); };
+  bot.channel("first-channel").send = async () => { throw new Error("Missing SendMessages permission"); };
   assert.deepEqual(await bot.poll(), { announced: 1, errors: 1 });
   assert.deepEqual(await bot.poll(), { announced: 0, errors: 0 });
   assert.equal(bot.played.length, 1);
@@ -448,7 +536,7 @@ test("participants without a mapped present Discord member cannot trigger mentio
   const bot = harness("mention-safety-guild");
   await bot.start();
   bot.latestIds.set("tracked", "new-match");
-  (bot.currentChannel!.members as unknown as Map<string, unknown>).clear();
+  bot.channel("first-channel").members.clear();
   const detail = bot.dependencies.detail;
   bot.dependencies.detail = async (matchId) => {
     const match = await detail(matchId);
@@ -460,4 +548,405 @@ test("participants without a mapped present Discord member cannot trigger mentio
   assert.equal(bot.messages[0].content, undefined);
   assert.doesNotMatch(JSON.stringify(bot.messages[0].embeds), /@everyone|<@/);
   assert.doesNotMatch(bot.generated[0], /@everyone|<@/);
+});
+
+// Several tracked members in one guild.
+
+test("separate matches play in each player's channel, oldest first, and baselines advance only after playback", async () => {
+  const bot = harness("separate-matches-guild", [
+    { id: "alice-id", puuids: ["alice"], channel: "x" },
+    { id: "bob-id", puuids: ["bob"], channel: "y" },
+    { id: "cara-id", puuids: ["cara"], channel: "x" },
+  ]);
+  await bot.start();
+  const now = Date.now();
+  bot.matches.set("alice-match", match("alice-match", ["alice"], [], now - 60_000));
+  bot.matches.set("bob-match", match("bob-match", ["bob"], [], now - 120_000));
+  bot.matches.set("cara-match", match("cara-match", ["cara"], [], null));
+  bot.latestIds.set("alice", "alice-match");
+  bot.latestIds.set("bob", "bob-match");
+  bot.latestIds.set("cara", "cara-match");
+  const baselinesAtPlayback: string[][] = [];
+  bot.play = async (target) => {
+    bot.played.push(target.id);
+    baselinesAtPlayback.push(["alice", "bob", "cara"].map((puuid) => getLastMatchId(bot.guildId, puuid)!));
+  };
+  assert.deepEqual(await bot.poll(), { announced: 3, errors: 0 });
+  assert.deepEqual(bot.played, ["y", "x", "x"]);
+  assert.deepEqual(baselinesAtPlayback, [
+    ["historical-match", "historical-match", "historical-match"],
+    ["historical-match", "bob-match", "historical-match"],
+    ["alice-match", "bob-match", "historical-match"],
+  ]);
+  assert.match(bot.generated[0], /bob这局/);
+  assert.match(bot.generated[1], /alice这局/);
+  assert.match(bot.generated[2], /cara这局/);
+  assert.deepEqual(bot.sent.map((entry) => [entry.channelId, entry.message.content, entry.message.allowedMentions?.users]), [
+    ["y", "<@bob-id>", ["bob-id"]],
+    ["x", "<@alice-id>", ["alice-id"]],
+    ["x", "<@cara-id>", ["cara-id"]],
+  ]);
+  assert.deepEqual(["alice", "bob", "cara"].map((puuid) => getLastMatchId(bot.guildId, puuid)), ["alice-match", "bob-match", "cara-match"]);
+});
+
+test("a match shared across channels is announced once where most of its players are, mentioning exactly them", async () => {
+  const bot = harness("shared-across-channels-guild", [
+    { id: "alice-id", puuids: ["alice"], channel: "x" },
+    { id: "bob-id", puuids: ["bob"], channel: "x" },
+    { id: "cara-id", puuids: ["cara"], channel: "y" },
+  ]);
+  await bot.start();
+  bot.matches.set("party-match", match("party-match", ["alice", "bob", "cara"]));
+  for (const puuid of ["alice", "bob", "cara"]) bot.latestIds.set(puuid, "party-match");
+  // A bystander makes y busier, but the count of players decides first.
+  bot.channel("y").members.set("bystander", { user: { bot: false } });
+  assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
+  assert.deepEqual(bot.played, ["x"]);
+  assert.equal(bot.generated.length, 1);
+  assert.equal(bot.sent.length, 1);
+  assert.equal(bot.sent[0].channelId, "x");
+  assert.equal(bot.sent[0].message.content, "<@alice-id> <@bob-id>");
+  assert.deepEqual(bot.sent[0].message.allowedMentions, { parse: [], roles: [], users: ["alice-id", "bob-id"], repliedUser: false });
+  assert.deepEqual(["alice", "bob", "cara"].map((puuid) => getLastMatchId(bot.guildId, puuid)), ["party-match", "party-match", "party-match"]);
+  assert.deepEqual(await bot.poll(), { announced: 0, errors: 0 });
+});
+
+test("a one-to-one tie goes to the busier channel, then to the earliest-bound member, then stays put", async () => {
+  const members = (): MemberSpec[] => [
+    { id: "alice-id", puuids: ["alice"], channel: "x" },
+    { id: "bob-id", puuids: ["bob"], channel: "y" },
+  ];
+  const busier = harness("tie-humans-guild", members());
+  await busier.start();
+  busier.channel("y").members.set("bystander", { user: { bot: false } });
+  busier.channel("x").members.set("some-bot", { user: { bot: true } });
+  busier.matches.set("duo-match", match("duo-match", ["alice", "bob"]));
+  busier.latestIds.set("alice", "duo-match");
+  busier.latestIds.set("bob", "duo-match");
+  await busier.poll();
+  assert.deepEqual(busier.played, ["y"], "two people beat one person and a bot");
+
+  const ordered = harness("tie-order-guild", members());
+  await ordered.start();
+  ordered.matches.set("duo-match", match("duo-match", ["alice", "bob"]));
+  ordered.latestIds.set("alice", "duo-match");
+  ordered.latestIds.set("bob", "duo-match");
+  await ordered.poll();
+  assert.deepEqual(ordered.played, ["x"], "alice was bound first");
+  // The next tie keeps the channel the bot just used, even when the other one gets busier.
+  ordered.channel("y").members.set("bystander", { user: { bot: false } });
+  ordered.matches.set("rematch", match("rematch", ["alice", "bob"]));
+  ordered.latestIds.set("alice", "rematch");
+  ordered.latestIds.set("bob", "rematch");
+  await ordered.poll();
+  assert.deepEqual(ordered.played, ["x", "x"]);
+});
+
+test("a second member joining gets a baseline without speech and never replays an earlier game", async () => {
+  const bot = harness("second-join-guild", [
+    { id: "alice-id", puuids: ["alice"], channel: "x" },
+    { id: "bob-id", puuids: ["bob"], channel: null },
+  ]);
+  await bot.start();
+  assert.deepEqual(bot.lookups, ["alice"], "only members in voice are polled");
+  bot.latestIds.set("bob", "bob-before-joining");
+  bot.move("bob-id", "y");
+  bot.sync();
+  assert.deepEqual(await bot.poll(), { announced: 0, errors: 0 });
+  assert.deepEqual(bot.status().presentMemberIds, ["alice-id", "bob-id"]);
+  assert.equal(getLastMatchId(bot.guildId, "bob"), "bob-before-joining");
+  assert.equal(getLastMatchId(bot.guildId, "alice"), "historical-match", "alice keeps her baseline");
+  assert.deepEqual(bot.generated, []);
+  assert.ok(bot.infos.includes("Monitoring now also covers bob#NA1 in voice channel y."));
+  bot.matches.set("bob-after-joining", match("bob-after-joining", ["bob"]));
+  bot.latestIds.set("bob", "bob-after-joining");
+  assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
+  assert.deepEqual(bot.played, ["y"]);
+});
+
+test("a member joining during a running poll gets a baseline right after it", async () => {
+  const bot = harness("join-during-poll-guild", [
+    { id: "alice-id", puuids: ["alice"], channel: "x" },
+    { id: "bob-id", puuids: ["bob"], channel: null },
+  ]);
+  await bot.start();
+  bot.latestIds.set("alice", "alice-match");
+  const speech = deferred<string>();
+  const started = deferred<void>();
+  bot.generate = async () => { started.resolve(); return speech.promise; };
+  const running = bot.poll();
+  await started.promise;
+  bot.move("bob-id", "x");
+  bot.sync();
+  speech.resolve("alice.wav");
+  assert.deepEqual(await running, { announced: 1, errors: 0 });
+  // No timer tick or manual poll: the follow-up poll starts on its own.
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(getLastMatchId(bot.guildId, "bob"), "historical-match");
+});
+
+test("one member leaving keeps the session; a rejoin starts a fresh baseline; the last one leaving stops it", async () => {
+  const bot = harness("leave-rejoin-guild", [
+    { id: "alice-id", puuids: ["alice"], channel: "x" },
+    { id: "bob-id", puuids: ["bob"], channel: "y" },
+  ]);
+  await bot.start();
+  const startedAt = bot.status().startedAt;
+  bot.move("bob-id", null);
+  bot.sync();
+  assert.equal(bot.status().active, true);
+  assert.equal(bot.status().startedAt, startedAt);
+  assert.deepEqual(bot.status().presentMemberIds, ["alice-id"]);
+  assert.equal(getLastMatchId(bot.guildId, "bob"), undefined, "bob's baseline is dropped");
+  assert.equal(getLastMatchId(bot.guildId, "alice"), "historical-match");
+  assert.ok(bot.infos.includes("Monitoring no longer covers bob#NA1: they left voice or were unbound."));
+  // Bob plays while out of voice, then comes back.
+  bot.latestIds.set("bob", "bob-offline-match");
+  bot.lookups.length = 0;
+  await bot.poll();
+  assert.deepEqual(bot.lookups, ["alice"]);
+  bot.move("bob-id", "y");
+  bot.sync();
+  await bot.poll();
+  assert.equal(getLastMatchId(bot.guildId, "bob"), "bob-offline-match");
+  assert.deepEqual(bot.generated, []);
+  bot.move("alice-id", null);
+  bot.move("bob-id", null);
+  bot.sync();
+  assert.equal(bot.status().active, false);
+  assert.equal(bot.infos.at(-1), "Monitoring stopped: no tracked member is in voice.");
+  assert.equal(getAnnouncerState(bot.guildId).pollingInterval, null);
+});
+
+test("a member leaving does not lose another member's pending match", async () => {
+  const bot = harness("pending-survives-guild", [
+    { id: "alice-id", puuids: ["alice"], channel: "x" },
+    { id: "bob-id", puuids: ["bob"], channel: "y" },
+  ]);
+  await bot.start();
+  bot.latestIds.set("alice", "alice-match");
+  let attempts = 0;
+  bot.generate = async () => { attempts++; if (attempts === 1) throw new Error("speech unavailable"); return "retry.wav"; };
+  assert.deepEqual(await bot.poll(), { announced: 0, errors: 1 });
+  bot.move("bob-id", null);
+  bot.sync();
+  assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
+  assert.deepEqual(bot.played, ["x"]);
+});
+
+test("a majority move during speech generation is followed", async () => {
+  const bot = harness("generation-majority-guild", [
+    { id: "alice-id", puuids: ["alice"], channel: "x" },
+    { id: "bob-id", puuids: ["bob"], channel: "x" },
+    { id: "cara-id", puuids: ["cara"], channel: "y" },
+  ]);
+  await bot.start();
+  bot.matches.set("party-match", match("party-match", ["alice", "bob", "cara"]));
+  for (const puuid of ["alice", "bob", "cara"]) bot.latestIds.set(puuid, "party-match");
+  const speech = deferred<string>();
+  const started = deferred<void>();
+  bot.generate = async () => { started.resolve(); return speech.promise; };
+  const poll = bot.poll();
+  await started.promise;
+  bot.move("bob-id", "y");
+  bot.sync();
+  speech.resolve("party.wav");
+  assert.deepEqual(await poll, { announced: 1, errors: 0 });
+  assert.deepEqual(bot.played, ["y"]);
+  assert.equal(bot.sent[0].message.content, "<@bob-id> <@cara-id>");
+});
+
+test("a tie during speech generation keeps the first channel", async () => {
+  const bot = harness("generation-tie-guild", [
+    { id: "alice-id", puuids: ["alice"], channel: "x" },
+    { id: "bob-id", puuids: ["bob"], channel: "x" },
+    { id: "cara-id", puuids: ["cara"], channel: "y" },
+  ]);
+  await bot.start();
+  bot.matches.set("party-match", match("party-match", ["alice", "bob", "cara"]));
+  for (const puuid of ["alice", "bob", "cara"]) bot.latestIds.set(puuid, "party-match");
+  bot.channel("y").members.set("bystander", { user: { bot: false } });
+  const speech = deferred<string>();
+  const started = deferred<void>();
+  bot.generate = async () => { started.resolve(); return speech.promise; };
+  const poll = bot.poll();
+  await started.promise;
+  bot.move("bob-id", null);
+  bot.sync();
+  speech.resolve("party.wav");
+  assert.deepEqual(await poll, { announced: 1, errors: 0 });
+  assert.deepEqual(bot.played, ["x"]);
+});
+
+test("during playback a tied departure keeps playing while a strict majority move aborts and retries there", async () => {
+  const bot = harness("playback-move-guild", [
+    { id: "alice-id", puuids: ["alice"], channel: "x" },
+    { id: "bob-id", puuids: ["bob"], channel: "x" },
+    { id: "cara-id", puuids: ["cara"], channel: "y" },
+  ]);
+  await bot.start();
+  const playback = heldPlayback(bot);
+  bot.matches.set("first-party", match("first-party", ["alice", "bob", "cara"]));
+  for (const puuid of ["alice", "bob", "cara"]) bot.latestIds.set(puuid, "first-party");
+  // y is busier, so only the hysteresis keeps the tied announcement in x.
+  bot.channel("y").members.set("bystander", { user: { bot: false } });
+  const tied = bot.poll();
+  await playback.nextStart();
+  bot.move("bob-id", null);
+  bot.sync();
+  await delay(WATCH);
+  playback.release();
+  assert.deepEqual(await tied, { announced: 1, errors: 0 });
+  assert.deepEqual(bot.played, ["x"]);
+
+  bot.move("bob-id", "x");
+  bot.sync();
+  await bot.poll();
+  bot.matches.set("second-party", match("second-party", ["alice", "bob", "cara"]));
+  for (const puuid of ["alice", "bob", "cara"]) bot.latestIds.set(puuid, "second-party");
+  const moved = bot.poll();
+  await playback.nextStart();
+  assert.deepEqual(bot.played, ["x", "x"]);
+  bot.move("bob-id", "y");
+  bot.sync();
+  assert.deepEqual(await moved, { announced: 0, errors: 0 });
+  assert.equal(getLastMatchId(bot.guildId, "alice"), "first-party", "the aborted match is not consumed");
+  assert.equal(bot.sent.length, 1);
+  const retry = bot.poll();
+  await playback.nextStart();
+  playback.release();
+  assert.deepEqual(await retry, { announced: 1, errors: 0 });
+  assert.deepEqual(bot.played, ["x", "x", "y"]);
+  assert.equal(bot.sent.at(-1)!.message.content, "<@bob-id> <@cara-id>");
+  assert.equal(getLastMatchId(bot.guildId, "alice"), "second-party");
+});
+
+test("unbinding the member whose view the report uses cancels it, while an unrelated bind does not", async () => {
+  const bot = harness("perspective-unbind-guild", [
+    { id: "alice-id", puuids: ["alice"], channel: "x" },
+    { id: "bob-id", puuids: ["bob"], channel: "x" },
+  ]);
+  await bot.start();
+  const firstSpeech = deferred<string>();
+  const firstStarted = deferred<void>();
+  bot.generate = async () => { firstStarted.resolve(); return firstSpeech.promise; };
+  bot.matches.set("duo-match", match("duo-match", ["alice", "bob"]));
+  bot.latestIds.set("alice", "duo-match");
+  bot.latestIds.set("bob", "duo-match");
+  const unrelated = bot.poll();
+  await firstStarted.promise;
+  bot.members = [...bot.members, { discordUserId: "dan-id", accounts: [{ puuid: "dan", gameName: "dan", tagLine: "NA1" }] }];
+  bot.sync();
+  firstSpeech.resolve("duo.wav");
+  assert.deepEqual(await unrelated, { announced: 1, errors: 0 });
+
+  const secondSpeech = deferred<string>();
+  const secondStarted = deferred<void>();
+  const texts: string[] = [];
+  bot.generate = async (text) => { texts.push(text); secondStarted.resolve(); return secondSpeech.promise; };
+  bot.matches.set("rematch", match("rematch", ["alice", "bob"]));
+  bot.latestIds.set("alice", "rematch");
+  bot.latestIds.set("bob", "rematch");
+  const unbound = bot.poll();
+  await secondStarted.promise;
+  assert.match(texts[0], /alice这局/);
+  bot.members = bot.members.filter((member) => member.discordUserId !== "alice-id");
+  secondSpeech.resolve("rematch.wav");
+  assert.deepEqual(await unbound, { announced: 0, errors: 0 });
+  assert.deepEqual(bot.played, ["x"]);
+  assert.equal(getLastMatchId(bot.guildId, "bob"), "duo-match", "the cancelled match is not consumed");
+  // Bob is still in voice, so the match is announced from his side next time.
+  bot.sync();
+  bot.generate = async (text) => { texts.push(text); return "bob.wav"; };
+  assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
+  assert.match(texts[1], /bob这局/);
+});
+
+test("a participant out of voice is neither mentioned nor replayed when they join later", async () => {
+  const bot = harness("absent-participant-guild", [
+    { id: "alice-id", puuids: ["alice"], channel: "x" },
+    { id: "bob-id", puuids: ["bob"], channel: null },
+  ]);
+  await bot.start();
+  bot.matches.set("duo-match", match("duo-match", ["alice", "bob"]));
+  bot.latestIds.set("alice", "duo-match");
+  bot.latestIds.set("bob", "duo-match");
+  assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
+  assert.equal(bot.sent[0].message.content, "<@alice-id>");
+  assert.deepEqual(bot.sent[0].message.allowedMentions?.users, ["alice-id"]);
+  assert.ok(!bot.lookups.includes("bob"));
+  bot.move("bob-id", "x");
+  bot.sync();
+  assert.deepEqual(await bot.poll(), { announced: 0, errors: 0 });
+  assert.deepEqual(await bot.poll(), { announced: 0, errors: 0 });
+  assert.equal(bot.played.length, 1);
+  assert.equal(getLastMatchId(bot.guildId, "bob"), "duo-match");
+});
+
+test("the report speaks for the team with more players in the channel and still mentions a tracked enemy", async () => {
+  const bot = harness("perspective-team-guild", [
+    { id: "alice-id", puuids: ["alice"], channel: "x" },
+    { id: "cara-id", puuids: ["cara"], channel: "x" },
+    { id: "dan-id", puuids: ["dan"], channel: "x" },
+  ]);
+  await bot.start();
+  bot.matches.set("rivals", match("rivals", ["cara", "dan"], ["alice"]));
+  for (const puuid of ["alice", "cara", "dan"]) bot.latestIds.set(puuid, "rivals");
+  assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
+  assert.match(bot.generated[0], /cara这局/);
+  assert.doesNotMatch(bot.generated[0], /alice/, "the enemy is neither scored nor named");
+  assert.doesNotMatch(JSON.stringify(bot.messages[0].embeds), /alice/);
+  assert.equal(bot.messages[0].content, "<@alice-id> <@cara-id> <@dan-id>");
+
+  const tie = harness("perspective-tie-guild", [
+    { id: "alice-id", puuids: ["alice"], channel: "x" },
+    { id: "cara-id", puuids: ["cara"], channel: "x" },
+  ]);
+  await tie.start();
+  tie.matches.set("duel", match("duel", ["cara"], ["alice"]));
+  tie.latestIds.set("alice", "duel");
+  tie.latestIds.set("cara", "duel");
+  await tie.poll();
+  assert.match(tie.generated[0], /alice这局/, "a one-to-one split speaks for the earliest-bound member");
+  assert.doesNotMatch(tie.generated[0], /cara/);
+});
+
+test("a match with no player in a usable channel waits without an error and is logged once", async () => {
+  const bot = harness("blocked-channel-guild", [{ id: "alice-id", puuids: ["alice"], channel: "stage" }]);
+  bot.blocked.add("stage");
+  await bot.start();
+  bot.latestIds.set("alice", "waiting-match");
+  assert.deepEqual(await bot.poll(), { announced: 0, errors: 0 });
+  assert.deepEqual(await bot.poll(), { announced: 0, errors: 0 });
+  assert.equal(bot.infos.filter((message) => message.startsWith("Match waiting-match is waiting")).length, 1);
+  assert.equal(getLastMatchId(bot.guildId, "alice"), "historical-match");
+  assert.deepEqual(bot.generated, []);
+  bot.move("alice-id", "x");
+  assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
+  assert.deepEqual(bot.played, ["x"]);
+});
+
+test("an account added to a member already in voice gets a baseline before anything is announced", async () => {
+  const bot = harness("added-account-guild", [{ id: "alice-id", puuids: ["alice"], channel: "x" }]);
+  await bot.start();
+  bot.latestIds.set("alice-smurf", "smurf-history");
+  bot.members = [{ discordUserId: "alice-id", accounts: [
+    { puuid: "alice", gameName: "alice", tagLine: "NA1" },
+    { puuid: "alice-smurf", gameName: "alice-smurf", tagLine: "NA1" },
+  ] }];
+  bot.sync();
+  assert.deepEqual(await bot.poll(), { announced: 0, errors: 0 });
+  assert.equal(getLastMatchId(bot.guildId, "alice-smurf"), "smurf-history");
+  // Replacing the account drops its baseline, so adding it back later cannot replay a game played in between.
+  bot.members = [{ discordUserId: "alice-id", accounts: [{ puuid: "alice", gameName: "alice", tagLine: "NA1" }] }];
+  bot.sync();
+  assert.equal(getLastMatchId(bot.guildId, "alice-smurf"), undefined);
+  bot.latestIds.set("alice-smurf", "smurf-while-unbound");
+  bot.members = [{ discordUserId: "alice-id", accounts: [
+    { puuid: "alice", gameName: "alice", tagLine: "NA1" },
+    { puuid: "alice-smurf", gameName: "alice-smurf", tagLine: "NA1" },
+  ] }];
+  bot.sync();
+  assert.deepEqual(await bot.poll(), { announced: 0, errors: 0 });
+  assert.deepEqual(bot.generated, []);
 });

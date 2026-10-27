@@ -9,7 +9,6 @@ interface AnnouncerState {
   voiceStyle: VoiceStyle;
   lastMatchIds: Map<string, string>;
   pollingInterval: NodeJS.Timeout | null;
-  activeVoiceChannelId: string | null;
 }
 
 const store = new Map<string, AnnouncerState>();
@@ -20,7 +19,6 @@ function createDefaultState(guildId: string): AnnouncerState {
     voiceStyle: savedPreference?.voice_style ?? DEFAULT_VOICE_STYLE,
     lastMatchIds: new Map<string, string>(),
     pollingInterval: null,
-    activeVoiceChannelId: null,
   };
 }
 
@@ -64,9 +62,10 @@ export function getLastMatchId(guildId: string, puuid: string): string | undefin
   return state.lastMatchIds.get(puuid);
 }
 
-export function setActiveVoiceChannel(guildId: string, channelId: string | null): void {
+/** Forget the baselines of accounts that are no longer monitored, so a later return starts a fresh baseline. */
+export function clearLastMatchIds(guildId: string, puuids: Iterable<string>): void {
   const state = getAnnouncerState(guildId);
-  state.activeVoiceChannelId = channelId;
+  for (const puuid of puuids) state.lastMatchIds.delete(puuid);
 }
 
 /** End a monitoring session without erasing the persisted voice preference. */
@@ -76,7 +75,6 @@ export function resetAnnouncerRuntime(guildId: string): void {
     clearInterval(state.pollingInterval);
   }
   state.pollingInterval = null;
-  state.activeVoiceChannelId = null;
   state.lastMatchIds.clear();
 }
 

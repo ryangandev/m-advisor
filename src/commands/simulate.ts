@@ -2,7 +2,8 @@ import { MessageFlags, PermissionFlagsBits, SlashCommandBuilder } from "discord.
 import { BotCommand } from "../types";
 import { listTrackedMembers } from "../store/bindingStore";
 import { getRiotMode, simulateMockMatch } from "../services/riotData";
-import { pollGuildNow, startPolling } from "../services/gameMonitor";
+import { pollGuildNow } from "../services/gameMonitor";
+import { reconcileGuildMonitoring } from "../services/monitorLifecycle";
 import { getAuthorizedTestChannel, safeTestError } from "../utils/testChannel";
 import { withSimulationLock } from "../services/simulationLock";
 import { getLastMatchId } from "../store/announcerStore";
@@ -28,7 +29,8 @@ const command: BotCommand = {
         const member = await channel.guild.members.fetch(binding.discordUserId);
         assertRunning();
         if (member.voice.channelId !== channel.id) throw new Error("请先让被追踪成员进入同一个测试语音频道。");
-        startPolling(interaction.client, channel.guild.id, channel.id);
+        await reconcileGuildMonitoring(interaction.client, channel.guild.id);
+        assertRunning();
         const baseline = await pollGuildNow(interaction.client, channel.guild.id, channel.id);
         assertRunning();
         if (baseline.errors > 0) throw new Error("模拟比赛暂未播报成功，请稍后重试或查看本地日志。");
