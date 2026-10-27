@@ -176,6 +176,7 @@ const MIGRATIONS: readonly string[] = [
       PRIMARY KEY (guild_id, discord_user_id, match_id, mock)
     ) STRICT;
     CREATE INDEX rank_results_by_member ON rank_results(guild_id, discord_user_id, mock, played_at);
+    CREATE INDEX rank_results_by_time ON rank_results(guild_id, mock, played_at);
   `,
 ];
 /** The schema version of this bot: a database at this version needs no migration. */

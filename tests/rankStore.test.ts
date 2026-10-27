@@ -120,7 +120,7 @@ test("a version 6 database upgrades in a separate process with a backup and its 
   }
 });
 
-test("the upgraded table is STRICT, has the member index and no foreign key", () => {
+test("the upgraded table is STRICT, has its two indexes and no foreign key", () => {
   getDatabase();
   const database = getDatabase();
   const table = database.prepare("SELECT strict FROM pragma_table_list('rank_results')").get() as { strict: number };
@@ -128,6 +128,15 @@ test("the upgraded table is STRICT, has the member index and no foreign key", ()
   assert.deepEqual(
     database.prepare("SELECT name FROM pragma_index_info('rank_results_by_member') ORDER BY seqno").all(),
     [{ name: "guild_id" }, { name: "discord_user_id" }, { name: "mock" }, { name: "played_at" }],
+  );
+  assert.deepEqual(
+    database.prepare("SELECT name FROM pragma_index_info('rank_results_by_time') ORDER BY seqno").all(),
+    [{ name: "guild_id" }, { name: "mock" }, { name: "played_at" }],
+    "a server-wide period query, such as the weekly 马报, has its index",
+  );
+  assert.deepEqual(
+    database.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'rank_results' AND name NOT LIKE 'sqlite_%' ORDER BY name").all(),
+    [{ name: "rank_results_by_member" }, { name: "rank_results_by_time" }],
   );
   assert.deepEqual(database.prepare("SELECT * FROM pragma_foreign_key_list('rank_results')").all(), []);
   assert.deepEqual(
@@ -148,7 +157,7 @@ test("a failed version 7 step rolls back and leaves the version 6 database intac
     assert.equal(verify.pragma("user_version", { simple: true }), 6);
     assert.deepEqual(verify.prepare("SELECT discord_user_id FROM tracked_members").all(), [{ discord_user_id: "laowang" }]);
     assert.deepEqual(verify.prepare("SELECT name FROM pragma_table_info('rank_results')").all(), [{ name: "stray" }]);
-    assert.deepEqual(verify.prepare("SELECT name FROM sqlite_master WHERE name = 'rank_results_by_member'").all(), [], "the index of the failed step is gone");
+    assert.deepEqual(verify.prepare("SELECT name FROM sqlite_master WHERE name LIKE 'rank_results_by_%'").all(), [], "the indexes of the failed step are gone");
   } finally {
     verify.close();
   }

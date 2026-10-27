@@ -365,6 +365,7 @@ test("a version 1 database upgrades in place when a separate process opens it", 
       styles: ['guild-one', 'guild-two'].map((guild) => announcer.getAnnouncerState(guild).voiceStyle),
       version: db.pragma('user_version', { simple: true }),
       tables: db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all().map((row) => row.name),
+      rankIndexes: db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'rank_results' AND name NOT LIKE 'sqlite_%' ORDER BY name").all().map((row) => row.name),
     }));
     database.closeDatabase();
   `)));
@@ -376,6 +377,7 @@ test("a version 1 database upgrades in place when a separate process opens it", 
     styles: ["sweet", "old"],
     version: SCHEMA_VERSION,
     tables: ["appeal_cases", "guild_preferences", "horse_records", "member_accounts", "pregame_settings", "rank_results", "report_marks", "report_settings", "tracked_members"],
+    rankIndexes: ["rank_results_by_member", "rank_results_by_time"],
   });
   if (process.platform !== "win32") assert.equal(statSync(filePath).mode & 0o777, 0o600);
   assert.deepEqual(backupFiles(filePath), ["v1.sqlite3.v1.bak"]);
