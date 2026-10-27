@@ -517,3 +517,26 @@ test("every row wording is plain Chinese without an em dash", () => {
   }
   assert.match(rankRowText(MEMBER, { queueType: SOLO, state: states[5] } as RankRow)!, /本局 ±0$/);
 });
+
+test("rebase makes a freshly set mock entry the next game's before-value even within the floor, and does nothing in real mode", async () => {
+  const mockRun = setup();
+  mockRun.state.mock = true;
+  // A game just played: its after-read is the before-value of the next one, and the floor has not passed.
+  await mockRun.play("NA1_1", "acct", [entry("GOLD", "II", 64)], [entry("GOLD", "II", 86, 11, 10)]);
+  const readsBefore = mockRun.reads.length;
+  // /simulate places the account at GOLD I 90 and rebases; the next game's win then crosses the line.
+  mockRun.league.set("acct", [entry("GOLD", "I", 90, 11, 10)]);
+  await mockRun.tracker.rebase(["acct"]);
+  assert.equal(mockRun.reads.length, readsBefore + 1, "read again at once, inside the floor");
+  mockRun.league.set("acct", [entry("PLATINUM", "IV", 12, 12, 10)]);
+  mockRun.tracker.matchFinished({ matchId: "NA1_2", queueId: 420, gameEndTimestamp: Date.now(), accounts: [{ puuid: "acct", label: "acct#NA1" }] });
+  await mockRun.tracker.firstReads("NA1_2");
+  assert.equal(mockRun.tracker.row("NA1_2", "acct")?.state.kind, "promoted");
+
+  // Real mode never rebases: the floor and the history protect the rate limit.
+  const realRun = setup();
+  await realRun.play("NA1_1", "acct", [entry("GOLD", "II", 64)], [entry("GOLD", "II", 86, 11, 10)]);
+  const realReads = realRun.reads.length;
+  await realRun.tracker.rebase(["acct"]);
+  assert.equal(realRun.reads.length, realReads);
+});
