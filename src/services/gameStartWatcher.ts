@@ -130,6 +130,8 @@ export class GameStartWatcher {
   private tickAgain = false;
   private ticks = 0;
   private disabled = false;
+  /** Members covered at the last sync, so only someone new triggers an early check. */
+  private covered = new Set<string>();
 
   constructor(private readonly host: GameStartHost, private readonly dependencies: GameStartDependencies) {}
 
@@ -144,6 +146,8 @@ export class GameStartWatcher {
   /** Starts the 20 second timer and checks right away, so a member who joins voice during loading still gets the 锦囊. */
   start(): void {
     if (this.timer || this.disabled) return;
+    this.covered = new Set(this.dependencies.members(this.host.guildId)
+      .filter((member) => this.host.isPresent(member.discordUserId)).map((member) => member.discordUserId));
     this.timer = setInterval(() => { void this.tick(); }, GAME_START_INTERVAL_MS);
     this.timer.unref();
     void this.tick();
@@ -169,10 +173,10 @@ export class GameStartWatcher {
    * and check soon when someone new is covered.
    */
   sync(members = this.dependencies.members(this.host.guildId)): void {
-    const before = new Set(this.accounts.keys());
     this.prune(members);
-    const joined = members.some((member) => this.host.isPresent(member.discordUserId)
-      && member.accounts.some((account) => !before.has(account.puuid)));
+    const covered = new Set(members.filter((member) => this.host.isPresent(member.discordUserId)).map((member) => member.discordUserId));
+    const joined = [...covered].some((memberId) => !this.covered.has(memberId));
+    this.covered = covered;
     if (joined && this.timer) this.tickSoon();
   }
 
