@@ -10,7 +10,8 @@ import { getAccountByRiotId } from "../src/utils/riotApi";
 import { setMemberAccounts } from "../src/store/bindingStore";
 import { getLastMatchId, setVoiceStyle } from "../src/store/announcerStore";
 import { closeDatabase } from "../src/store/database";
-import { pollGuildNow, startPolling, stopAllPolling } from "../src/services/gameMonitor";
+import { pollGuildNow, stopAllPolling } from "../src/services/gameMonitor";
+import { reconcileGuildMonitoring } from "../src/services/monitorLifecycle";
 import { simulateMockMatch } from "../src/services/riotData";
 import { prewarmTTS, shutdownTTS } from "../src/utils/tts";
 
@@ -50,7 +51,7 @@ async function verify(): Promise<void> {
     await prewarmTTS();
     const account = await getAccountByRiotId("MockWin", "NA1");
     setMemberAccounts(guildId, member.id, [account]);
-    startPolling(client, guildId, channelId);
+    await reconcileGuildMonitoring(client, guildId);
     assert.deepEqual(await pollGuildNow(client, guildId, channelId), { announced: 0, errors: 0 });
     const outcomes: Array<{ outcome: string; voice: string; matchId: string }> = [];
     for (const outcome of ["win", "loss"] as const) {

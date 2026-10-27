@@ -71,14 +71,13 @@ Module._load = function(request, parent, ...args) {
         mutations++; simulated = provider.simulateMockMatch(...args); return simulated;
       } },
       "../services/gameMonitor": {
-        startPolling: () => { starts++; },
         pollGuildNow: async () => {
           polls++;
           if ((scenario === "simulate-baseline" && polls === 1) || (scenario === "simulate-result" && polls === 2)) await pause();
           return { announced: polls === 1 ? 0 : 1, errors: 0 };
         },
       },
-      "../services/monitorLifecycle": { reconcileGuildMonitoring: async () => {} },
+      "../services/monitorLifecycle": { reconcileGuildMonitoring: async () => { starts++; } },
     };
     if (overrides[request]) return overrides[request];
   }

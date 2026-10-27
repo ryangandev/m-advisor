@@ -50,7 +50,8 @@ The public command layer still enforces one tracked member per server until the 
 Store reads return fresh values, so changing a returned object does not silently modify persisted settings.
 
 `setVoiceStyle` persists its change before updating the runtime state.
-`resetAnnouncerRuntime(guildId)` clears that guild's polling timer, voice channel, and match baseline while retaining its voice choice.
+`resetAnnouncerRuntime(guildId)` clears that guild's polling timer and match baselines while retaining its voice choice.
+`clearLastMatchIds(guildId, puuids)` forgets only the named accounts' baselines, for a member who leaves voice or is unbound while others stay monitored.
 
 ## Schema versions and migration
 

@@ -79,14 +79,14 @@ async function verify(): Promise<void> {
   try {
     const account = await getAccountByRiotId("MockLoss", "NA1");
     setMemberAccounts(channel.guild.id, "local-test-member", [account]);
-    monitor = new GameMonitor({ latest: getLatestSRMatchId, detail: getMatchDetail, binding: (guildId) => listTrackedMembers(guildId)[0], resolveChannel: () => channel,
+    monitor = new GameMonitor({ latest: getLatestSRMatchId, detail: getMatchDetail, members: listTrackedMembers, resolveChannel: () => channel,
       announce: (guild, text, style, resolve, allowed, signal) => {
         announceStarted = performance.now();
         return voice.announce(guild, text, style, resolve, allowed, signal);
       },
       mock: () => getRiotMode() === "mock", log: error => { throw error; }, info: message => console.log(message) });
     const client = {} as Client;
-    monitor.start(client, channel.guild.id, channel.id);
+    monitor.sync(client, channel.guild.id, ["local-test-member"]);
     assert.equal((await monitor.poll(client, channel.guild.id)).announced, 0);
     simulateMockMatch(account.puuid, "loss");
     assert.deepEqual(await monitor.poll(client, channel.guild.id), { announced: 1, errors: 0 });
