@@ -32,6 +32,8 @@ In both outcomes the support carries a won objective fight and the feeding ADC i
 Other Riot IDs receive deterministic synthetic profiles, and previously persisted bindings can be tested in mock mode.
 This does not validate that a real player exists.
 Mock histories live in memory and reset when the bot restarts; user bindings and voice settings have a separate persistence layer.
+Each mock account's history starts with one baseline match, created on its first lookup and ended 24 hours before that.
+It is old history even for a member whose first lookup runs after they join voice, so a saved mock binding never announces it.
 
 ## Simulating a finished game
 
