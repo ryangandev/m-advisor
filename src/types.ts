@@ -42,6 +42,10 @@ export interface RankedEntry {
   losses: number;
 }
 
+/** The two ranked queues whose league-v4 entries carry LP: queue 420 is solo/duo and queue 440 is flex. */
+export const RANKED_QUEUE_TYPES = ["RANKED_SOLO_5x5", "RANKED_FLEX_SR"] as const;
+export type RankedQueueType = (typeof RANKED_QUEUE_TYPES)[number];
+
 export interface BotCommand {
   data: SlashCommandBuilder;
   execute: (interaction: ChatInputCommandInteraction) => Promise<void>;
