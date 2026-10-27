@@ -81,10 +81,12 @@ A tie, such as one player leaving, keeps playing; a channel with strictly more p
 
 The speaker must still be in voice before each chunk generated ahead of joining and when the bot joins.
 If they leave before that, the report is cancelled without being consumed, and the next poll picks a new speaker among the players still in voice.
+A retry otherwise keeps the speaker of the earlier attempt while that member still owns the account, is covered by the session and is in a usable channel, even when the report now plays in another channel, so the voice matches the text already posted.
 Once playback has started, the speaker leaving does not stop it, so a teammate who played the same game and stays hears the whole report, and the match is not replayed.
 Rebinding or unbinding the speaker cancels the report at any point, and the match stays pending for the other players still in voice; an unrelated `/bind` does not cancel it.
 
-Several matches go through the guild's shared voice queue one after another, and a full queue is an error that the next poll retries.
+Several matches go through the guild's shared voice queue one after another.
+A full queue rejects with `AnnouncementQueueFullError` before anything is attempted; it counts as a poll error, the next poll retries it, and it never counts toward the attempt cap.
 Internally each queued match is a `DetectedMatch` with its detail, every tracked player of it and the chosen channel, which later features build on.
 
 ## Speech and text
@@ -111,9 +113,11 @@ Each match goes through these steps once it has a usable channel, in order:
 3. The text report is posted to the chosen channel, unless it was already posted for this match.
 4. When the post succeeds, the 马厩 records of the posted report are written.
 5. The voice report is queued and played.
+6. When the voice succeeded but the text could not be posted, for example without Send Messages, the 马厩 records of the spoken report are written then.
 
 A timeline that fails, or that has not answered after 8 seconds, falls back to no moments, logs once and never blocks or fails the report.
 The request itself is aborted after 5 seconds, so the monitor's own limit only guards against a stuck dependency.
+Stopping the session ends that wait at once as a cancellation, with nothing posted or logged as a fallback.
 
 The text goes out only when the voice is about to be queued: the session is current, the speaker still owns the account and is in voice, and the channel matches any required `/simulate` channel.
 So a report that cannot play yet posts nothing, and its text waits for the attempt that can.
@@ -121,16 +125,18 @@ Each match's progress is kept for the session: its detail, detection time, timel
 A voice retry on a later poll reuses all of it, so the text is posted at most once per match and the match is not logged as newly detected again.
 That progress lives in memory, so after a process restart mid-way a second text post for the same match is possible and accepted.
 A failed text post counts as an error and is logged, the voice still plays, and the post is tried again only if the voice also fails and the match is retried.
+If the voice then succeeds without a posted text, the records are written after the voice instead, so the 马厩 still has the match.
 
 The records come from `buildHorseRecords` with the posted announcement, the speaker as `perspectivePuuid` and the same moments.
 `tracked` is read from every currently tracked member's accounts just before the write, so a member unbound during the report is simply absent.
-The write happens once per match, with the text, and `recordHorseRecords` also leaves an existing (server, member, match, mock) record untouched.
+The write happens once per match, with the text or after the voice when the text failed, and `recordHorseRecords` also leaves an existing (server, member, match, mock) record untouched.
 A failed write, including `UntrackedMemberError`, is logged and never fails, repeats or undoes the announcement.
 A retry that speaks for a different speaker, because the first one left voice, does not change the records already written from the posted text.
 
-A voice attempt fails when speech generation or playback throws; a cancellation, such as the speaker leaving or a majority move, is not a failure.
+An attempt fails when anything after the match got a channel throws: building the report, for example from a malformed match, speech generation or playback.
+A cancellation, such as the speaker leaving or a majority move, and a full voice queue are not failures.
 After the third failed attempt for the same match the match is consumed: it joins the session's announced matches, the baselines of the accounts that reported it advance, one line is logged and it is never retried.
-Its text report was normally posted on the first attempt, so the channel still has the result.
+Its text report was normally posted on the first attempt, so the channel still has the result; a malformed match is consumed without text or voice.
 
 ## Diagnostics
 
@@ -141,7 +147,7 @@ It logs each account's baseline match, after which finished matches are announce
 It logs each newly detected match with the reporting Riot IDs, how many seconds have passed since the game ended, the queue and the length.
 It logs once when a match waits because none of its players is in a usable voice channel.
 It logs when a match's timeline is unavailable and the report falls back to statistics.
-It logs how many 马厩 records it saved for a match after posting its text.
+It logs how many 马厩 records it saved for a match after posting its text, or after its voice when the text failed.
 When the bot joins a channel with the first two speech chunks ready, it logs how many seconds that was after detection, the latency until the first sentence plays apart from the connection itself.
 After playback it logs how many seconds speech generation and playback took after detection.
 It logs once when it gives up on a match's voice after three failed attempts.
@@ -154,6 +160,8 @@ In real mode `/bind` removes the member's saved mock accounts, names them in its
 The state shows whether monitoring is active, the last check and the last error, which survives a stop caused by rejected credentials.
 It lists each member shown with their place in the bind order, their voice channel or 不在语音, and whether the session covers them.
 Each account's field starts with its member's number, and the embed shows at most 25 accounts across all members.
+Discord also caps an embed at 6000 characters, so the match lists share what the title, status lines, footer and field names leave evenly.
+A list that does not fit keeps its newest matches and ends with `…`, and every account keeps at least its newest match.
 Each match shows the result, champion, K/D/A, queue, length and end time.
 It is marked as the baseline, already announced, due at the next check, or in a mode that is never announced.
 In real mode a saved mock account is flagged without a Riot request.
@@ -223,7 +231,7 @@ The bot self-deafens because listening to Discord speech is outside this feature
 Before fixing the old monitor, a reproduction through the then-public `startPolling` with fake Riot, TTS, and channel boundaries confirmed historical replay, an enemy-derived false victory, consumed matches after failed TTS, and overlapping lookups.
 
 `tests/monitor.test.ts` exercises complete sessions using the real state store and shared queue with fake external I/O, for one member and for several members across channels.
-It also pins the text-first order, the once-only text and 马厩 write across voice retries, the timeline fallback, the three-attempt cap and the silent mock baseline after a restart.
+It also pins the text-first order, the once-only text and 马厩 write across voice retries, the timeline fallback and its prompt end on a stop, the sticky speaker, records written after the voice when the text fails, the three-attempt cap for voice and report-building failures but not a full queue, and the silent mock baseline after a restart.
 `tests/voicePresence.test.ts` drives voice events through the real lifecycle into a monitor with fake Riot I/O.
 `tests/voiceAnnouncements.test.ts` verifies queue serialization, chunk ordering, the two-chunk join, inline retry, early and mid-stream generation failure, cancellation between chunks and during playback, the announcement deadline with a chunk that never resolves, channel changes, limits, and cleanup of every chunk file.
 `tests/speechChunks.test.ts` verifies sentence boundaries, ASCII end marks inside names, preserved separators, decimal scores, hard cuts that keep words and numbers whole, short and long sentences and the length limits.
