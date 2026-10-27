@@ -3,6 +3,7 @@ import type { MatchDetail, RankedEntry, Summoner } from "../types";
 import { getRiotDataLabel, isMockData } from "../services/riotData";
 import { championLabel, type MatchReport } from "../services/announcementText";
 import type { HorseTier } from "../services/horseRanking";
+import type { PartyEntry, PartyRanking } from "../services/partyRanking";
 import type { MonitorStatus } from "../services/gameMonitor";
 import { isAnnouncedQueue } from "./riotMatchApi";
 
@@ -82,6 +83,26 @@ export function buildHorseReportEmbed(report: MatchReport): EmbedBuilder {
   if (report.praise) embed.addFields({ name: "👑 军师表扬", value: report.praise.slice(0, 1024) });
   if (report.roast) embed.addFields({ name: "🪦 军师批评", value: report.roast.slice(0, 1024) });
   return embed;
+}
+
+/**
+ * The 车队内战 embed, sent right after the report: the bound friends of one team ranked among themselves.
+ * Members appear as mentions, which an embed never pings, so the message's allowedMentions stay what the report pings.
+ */
+export function buildPartyEmbed(party: PartyRanking): EmbedBuilder {
+  const person = (entry: PartyEntry) => `<@${entry.memberId}> · ${entry.champion} · ${entry.tier} · ${entry.score.toFixed(1)} 分`;
+  const row = (entry: PartyEntry, index: number) =>
+    `${index + 1}. ${TIER_ICONS[entry.tier]} <@${entry.memberId}> · ${entry.champion} · **${entry.tier}** · ${entry.score.toFixed(1)} 分 · 队内第 ${entry.teamRank}/${entry.teamSize}`;
+  return new EmbedBuilder()
+    .setTitle(`${party.mock ? "模拟战报 · " : ""}车队内战`)
+    .setColor(party.mock ? 0x95A5A6 : 0xB8651B)
+    .setDescription(`本局 ${party.entries.length} 位车队成员同队开黑，只在车队内部排名，对面不计分。`)
+    .addFields(
+      { name: "车队内部排名", value: party.entries.map(row).join("\n") },
+      { name: "👑 车队 MVP", value: `${person(party.mvp)}\n军师：${party.mvpLine}` },
+      { name: party.relative ? "🍳 本局背锅 (相对)" : "🍳 本局背锅", value: `${person(party.scapegoat)}\n军师：${party.scapegoatLine}` },
+    )
+    .setFooter({ text: party.mock ? "模拟数据 / Mock data • 策马军师" : "Riot 实时数据 • 策马军师" });
 }
 
 const QUEUE_NAMES: Readonly<Record<number, string>> = {
