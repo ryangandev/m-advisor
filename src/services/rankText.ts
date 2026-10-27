@@ -1,6 +1,7 @@
 import type { RankedEntry } from "../types";
 import type { RankRow } from "./rankTracker";
 import { readableName, seededChooser } from "./announcementText";
+import { fitNames } from "./partyRanking";
 
 /**
  * Chinese names for league-v4 ranks and queues. rankMath.ts keeps Riot's enums; every display name lives here.
@@ -99,6 +100,8 @@ export const RANK_ANNOUNCEMENT_TITLE = "段位播报";
 export const MOCK_RANK_VOICE_PREFIX = "模拟段位播报，";
 /** The voice line speaks at most this many members, so it stays about 15 seconds; the text lists every one. */
 export const MAX_SPOKEN_RANK_MOVES = 2;
+/** The spoken names of one line share this many characters: with the longest phrases and the mock prefix, a line stays near 15 seconds. */
+export const SPOKEN_NAME_BUDGET = 12;
 
 /** A promotion or demotion of one bound member in one ranked match: what a 段位播报 is about. */
 export interface RankMove {
@@ -142,8 +145,8 @@ const PROMOTION_PHRASES: readonly MovePhrase[] = [
 ];
 const DEMOTION_PHRASES: readonly MovePhrase[] = [
   (name, queue, rank) => `${name}${queue}掉回${rank}，别急，军师陪你重新上马。`,
-  (name, queue, rank) => `${name}${queue}退到${rank}，胜负兵家常事，军师陪你再战。`,
-  (name, queue, rank) => `${name}${queue}落到${rank}，不要紧，军师陪你重整旗鼓。`,
+  (name, queue, rank) => `${name}${queue}退到${rank}，胜败乃兵家常事，别灰心。`,
+  (name, queue, rank) => `${name}${queue}落到${rank}，不要紧，军师陪你再战。`,
 ];
 
 export interface RankVoiceMove extends RankMove {
@@ -158,16 +161,20 @@ export interface RankVoiceMove extends RankMove {
  * the same thing. Mock lines start with MOCK_RANK_VOICE_PREFIX. Empty when no member can be spoken.
  */
 export function buildRankVoiceLine(input: { matchId: string; mock: boolean; moves: readonly RankVoiceMove[] }): string {
-  const sentences: string[] = [];
+  const spoken: Array<{ move: RankVoiceMove; queue: string; rank: string }> = [];
   for (const move of input.moves) {
-    if (sentences.length >= MAX_SPOKEN_RANK_MOVES) break;
+    if (spoken.length >= MAX_SPOKEN_RANK_MOVES) break;
     const queue = queueLabel(move.queueType);
     const rank = spokenRankName(move.after);
-    if (!queue || !rank) continue;
+    if (queue && rank) spoken.push({ move, queue, rank });
+  }
+  if (spoken.length === 0) return "";
+  // Long names share a speech budget, so two 16-letter names cannot stretch the line past about 15 seconds.
+  const names = fitNames(spoken.map(({ move }) => readableName(move.name)), SPOKEN_NAME_BUDGET);
+  const sentences = spoken.map(({ move, queue, rank }, index) => {
     const choose = seededChooser(`rank:${input.matchId}:${move.puuid}`);
     const phrase = choose(move.kind === "promoted" ? PROMOTION_PHRASES : DEMOTION_PHRASES);
-    sentences.push(phrase(readableName(move.name), queue, rank));
-  }
-  if (sentences.length === 0) return "";
+    return phrase(names[index], queue, rank);
+  });
   return `${input.mock ? MOCK_RANK_VOICE_PREFIX : ""}${sentences.join("")}`;
 }

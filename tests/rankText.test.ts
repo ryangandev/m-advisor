@@ -105,6 +105,36 @@ test("several members make at most two sentences, and a name is sanitized", () =
   assert.equal(buildRankVoiceLine({ matchId: "NA1_9", mock: false, moves: [] }), "");
 });
 
+test("two long Latin names share a speech budget, so a line stays short", () => {
+  const flexUp = moveOf(entry("GOLD", "II", 90, 20, "RANKED_FLEX_SR"), entry("GOLD", "I", 12, 21, "RANKED_FLEX_SR"));
+  const flexDown = moveOf(entry("PLATINUM", "IV", 5, 20, "RANKED_FLEX_SR"), entry("GOLD", "I", 86, 21, "RANKED_FLEX_SR"));
+  const longest = (moves: RankVoiceMove[]) => Math.max(...Array.from({ length: 60 }, (_, index) =>
+    Array.from(buildRankVoiceLine({ matchId: `NA1_${index}`, mock: true, moves })).length));
+  const names = ["Abcdefghijklmnop", "Qrstuvwxyzabcdef"];
+  for (const moves of [
+    [voiceMove("p1", names[0], flexUp), voiceMove("p2", names[1], flexDown)],
+    [voiceMove("p1", names[0], flexDown), voiceMove("p2", names[1], flexUp)],
+    [voiceMove("p1", names[0], flexUp), voiceMove("p2", names[1], flexUp)],
+    [voiceMove("p1", names[0], flexDown), voiceMove("p2", names[1], flexDown)],
+  ]) {
+    // About 4.3 characters a second: at most 65 characters, with the mock prefix, is about 15 seconds.
+    assert.ok(longest(moves) <= 65, `${longest(moves)} characters`);
+  }
+  const line = buildRankVoiceLine({ matchId: "NA1_1", mock: false, moves: [voiceMove("p1", names[0], flexUp), voiceMove("p2", names[1], flexDown)] });
+  assert.ok(!line.includes(names[0]) && !line.includes(names[1]), "the long names are trimmed");
+  assert.match(line, /Abcdef/);
+  assert.match(line, /Qrstuv/);
+  // A short name is never trimmed.
+  assert.match(buildRankVoiceLine({ matchId: "NA1_1", mock: false, moves: [voiceMove("p1", "Faker", flexUp)] }), /Faker/);
+});
+
+test("a demotion comforts with 胜败乃兵家常事, not the reversed idiom", () => {
+  const lines = Array.from({ length: 60 }, (_, index) =>
+    buildRankVoiceLine({ matchId: `NA1_${index}`, mock: false, moves: [voiceMove("p1", "小明", demotion)] }));
+  assert.ok(lines.some((line) => line.includes("胜败乃兵家常事")));
+  assert.ok(lines.every((line) => !line.includes("胜负兵家常事")));
+});
+
 test("the 段位播报 embed is titled 段位播报, and 模拟数据 · 段位播报 in mock mode", () => {
   const real = buildRankAnnouncementEmbed(["<@m1> 单双排 晋级：铂金 I → 钻石 IV · 12 LP"], false).toJSON();
   const mock = buildRankAnnouncementEmbed(["<@m1> 单双排 晋级：铂金 I → 钻石 IV · 12 LP"], true).toJSON();
