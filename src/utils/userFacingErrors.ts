@@ -89,7 +89,20 @@ export function getTtsUserErrorMessage(error: unknown): string {
   return "Unable to generate speech right now.";
 }
 
+/** Replies for the binding store's own failures; they mention Riot but are not Riot lookup problems. */
+export function getBindingStoreErrorMessage(error: unknown): string | null {
+  if (error instanceof GuildAccountLimitError) {
+    return `A server can track at most ${error.limit} Riot accounts. Use /unbind to remove a member first.`;
+  }
+  if (error instanceof AccountBoundToOtherMemberError) {
+    return "That Riot account is already bound to another member of this server. Use /unbind on them first.";
+  }
+  return null;
+}
+
 export function getCommandUserErrorMessage(error: unknown): string {
+  const storeMessage = getBindingStoreErrorMessage(error);
+  if (storeMessage) return storeMessage;
   if (error instanceof RiotApiError) return getRiotUserErrorMessage(error);
   const message = getErrorMessage(error);
   if (!message) {
@@ -106,3 +119,4 @@ export function getCommandUserErrorMessage(error: unknown): string {
   return "Something went wrong while handling that command.";
 }
 import { isMockData, RiotApiError } from "../services/riotData";
+import { AccountBoundToOtherMemberError, GuildAccountLimitError } from "../store/storeErrors";

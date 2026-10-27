@@ -14,7 +14,7 @@ import { INVALID_RIOT_ID_MESSAGE, parseRiotId } from "../utils/riotId";
 import { reconcileGuildMonitoring } from "../services/monitorLifecycle";
 import { getRiotDataLabel, isMockData } from "../services/riotData";
 import { isSyntheticAccount, mergeBoundAccount } from "../utils/bindingAccounts";
-import { getRiotUserErrorMessage } from "../utils/userFacingErrors";
+import { getBindingStoreErrorMessage, getRiotUserErrorMessage } from "../utils/userFacingErrors";
 import { assertRunning } from "../services/shutdownState";
 import { logInfo } from "../utils/log";
 
@@ -106,7 +106,14 @@ const bindCommand: BotCommand = {
 
     const updatedAccounts = mergeBoundAccount(savedAccounts.filter((boundAccount) => !removedMocks.includes(boundAccount)), account);
 
-    setMemberAccounts(guildId, user.id, updatedAccounts);
+    try {
+      setMemberAccounts(guildId, user.id, updatedAccounts);
+    } catch (error) {
+      const message = getBindingStoreErrorMessage(error);
+      if (!message) throw error;
+      await interaction.editReply({ embeds: [buildErrorEmbed(message)] });
+      return;
+    }
 
     await reconcileGuildMonitoring(interaction.client, guildId);
     assertRunning();
