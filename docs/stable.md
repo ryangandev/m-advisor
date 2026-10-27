@@ -3,7 +3,7 @@
 Every announced game leaves a permanent record of each tracked friend's horse tier.
 The records answer long-term questions such as how often someone was 特等马 or 没有马, and which dimension is their strongest and weakest.
 `/stable [user]` shows one member's profile, and the weekly reports, `/why` and the in-party ranking read the same records.
-The ranking itself is described in [Horse ranking](scoring.md), and the table is described in [Storage](storage.md#马厩-horse-records).
+The ranking itself is described in [Horse ranking](scoring.md), the table in [Storage](storage.md#马厩-horse-records), and `/why` in [/why 判决书](why.md).
 
 ## What is recorded
 
