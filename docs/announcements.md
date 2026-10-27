@@ -104,6 +104,28 @@ It mentions every tracked member who played the match, still owns the account th
 Every send uses explicit `allowedMentions` whose `users` list is exactly those members, with automatic mentions and roles disabled.
 Riot names cannot trigger mentions of other Discord members or `@everyone`.
 
+### 车队内战
+
+When two or more bound friends play a match on the same team, the report adds a separate in-party ranking.
+`src/services/partyRanking.ts` builds it from the team ranking the report already computed, so it adds no new metric and stores nothing, and the 马厩 records are unchanged.
+
+The party is every bound member on the speaker's team, whether or not they are in voice, who still owns the account they played on.
+A bound friend on the other team counts as an enemy: they are not ranked, scored or named, though they are still mentioned when they are in the channel.
+With fewer than two members, and for remakes, aborted and short games, there is no party and the report and speech are exactly as without the feature.
+
+Members are ordered by the team ranking, so ties keep team rank order.
+The first is the 车队 MVP and the last takes the 本局背锅, even when that member is 特等马 or 上等马, because the blame is only relative.
+
+A second embed titled `车队内战` is sent in the same message right after the report embed.
+It lists each member's mention, champion, tier, score and team rank, such as 队内第 2/5, then names the MVP and the 背锅, each with a short 军师 line about play only.
+In mock mode the title is `模拟战报 · 车队内战`, with the report's gray colour and mock footer.
+The members appear as mentions inside the embed, which notifies nobody, so `allowedMentions.users` stays exactly the participants in the channel that the report already pings.
+
+The speech ends with one more sentence, such as `车队内战，A最好，B背锅。`.
+It names no tier, and its names are the report's sanitized names, trimmed to keep it within 29 characters.
+When the 背锅 is a 特等马 or 上等马 it reads `B今天只是相对背锅` or `B只是相对背锅` instead.
+The wording comes from its own seed built from the match ID, so the same match always produces the same sentence and the report's own wording does not shift.
+
 ## Text first, timeline and 马厩 records
 
 Each match goes through these steps once it has a usable channel, in order:
@@ -232,6 +254,7 @@ Before fixing the old monitor, a reproduction through the then-public `startPoll
 
 `tests/monitor.test.ts` exercises complete sessions using the real state store and shared queue with fake external I/O, for one member and for several members across channels.
 It also pins the text-first order, the once-only text and 马厩 write across voice retries, the timeline fallback and its prompt end on a stop, the sticky speaker, records written after the voice when the text fails, the three-attempt cap for voice and report-building failures but not a full queue, and the silent mock baseline after a restart.
+`tests/partyRanking.test.ts` pins the 车队内战 order, the 背锅 wording, the sentence length, the exclusion of other-team friends and the embed, and `tests/monitor.test.ts` pins the second embed and the unchanged ping set.
 `tests/voicePresence.test.ts` drives voice events through the real lifecycle into a monitor with fake Riot I/O.
 `tests/voiceAnnouncements.test.ts` verifies queue serialization, chunk ordering, the two-chunk join, inline retry, early and mid-stream generation failure, cancellation between chunks and during playback, the announcement deadline with a chunk that never resolves, channel changes, limits, and cleanup of every chunk file.
 `tests/speechChunks.test.ts` verifies sentence boundaries, ASCII end marks inside names, preserved separators, decimal scores, hard cuts that keep words and numbers whole, short and long sentences and the length limits.
