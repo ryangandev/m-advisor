@@ -10,9 +10,16 @@ export interface RiotAccount {
   tagLine: string;
 }
 
-export interface ServerBinding {
+/** One Discord member whose Riot accounts the bot watches, with accounts in bind order. */
+export interface TrackedMember {
   discordUserId: string;
   accounts: RiotAccount[];
+}
+
+/** Every tracked member of one server, in the order they were bound. */
+export interface GuildTracking {
+  guildId: string;
+  members: TrackedMember[];
 }
 
 export interface Summoner {

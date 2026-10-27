@@ -1,6 +1,6 @@
 import { MessageFlags, PermissionFlagsBits, SlashCommandBuilder } from "discord.js";
 import { BotCommand } from "../types";
-import { getBinding } from "../store/bindingStore";
+import { listTrackedMembers } from "../store/bindingStore";
 import { getRiotMode, simulateMockMatch } from "../services/riotData";
 import { pollGuildNow, startPolling } from "../services/gameMonitor";
 import { getAuthorizedTestChannel, safeTestError } from "../utils/testChannel";
@@ -23,7 +23,7 @@ const command: BotCommand = {
       await withSimulationLock(channel.guild.id, async () => {
         assertRunning();
         if (getRiotMode() !== "mock") throw new Error("模拟比赛只允许在 RIOT_MODE=mock 时使用。");
-        const binding = getBinding(channel.guild.id);
+        const binding = listTrackedMembers(channel.guild.id)[0];
         if (!binding) throw new Error("请先使用 /bind 绑定一个测试账号，例如 MockWin#NA1。");
         const member = await channel.guild.members.fetch(binding.discordUserId);
         assertRunning();

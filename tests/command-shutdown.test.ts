@@ -33,7 +33,7 @@ console.error = (message, ...args) => {
   if (!/^\[[\d:]+\] (Voice|Simulation) test failed: /.test(message)) originalConsoleError(message, ...args);
 };
 const account = { puuid: "MOCK-shutdown-account", gameName: "MockWin", tagLine: "NA1" };
-if (scenario.startsWith("simulate")) bindingStore.setBinding("guild", { discordUserId: "tracked", accounts: [account] });
+if (scenario.startsWith("simulate")) bindingStore.setMemberAccounts("guild", "tracked", [account]);
 let release;
 let entered;
 const gate = new Promise(resolve => release = resolve);
@@ -59,8 +59,9 @@ Module._load = function(request, parent, ...args) {
       "../services/voiceAnnouncements": { announceTextInVoiceChannel: async () => { played++; } },
       "../utils/riotApi": { getAccountByRiotId: async () => { await pause(); return account; } },
       "../store/bindingStore": {
-        getBinding: guildId => { countRead(); return bindingStore.getBinding(guildId); },
-        setBinding: (...args) => { mutations++; return bindingStore.setBinding(...args); },
+        listTrackedMembers: guildId => { countRead(); return bindingStore.listTrackedMembers(guildId); },
+        setMemberAccounts: (...args) => { mutations++; return bindingStore.setMemberAccounts(...args); },
+        removeTrackedMember: (...args) => { mutations++; return bindingStore.removeTrackedMember(...args); },
       },
       "../store/announcerStore": {
         getAnnouncerState: guildId => { countRead(); return announcerStore.getAnnouncerState(guildId); },

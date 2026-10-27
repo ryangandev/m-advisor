@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, test } from "node:test";
 import { VoiceChannel, type Client, type MessageCreateOptions } from "discord.js";
-import type { MatchDetail, ServerBinding } from "../src/types";
+import type { MatchDetail, TrackedMember } from "../src/types";
 import { GameMonitor, resolveMonitoredVoiceChannel, type MonitorDependencies } from "../src/services/gameMonitor";
 import { VoiceAnnouncementService } from "../src/services/voiceAnnouncements";
 import { RiotApiError } from "../src/services/riotData";
@@ -36,7 +36,7 @@ function deferred<T>() {
 }
 
 function harness(guildId: string, puuids = ["tracked"]) {
-  let binding: ServerBinding | undefined = {
+  let binding: TrackedMember | undefined = {
     discordUserId: "member-1",
     accounts: puuids.map((puuid) => ({ puuid, gameName: puuid, tagLine: "NA1" })),
   };
@@ -77,7 +77,7 @@ function harness(guildId: string, puuids = ["tracked"]) {
   return {
     guildId, monitor, client, dependencies, latestIds, lookups, generated, played, cleaned, errors, infos, messages, channel,
     get binding() { return binding; },
-    set binding(value: ServerBinding | undefined) { binding = value; },
+    set binding(value: TrackedMember | undefined) { binding = value; },
     get currentChannel() { return currentChannel; },
     set currentChannel(value: VoiceChannel | null) { currentChannel = value; },
     set generate(value: (text: string) => Promise<string>) { generate = value; },

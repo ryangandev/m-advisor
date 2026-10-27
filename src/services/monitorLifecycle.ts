@@ -1,11 +1,11 @@
 import { Client } from "discord.js";
-import { getBinding, listBindings } from "../store/bindingStore";
+import { listAllTracking, listTrackedMembers } from "../store/bindingStore";
 import { startPolling, stopPolling } from "./gameMonitor";
 import { isStopping } from "./shutdownState";
 
 export async function reconcileGuildMonitoring(client: Client, guildId: string): Promise<void> {
   if (isStopping()) return;
-  const binding = getBinding(guildId);
+  const binding = listTrackedMembers(guildId)[0];
   const guild = client.guilds.cache.get(guildId);
   if (!binding || !guild) { stopPolling(guildId, "there is no binding in this server"); return; }
   const member = await guild.members.fetch(binding.discordUserId).catch(() => null);
@@ -15,7 +15,7 @@ export async function reconcileGuildMonitoring(client: Client, guildId: string):
 }
 
 export async function restoreMonitoring(client: Client): Promise<void> {
-  for (const { guildId } of listBindings()) {
+  for (const { guildId } of listAllTracking()) {
     if (isStopping()) return;
     await reconcileGuildMonitoring(client, guildId);
   }

@@ -1,6 +1,6 @@
 import { Client, VoiceChannel } from "discord.js";
-import type { MatchDetail, ServerBinding } from "../types";
-import { getBinding } from "../store/bindingStore";
+import type { MatchDetail, TrackedMember } from "../types";
+import { listTrackedMembers } from "../store/bindingStore";
 import {
   getAnnouncerState,
   getLastMatchId,
@@ -31,7 +31,7 @@ export interface MonitorStatus {
 export interface MonitorDependencies {
   latest: (puuid: string) => Promise<string | null>;
   detail: (matchId: string) => Promise<MatchDetail>;
-  binding: typeof getBinding;
+  binding: (guildId: string) => TrackedMember | undefined;
   resolveChannel: (client: Client, guildId: string, userId: string) => VoiceChannel | null;
   announce: typeof announceTextToCurrentChannel;
   mock: () => boolean;
@@ -52,11 +52,11 @@ interface MonitorSession {
   inFlightTargets?: Set<string>;
 }
 
-function bindingSignature(binding: ServerBinding): string {
+function bindingSignature(binding: TrackedMember): string {
   return JSON.stringify([binding.discordUserId, ...binding.accounts.map((account) => account.puuid).sort()]);
 }
 
-function riotIds(binding: ServerBinding): string {
+function riotIds(binding: TrackedMember): string {
   return binding.accounts.map((account) => `${account.gameName}#${account.tagLine}`).join(", ");
 }
 
@@ -268,7 +268,7 @@ export function resolveMonitoredVoiceChannel(client: Client, guildId: string, us
 const monitor = new GameMonitor({
   latest: getLatestSRMatchId,
   detail: getMatchDetail,
-  binding: getBinding,
+  binding: (guildId) => listTrackedMembers(guildId)[0],
   resolveChannel: resolveMonitoredVoiceChannel,
   announce: announceTextToCurrentChannel,
   mock: () => getRiotMode() === "mock",

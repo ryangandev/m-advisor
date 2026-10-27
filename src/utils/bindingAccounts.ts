@@ -1,4 +1,4 @@
-import { RiotAccount, ServerBinding } from "../types";
+import { GuildTracking, RiotAccount } from "../types";
 
 export function isSyntheticAccount(account: RiotAccount): boolean {
   return account.puuid.startsWith("MOCK-");
@@ -15,10 +15,10 @@ export function mergeBoundAccount(accounts: RiotAccount[], account: RiotAccount)
 
 /** One warning per saved mock account, which real mode never monitors. */
 export function skippedMockAccountWarnings(
-  bindings: Array<{ guildId: string; binding: ServerBinding }>,
+  tracking: GuildTracking[],
   serverName: (guildId: string) => string = (guildId) => guildId,
 ): string[] {
-  return bindings.flatMap(({ guildId, binding }) => binding.accounts.filter(isSyntheticAccount).map((account) =>
+  return tracking.flatMap(({ guildId, members }) => members.flatMap((member) => member.accounts).filter(isSyntheticAccount).map((account) =>
     `Real mode skips the saved mock account ${account.gameName}#${account.tagLine} in server ${serverName(guildId)}; `
     + "use /bind with a real Riot ID to replace it."));
 }

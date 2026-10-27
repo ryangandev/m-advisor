@@ -7,7 +7,7 @@ import dotenv from "dotenv";
 import { Client, Events, GatewayIntentBits, PermissionFlagsBits, VoiceChannel } from "discord.js";
 import { getVoiceConnections } from "@discordjs/voice";
 import { getAccountByRiotId } from "../src/utils/riotApi";
-import { setBinding } from "../src/store/bindingStore";
+import { setMemberAccounts } from "../src/store/bindingStore";
 import { getLastMatchId, setVoiceStyle } from "../src/store/announcerStore";
 import { closeDatabase } from "../src/store/database";
 import { pollGuildNow, startPolling, stopAllPolling } from "../src/services/gameMonitor";
@@ -49,7 +49,7 @@ async function verify(): Promise<void> {
     console.log("Actual Discord Gateway is ready; preparing installed local speech.");
     await prewarmTTS();
     const account = await getAccountByRiotId("MockWin", "NA1");
-    setBinding(guildId, { discordUserId: member.id, accounts: [account] });
+    setMemberAccounts(guildId, member.id, [account]);
     startPolling(client, guildId, channelId);
     assert.deepEqual(await pollGuildNow(client, guildId, channelId), { announced: 0, errors: 0 });
     const outcomes: Array<{ outcome: string; voice: string; matchId: string }> = [];

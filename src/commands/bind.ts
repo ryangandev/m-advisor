@@ -8,7 +8,7 @@ import {
 import { BotCommand } from "../types";
 import { buildErrorEmbed } from "../utils/embeds";
 import { isAdmin } from "../utils/permissions";
-import { getBinding, setBinding } from "../store/bindingStore";
+import { listTrackedMembers, setMemberAccounts } from "../store/bindingStore";
 import { getAccountByRiotId } from "../utils/riotApi";
 import { INVALID_RIOT_ID_MESSAGE, parseRiotId } from "../utils/riotId";
 import { reconcileGuildMonitoring } from "../services/monitorLifecycle";
@@ -77,7 +77,7 @@ const bindCommand: BotCommand = {
     }
 
     assertRunning();
-    const existingBinding = getBinding(guildId);
+    const existingBinding = listTrackedMembers(guildId)[0];
     if (existingBinding && existingBinding.discordUserId !== user.id) {
       await interaction.editReply({
         embeds: [
@@ -106,10 +106,7 @@ const bindCommand: BotCommand = {
 
     const updatedAccounts = mergeBoundAccount(savedAccounts.filter((boundAccount) => !removedMocks.includes(boundAccount)), account);
 
-    setBinding(guildId, {
-      discordUserId: user.id,
-      accounts: updatedAccounts,
-    });
+    setMemberAccounts(guildId, user.id, updatedAccounts);
 
     await reconcileGuildMonitoring(interaction.client, guildId);
     assertRunning();

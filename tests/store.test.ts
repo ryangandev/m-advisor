@@ -1,12 +1,22 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import Database from "better-sqlite3";
-import { clearBinding, getBinding, listBindings, setBinding } from "../src/store/bindingStore";
+import {
+  AccountBoundToOtherMemberError,
+  GuildAccountLimitError,
+  MAX_ACCOUNTS_PER_GUILD,
+  findAccountOwner,
+  getTrackedMember,
+  listAllTracking,
+  listTrackedMembers,
+  removeTrackedMember,
+  setMemberAccounts,
+} from "../src/store/bindingStore";
 import {
   getAnnouncerState,
   getLastMatchId,
@@ -65,54 +75,124 @@ test("store module imports do not create a database", () => {
   assert.equal(existsSync(join(temporaryDirectory, "private")), false);
 });
 
-test("bindings persist in order, isolate guilds, and return independent values", () => {
-  assert.equal(getBinding("first-guild"), undefined);
-  setBinding("first-guild", { discordUserId: "first-user", accounts: [accountB, accountA] });
-  setBinding("second-guild", { discordUserId: "second-user", accounts: [accountA] });
-  const first = getBinding("first-guild")!;
+test("members and accounts persist in order, isolate guilds, and return independent values", () => {
+  assert.deepEqual(listTrackedMembers("first-guild"), []);
+  setMemberAccounts("first-guild", "first-user", [accountB, accountA]);
+  setMemberAccounts("second-guild", "second-user", [accountA]);
+  const [first] = listTrackedMembers("first-guild");
   assert.deepEqual(first, { discordUserId: "first-user", accounts: [accountB, accountA] });
   first.accounts[0].gameName = "Changed outside the store";
   first.accounts.pop();
-  assert.deepEqual(getBinding("first-guild")?.accounts, [accountB, accountA]);
-  assert.deepEqual(listBindings(), [
-    { guildId: "first-guild", binding: { discordUserId: "first-user", accounts: [accountB, accountA] } },
-    { guildId: "second-guild", binding: { discordUserId: "second-user", accounts: [accountA] } },
+  assert.deepEqual(getTrackedMember("first-guild", "first-user")?.accounts, [accountB, accountA]);
+  assert.deepEqual(listAllTracking(), [
+    { guildId: "first-guild", members: [{ discordUserId: "first-user", accounts: [accountB, accountA] }] },
+    { guildId: "second-guild", members: [{ discordUserId: "second-user", accounts: [accountA] }] },
   ]);
   closeDatabase();
-  assert.deepEqual(getBinding("first-guild"), { discordUserId: "first-user", accounts: [accountB, accountA] });
+  assert.deepEqual(listTrackedMembers("first-guild"), [{ discordUserId: "first-user", accounts: [accountB, accountA] }]);
   assert.equal(getDatabase().pragma("integrity_check", { simple: true }), "ok");
 });
 
-test("a failed account replacement rolls back both member and account changes", () => {
-  const original = { discordUserId: "original-user", accounts: [accountA] };
-  setBinding("rollback-guild", original);
-  assert.throws(() => setBinding("rollback-guild", {
-    discordUserId: "replacement-user",
-    accounts: [accountB, { ...accountB, gameName: "Same PUUID" }],
-  }), /UNIQUE constraint failed/);
-  assert.deepEqual(getBinding("rollback-guild"), original);
+test("several members keep bind order, and re-saving a member keeps their place", () => {
+  const accountC = { puuid: "account-c", gameName: "Player C", tagLine: "NA3" };
+  setMemberAccounts("team-guild", "zed", [accountA]);
+  setMemberAccounts("team-guild", "amy", [accountB, accountC]);
+  setMemberAccounts("other-guild", "solo", [accountA]);
+  setMemberAccounts("team-guild", "zed", [accountA, { puuid: "account-d", gameName: "Player D", tagLine: "NA4" }]);
+  assert.deepEqual(listTrackedMembers("team-guild").map((member) => member.discordUserId), ["zed", "amy"]);
+  assert.deepEqual(getTrackedMember("team-guild", "amy")?.accounts, [accountB, accountC]);
+  assert.deepEqual(getTrackedMember("team-guild", "zed")?.accounts.map((account) => account.puuid), ["account-a", "account-d"]);
+  assert.equal(getTrackedMember("team-guild", "solo"), undefined);
+  assert.deepEqual(listTrackedMembers("other-guild").map((member) => member.discordUserId), ["solo"]);
+  assert.equal(findAccountOwner("team-guild", "account-c"), "amy");
+  assert.equal(findAccountOwner("team-guild", "missing"), undefined);
+  // The same Riot account is independent across guilds.
+  assert.equal(findAccountOwner("other-guild", "account-a"), "solo");
+  assert.deepEqual(listAllTracking().map((guild) => guild.guildId), ["other-guild", "team-guild"]);
   closeDatabase();
-  assert.deepEqual(getBinding("rollback-guild"), original);
+  assert.deepEqual(listTrackedMembers("team-guild").map((member) => member.discordUserId), ["zed", "amy"]);
 });
 
-test("binding replacement and removal cascade account rows without removing other settings", () => {
-  setBinding("remove-guild", { discordUserId: "old-user", accounts: [accountA, accountB] });
+test("a member added after others is bound last even when an earlier member was removed", () => {
+  setMemberAccounts("gap-guild", "one", [accountA]);
+  setMemberAccounts("gap-guild", "two", [accountB]);
+  assert.equal(removeTrackedMember("gap-guild", "one"), true);
+  setMemberAccounts("gap-guild", "three", [accountA]);
+  assert.deepEqual(listTrackedMembers("gap-guild").map((member) => member.discordUserId), ["two", "three"]);
+});
+
+test("an account owned by another member is rejected and rolls back everything", () => {
+  setMemberAccounts("owner-guild", "owner", [accountA]);
+  setMemberAccounts("owner-guild", "other", [accountB]);
+  assert.throws(
+    () => setMemberAccounts("owner-guild", "other", [accountB, { puuid: "account-new", gameName: "New", tagLine: "NA9" }, accountA]),
+    (error: unknown) => error instanceof AccountBoundToOtherMemberError && error.puuid === "account-a" && error.ownerId === "owner",
+  );
+  assert.throws(() => setMemberAccounts("owner-guild", "newcomer", [accountA]), AccountBoundToOtherMemberError);
+  assert.deepEqual(listTrackedMembers("owner-guild"), [
+    { discordUserId: "owner", accounts: [accountA] },
+    { discordUserId: "other", accounts: [accountB] },
+  ]);
+  assert.equal(getTrackedMember("owner-guild", "newcomer"), undefined);
+  assert.equal(findAccountOwner("owner-guild", "account-new"), undefined);
+});
+
+test("a failed account replacement rolls back both member and account changes", () => {
+  setMemberAccounts("rollback-guild", "original-user", [accountA]);
+  const before = listTrackedMembers("rollback-guild");
+  assert.throws(() => setMemberAccounts("rollback-guild", "original-user", [
+    accountB,
+    { ...accountB, gameName: "Same PUUID" },
+  ]), /UNIQUE constraint failed/);
+  assert.throws(() => setMemberAccounts("rollback-guild", "brand-new", [
+    accountB,
+    { ...accountB, gameName: "Same PUUID" },
+  ]), /UNIQUE constraint failed/);
+  assert.deepEqual(listTrackedMembers("rollback-guild"), before);
+  closeDatabase();
+  assert.deepEqual(listTrackedMembers("rollback-guild"), before);
+});
+
+test("a guild can track at most ten accounts in total, counting every member", () => {
+  const accounts = Array.from({ length: MAX_ACCOUNTS_PER_GUILD + 1 }, (_, index) => ({ puuid: `cap-${index}`, gameName: `Cap ${index}`, tagLine: "NA1" }));
+  setMemberAccounts("cap-guild", "first", accounts.slice(0, 6));
+  setMemberAccounts("cap-guild", "second", accounts.slice(6, 10));
+  assert.equal(MAX_ACCOUNTS_PER_GUILD, 10);
+  assert.throws(() => setMemberAccounts("cap-guild", "second", accounts.slice(6)), GuildAccountLimitError);
+  assert.throws(() => setMemberAccounts("cap-guild", "third", [accounts[10]]), GuildAccountLimitError);
+  assert.equal(getTrackedMember("cap-guild", "third"), undefined);
+  assert.equal(getTrackedMember("cap-guild", "second")?.accounts.length, 4);
+  // Replacing a member's own accounts does not count the old ones twice, and other guilds have their own budget.
+  setMemberAccounts("cap-guild", "second", accounts.slice(6, 10).reverse());
+  setMemberAccounts("cap-guild", "first", accounts.slice(0, 6).reverse());
+  setMemberAccounts("another-guild", "solo", accounts.slice(0, 10));
+  assert.equal(getTrackedMember("another-guild", "solo")?.accounts.length, 10);
+});
+
+test("removing a member cascades only their accounts and keeps the voice preference", () => {
+  setMemberAccounts("remove-guild", "old-user", [accountA, accountB]);
+  setMemberAccounts("remove-guild", "kept-user", [{ puuid: "account-kept", gameName: "Kept", tagLine: "NA1" }]);
   setVoiceStyle("remove-guild", "sweet");
-  setBinding("remove-guild", { discordUserId: "new-user", accounts: [accountB] });
-  assert.deepEqual(getBinding("remove-guild"), { discordUserId: "new-user", accounts: [accountB] });
-  clearBinding("remove-guild");
-  clearBinding("remove-guild");
-  assert.equal(getBinding("remove-guild"), undefined);
-  const remainingAccounts = getDatabase().prepare("SELECT count(*) AS count FROM bound_accounts WHERE guild_id = ?").get("remove-guild") as { count: number };
-  assert.equal(remainingAccounts.count, 0);
+  assert.equal(removeTrackedMember("remove-guild", "old-user"), true);
+  assert.equal(removeTrackedMember("remove-guild", "old-user"), false);
+  assert.equal(getTrackedMember("remove-guild", "old-user"), undefined);
+  assert.deepEqual(listTrackedMembers("remove-guild").map((member) => member.discordUserId), ["kept-user"]);
+  const accountCounts = getDatabase().prepare("SELECT discord_user_id, count(*) AS count FROM member_accounts WHERE guild_id = ? GROUP BY discord_user_id").all("remove-guild");
+  assert.deepEqual(accountCounts, [{ discord_user_id: "kept-user", count: 1 }]);
+  assert.equal(removeTrackedMember("remove-guild", "kept-user"), true);
+  assert.deepEqual(listTrackedMembers("remove-guild"), []);
+  assert.deepEqual(listAllTracking(), []);
   assert.equal(getAnnouncerState("remove-guild").voiceStyle, "sweet");
+  // The freed account can be bound again by a different member.
+  setMemberAccounts("remove-guild", "new-user", [accountA]);
+  assert.equal(findAccountOwner("remove-guild", "account-a"), "new-user");
 });
 
-test("fresh processes restore bindings and voice styles with empty monitoring state", () => {
+test("fresh processes restore members and voice styles with empty monitoring state", () => {
   runSeparateProcess(`
     const binding = require('./src/store/bindingStore.ts');
     const announcer = require('./src/store/announcerStore.ts');
-    binding.setBinding('restart-guild', { discordUserId: 'member-1', accounts: ${JSON.stringify([accountA, accountB])} });
+    binding.setMemberAccounts('restart-guild', 'member-1', ${JSON.stringify([accountA, accountB])});
     announcer.setVoiceStyle('restart-guild', 'sweet');
     announcer.setLastMatchId('restart-guild', 'account-a', 'NA1_historical');
     announcer.setActiveVoiceChannel('restart-guild', 'voice-channel-1');
@@ -123,7 +203,7 @@ test("fresh processes restore bindings and voice styles with empty monitoring st
     const announcer = require('./src/store/announcerStore.ts');
     const state = announcer.getAnnouncerState('restart-guild');
     console.log(JSON.stringify({
-      binding: binding.getBinding('restart-guild'),
+      members: binding.listTrackedMembers('restart-guild'),
       style: state.voiceStyle,
       matchIds: [...state.lastMatchIds],
       voiceChannel: state.activeVoiceChannelId,
@@ -133,7 +213,7 @@ test("fresh processes restore bindings and voice styles with empty monitoring st
     require('./src/store/database.ts').closeDatabase();
   `));
   assert.deepEqual(restored, {
-    binding: { discordUserId: "member-1", accounts: [accountA, accountB] },
+    members: [{ discordUserId: "member-1", accounts: [accountA, accountB] }],
     style: "sweet",
     matchIds: [],
     voiceChannel: null,
@@ -171,10 +251,12 @@ test("a failed preference write does not update the runtime voice style", () => 
 });
 
 test("invalid store inputs fail before creating a database", () => {
-  assert.throws(() => setBinding("", { discordUserId: "user", accounts: [accountA] }), /Guild ID/);
-  assert.throws(() => setBinding("guild", { discordUserId: " ", accounts: [accountA] }), /Discord user ID/);
-  assert.throws(() => setBinding("guild", { discordUserId: "user", accounts: [] }), /at least one/);
-  assert.throws(() => setBinding("guild", { discordUserId: "user", accounts: [{ ...accountA, puuid: "" }] }), /PUUID/);
+  assert.throws(() => setMemberAccounts("", "user", [accountA]), /Guild ID/);
+  assert.throws(() => setMemberAccounts("guild", " ", [accountA]), /Discord user ID/);
+  assert.throws(() => setMemberAccounts("guild", "user", []), /at least one/);
+  assert.throws(() => setMemberAccounts("guild", "user", [{ ...accountA, puuid: "" }]), /PUUID/);
+  assert.throws(() => removeTrackedMember(" ", "user"), /Guild ID/);
+  assert.throws(() => findAccountOwner("guild", ""), /PUUID/);
   assert.throws(() => setVoiceStyle("guild", "unknown" as "sweet"), /Voice style/);
   assert.throws(() => getAnnouncerState(" "), /Guild ID/);
   assert.equal(existsSync(process.env.DATABASE_PATH!), false);
@@ -190,8 +272,8 @@ test("path precedence and defaults are explicit", () => {
   assert.equal(getDatabasePath(), resolve(".data", "bot.sqlite3"));
   process.env.DATABASE_PATH = ":memory:";
   assert.equal(getDatabasePath(), ":memory:");
-  setBinding("memory-guild", { discordUserId: "user", accounts: [accountA] });
-  assert.deepEqual(getBinding("memory-guild")?.accounts, [accountA]);
+  setMemberAccounts("memory-guild", "user", [accountA]);
+  assert.deepEqual(getTrackedMember("memory-guild", "user")?.accounts, [accountA]);
 });
 
 test("database uses foreign keys, WAL, full durability, and private filesystem permissions", () => {
@@ -204,6 +286,119 @@ test("database uses foreign keys, WAL, full durability, and private filesystem p
     assert.equal(statSync(process.env.DATABASE_PATH!).mode & 0o777, 0o600);
     assert.equal(statSync(join(temporaryDirectory, "private")).mode & 0o777, 0o700);
   }
+});
+
+// The schema exactly as version 1 of the bot created it.
+const SCHEMA_V1 = `
+  CREATE TABLE guild_bindings (
+    guild_id TEXT PRIMARY KEY,
+    discord_user_id TEXT NOT NULL CHECK(length(trim(discord_user_id)) > 0)
+  ) STRICT;
+  CREATE TABLE bound_accounts (
+    guild_id TEXT NOT NULL REFERENCES guild_bindings(guild_id) ON DELETE CASCADE,
+    puuid TEXT NOT NULL CHECK(length(trim(puuid)) > 0),
+    game_name TEXT NOT NULL CHECK(length(trim(game_name)) > 0),
+    tag_line TEXT NOT NULL CHECK(length(trim(tag_line)) > 0),
+    position INTEGER NOT NULL CHECK(position >= 0),
+    PRIMARY KEY (guild_id, puuid),
+    UNIQUE (guild_id, position)
+  ) STRICT;
+  CREATE TABLE guild_preferences (
+    guild_id TEXT PRIMARY KEY,
+    voice_style TEXT NOT NULL CHECK(voice_style IN ('sweet', 'old'))
+  ) STRICT;
+  PRAGMA user_version = 1;
+`;
+
+function writeVersionOneDatabase(filePath: string, extraSql = ""): void {
+  const v1 = new Database(filePath);
+  try {
+    v1.exec(SCHEMA_V1);
+    v1.exec(`
+      INSERT INTO guild_bindings VALUES ('guild-one', 'member-one'), ('guild-two', 'member-two');
+      INSERT INTO bound_accounts VALUES
+        ('guild-one', 'account-b', 'Player B', 'NA2', 0),
+        ('guild-one', 'account-a', '玩家 A', 'NA1', 1),
+        ('guild-two', 'account-a', '玩家 A', 'NA1', 0);
+      INSERT INTO guild_preferences VALUES ('guild-one', 'sweet'), ('guild-two', 'old');
+    `);
+    if (extraSql) v1.exec(extraSql);
+  } finally {
+    v1.close();
+  }
+}
+
+test("a version 1 database upgrades in place when a separate process opens it", () => {
+  const filePath = join(temporaryDirectory, "v1.sqlite3");
+  process.env.DATABASE_PATH = filePath;
+  writeVersionOneDatabase(filePath);
+  if (process.platform !== "win32") chmodSync(filePath, 0o644);
+
+  const migrated = JSON.parse(runSeparateProcess(`
+    const binding = require('./src/store/bindingStore.ts');
+    const announcer = require('./src/store/announcerStore.ts');
+    const database = require('./src/store/database.ts');
+    const tracking = binding.listAllTracking();
+    const db = database.getDatabase();
+    console.log(JSON.stringify({
+      tracking,
+      styles: ['guild-one', 'guild-two'].map((guild) => announcer.getAnnouncerState(guild).voiceStyle),
+      version: db.pragma('user_version', { simple: true }),
+      tables: db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all().map((row) => row.name),
+    }));
+    database.closeDatabase();
+  `));
+  assert.deepEqual(migrated, {
+    tracking: [
+      { guildId: "guild-one", members: [{ discordUserId: "member-one", accounts: [accountB, accountA] }] },
+      { guildId: "guild-two", members: [{ discordUserId: "member-two", accounts: [accountA] }] },
+    ],
+    styles: ["sweet", "old"],
+    version: 2,
+    tables: ["guild_preferences", "member_accounts", "tracked_members"],
+  });
+  if (process.platform !== "win32") assert.equal(statSync(filePath).mode & 0o777, 0o600);
+
+  // The upgraded file behaves like any v2 file: another member can join the first guild.
+  setMemberAccounts("guild-one", "member-three", [{ puuid: "account-c", gameName: "Player C", tagLine: "NA3" }]);
+  assert.deepEqual(listTrackedMembers("guild-one").map((member) => member.discordUserId), ["member-one", "member-three"]);
+});
+
+test("a failed migration rolls back completely and leaves the version 1 database intact", () => {
+  const filePath = join(temporaryDirectory, "v1-conflict.sqlite3");
+  process.env.DATABASE_PATH = filePath;
+  // A stray table with the new name makes the second migration step fail midway.
+  writeVersionOneDatabase(filePath, "CREATE TABLE tracked_members (stray TEXT);");
+  assert.throws(() => getDatabase(), /Could not open the bot database.*tracked_members/);
+
+  const verifyDb = new Database(filePath, { readonly: true });
+  try {
+    assert.equal(verifyDb.pragma("user_version", { simple: true }), 1);
+    assert.deepEqual(
+      verifyDb.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all(),
+      [{ name: "bound_accounts" }, { name: "guild_bindings" }, { name: "guild_preferences" }, { name: "tracked_members" }],
+    );
+    assert.deepEqual(verifyDb.prepare("SELECT guild_id, discord_user_id FROM guild_bindings ORDER BY guild_id").all(), [
+      { guild_id: "guild-one", discord_user_id: "member-one" },
+      { guild_id: "guild-two", discord_user_id: "member-two" },
+    ]);
+    assert.equal((verifyDb.prepare("SELECT count(*) AS count FROM bound_accounts").get() as { count: number }).count, 3);
+    assert.equal((verifyDb.prepare("SELECT count(*) AS count FROM tracked_members").get() as { count: number }).count, 0);
+  } finally {
+    verifyDb.close();
+  }
+});
+
+test("reopening a version 2 database changes nothing", () => {
+  setMemberAccounts("stable-guild", "member", [accountA, accountB]);
+  setVoiceStyle("stable-guild", "sweet");
+  const schemaBefore = getDatabase().prepare("SELECT type, name, sql FROM sqlite_master ORDER BY name").all();
+  assert.equal(getDatabase().pragma("user_version", { simple: true }), 2);
+  closeDatabase();
+  assert.equal(getDatabase().pragma("user_version", { simple: true }), 2);
+  assert.deepEqual(getDatabase().prepare("SELECT type, name, sql FROM sqlite_master ORDER BY name").all(), schemaBefore);
+  assert.deepEqual(listTrackedMembers("stable-guild"), [{ discordUserId: "member", accounts: [accountA, accountB] }]);
+  assert.equal(getAnnouncerState("stable-guild").voiceStyle, "sweet");
 });
 
 test("a database from a newer bot is rejected without replacing its contents", () => {
@@ -225,6 +420,6 @@ test("corrupt databases fail visibly and are never silently replaced", () => {
   process.env.DATABASE_PATH = join(temporaryDirectory, "corrupt.sqlite3");
   const original = Buffer.from("this is not a SQLite database");
   writeFileSync(process.env.DATABASE_PATH, original);
-  assert.throws(() => getBinding("any-guild"), /Could not open the bot database/);
+  assert.throws(() => listTrackedMembers("any-guild"), /Could not open the bot database/);
   assert.deepEqual(readFileSync(process.env.DATABASE_PATH), original);
 });

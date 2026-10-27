@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, test } from "node:test";
-import { setBinding } from "../src/store/bindingStore";
+import { setMemberAccounts } from "../src/store/bindingStore";
 import { closeDatabase } from "../src/store/database";
 
 const root = path.resolve(__dirname, "..");
@@ -25,10 +25,10 @@ afterEach(() => {
 
 function seedBinding(databasePath: string): void {
   process.env.DATABASE_PATH = databasePath;
-  setBinding("guild-1", { discordUserId: "tracked", accounts: [
+  setMemberAccounts("guild-1", "tracked", [
     { puuid: "real-puuid", gameName: "RealName", tagLine: "NA1" },
     { puuid: "MOCK-fixture", gameName: "MockWin", tagLine: "NA1" },
-  ] });
+  ]);
   closeDatabase();
 }
 

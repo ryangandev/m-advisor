@@ -212,12 +212,12 @@ Module._load = function(request, parent, ...args) {
       "discord.js": { Events: { ClientReady: "ready" } },
       "../services/monitorLifecycle": { restoreMonitoring: async () => { stopping.beginShutdown(); } },
       "../services/riotData": { getRiotDataLabel: () => "Riot 实时数据", getRiotMode: () => "real" },
-      "../store/bindingStore": { listBindings: () => [
-        { guildId: "known-guild", binding: { discordUserId: "tracked", accounts: [
+      "../store/bindingStore": { listAllTracking: () => [
+        { guildId: "known-guild", members: [{ discordUserId: "tracked", accounts: [
           { puuid: "MOCK-a", gameName: "MockWin", tagLine: "NA1" },
           { puuid: "real-b", gameName: "RealName", tagLine: "NA1" },
-        ] } },
-        { guildId: "unknown-guild", binding: { discordUserId: "tracked", accounts: [{ puuid: "MOCK-c", gameName: "MockLoss", tagLine: "NA1" }] } },
+        ] }] },
+        { guildId: "unknown-guild", members: [{ discordUserId: "tracked", accounts: [{ puuid: "MOCK-c", gameName: "MockLoss", tagLine: "NA1" }] }] },
       ] },
       "../utils/tts": { prewarmTTS: async () => {} },
     };
