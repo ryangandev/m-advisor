@@ -218,6 +218,12 @@ export function scoreParticipant(detail: MatchDetail, participant: MatchParticip
   return { features, dimensions, composite, score: calibrated * 10, strengths };
 }
 
+/** The tier of a 1-based team rank. Teams of five map one-to-one; any other size spreads across the same five tiers. */
+export function tierForRank(rank: number, teamSize: number): HorseTier {
+  const last = teamSize - 1;
+  return HORSE_TIERS[last <= 0 ? 0 : Math.round(((rank - 1) * (HORSE_TIERS.length - 1)) / last)];
+}
+
 /** Ranks the tracked player's team from 特等马 to 没有马; enemies are never scored. */
 export function rankTeam(detail: MatchDetail, trackedPuuid: string, benchmarks: Benchmarks = DEFAULT_BENCHMARKS): HorseRanking {
   const tracked = detail.info.participants.find((player) => player.puuid === trackedPuuid);
@@ -226,13 +232,7 @@ export function rankTeam(detail: MatchDetail, trackedPuuid: string, benchmarks: 
   const scored = team
     .map((participant) => ({ participant, ...scoreParticipant(detail, participant, benchmarks) }))
     .sort((a, b) => b.score - a.score || b.composite - a.composite || a.participant.puuid.localeCompare(b.participant.puuid));
-  const last = scored.length - 1;
-  const horses = scored.map((horse, index) => ({
-    ...horse,
-    rank: index + 1,
-    // Teams of five map one-to-one; any other size spreads across the same five tiers.
-    tier: HORSE_TIERS[last <= 0 ? 0 : Math.round((index * (HORSE_TIERS.length - 1)) / last)],
-  }));
+  const horses = scored.map((horse, index) => ({ ...horse, rank: index + 1, tier: tierForRank(index + 1, scored.length) }));
   return {
     matchId: detail.metadata.matchId,
     trackedPuuid,
