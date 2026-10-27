@@ -239,6 +239,22 @@ The memory lives in the process, so a bot restart during loading may announce th
 It starts a labeled mock game for the tracked members in the test channel on their first accounts, asks the watcher to check at once and waits for the card and the line.
 Ending the game later with `/simulate outcome:胜利` or `失败` reuses the same match ID, so the start and the finished report are one match.
 
+### Recap
+
+When a 锦囊 card had a 军师之选, the horse embed of that game's finished report gets one more field, `锦囊回顾`, naming the pick and how the call turned out.
+It is text only: the spoken report is the same with and without it.
+The monitor remembers the pick per guild, across monitoring sessions, with the match ID, the member, the account they played on and whether the card was mock.
+That memory is kept for 3 hours, at most 50 picks, the oldest dropped first, because a game lasts 20 to 45 minutes and its report may wait for a channel.
+It lives in the process like the rest of the game start memory, so a bot restart during the game loses it and the report simply has no field.
+The field appears only when the pick is in the finished match, on the team the report rates, and still bound to the same member.
+The card and the report must be in the same data mode, so a mock pick never decorates a real report and the reverse.
+No pick, because the card was cold or never posted, means no field, and so does a match the report does not rate, such as a remake.
+The wording depends on the pick's tier in that match and is chosen from a small pool, seeded by `recap:<matchId>` so the same match always shows the same line.
+A 特等马 pick celebrates the call, a 上等马 pick says it held up, and a 中等马 pick calls it so-so.
+For a 下等马 or a 没有马 pick the 军师 admits to misjudging, and the joke stays on the 军师, never on the player.
+The line names only the pick, by the game name stored with their binding, and nothing about enemies or other players.
+Mock reports keep their mock label.
+
 ## Diagnostics
 
 The bot logs to the terminal and its daily log file, described in [Runtime](runtime.md#logs).
