@@ -184,7 +184,9 @@ Each tick asks spectator-v5 through `getActiveGame` for every account of the mem
 In real mode a saved `MOCK-` account is skipped without a request or a log line; the match poll already warns about it.
 Once one account returns a game, every other account among that game's participants counts as in that game for this tick without its own request, so a premade costs one request.
 An account already seen in a game is asked again only on every sixth tick (2 minutes), until spectator answers that it is not in a game.
-Ten accounts therefore cost at most 60 requests every 2 minutes on na1, which counts its rate limit apart from americas.
+No account is ever asked twice within 20 seconds, counted from the start of the tick that asked it and across monitoring sessions of the guild.
+So an early check for a member who joins only asks accounts that were not asked in the last 20 seconds, and a member flapping in and out of voice adds no requests.
+Ten accounts therefore cost at most 60 requests in any 2 minutes on na1, which counts its rate limit apart from americas.
 
 Each account has a state for the current presence of its member: unknown, not in a game, or in a game.
 A member who leaves voice, is unbound or loses the account starts over as unknown when they are back.
@@ -195,10 +197,17 @@ A game whose finished match the session already knows (waiting for a channel, be
 Every decided game, announced or skipped, is remembered by its match ID for the session, at most 50, so it is announced once even when several members are in it.
 The match ID is `NA1_<gameId>`, the ID the finished match will have, and the reserved mock ID in mock mode.
 
+The monitor also remembers, per guild and across sessions, the games whose 锦囊 went out, at most 50 and each for 15 minutes.
+A 锦囊 counts as out once its card was attempted.
+When the only member in voice leaves during loading, the session stops; when they rejoin, the new session sees the same game loading and skips it with one log line, so nobody hears it twice.
+A game that was detected but never got a card, because nobody was in a usable channel, can still be announced by the next session.
+
 A spectator 401 or 403 turns the watcher off for the rest of the session with one log line; finished matches are still announced.
 A spectator 429 skips that account for this tick quietly and is never shown to anyone.
-Any other failure, including a 404 that is not Riot's `NOT_FOUND`, is a failed check that leaves the account's state as it was.
-It is logged once per session and kind of error, and it never turns the watcher off.
+Any other failure, including a 404 that is not Riot's `NOT_FOUND`, is a failed check that leaves the account's state as it was, and it never turns the watcher off.
+Each kind of failure is logged once, and the first check that answers after that logs one line saying the checks work again, so a stuck watcher and a recovered one look different.
+A failure anywhere else in a tick, such as a database read, is logged and counted the same way; a tick never rejects, because its timer does not wait for it.
+The watcher's log lines start with `Game start check failed:`, apart from the match poll's `Match monitoring failed:`.
 
 ### Text and voice
 
@@ -224,7 +233,7 @@ If any of those fails before playback, nothing is heard, and the next tick may q
 After 90 seconds a line that has not started is dropped with one log line, and the text stays.
 Once the line is playing it finishes where it started, even when its players leave or move; only the session stopping, when the last tracked member leaves voice, aborts it.
 A generation or playback failure is not retried, because the text is already there.
-A bot restart during loading creates a new session whose first check sees the game loading, so it may be announced again; that duplicate is accepted.
+The memory lives in the process, so a bot restart during loading may announce the game again; that duplicate is accepted.
 
 `/simulate outcome:开局（赛前锦囊）` works only in mock mode.
 It starts a labeled mock game for the tracked members in the test channel on their first accounts, asks the watcher to check at once and waits for the card and the line.
@@ -330,6 +339,8 @@ It also pins the text-first order, the once-only text and 马厩 write across vo
 `tests/gameStart.test.ts` runs the real monitor, watcher and voice queue with a fake spectator, clock, speech and Discord.
 It pins the detection rules, the premade dedup and the sixth-tick recheck, the request budget with fake timers, the queue filter, the voice switch, the 90 second window, the finished-match cancel, leaving before and during playback, the rated team, the exact mentions, the quiet 429 and the 403 that leaves match monitoring on.
 It also feeds a game with enemies, strangers and a friend on the other team through the watcher and checks that none of their names, PUUIDs or champions reach the card or the line.
+It covers the guild memory: the only member leaving and rejoining during loading gets one card and one line, a 锦囊 is forgotten after 15 minutes, and the memory keeps at most 50 games.
+It also checks that a member flapping in and out of voice costs at most 6 requests per account in 2 minutes, that a failure inside a tick is logged once and never rejects, that the first working check after a failure logs one recovery line, and that the watcher logs with its own prefix.
 `tests/voiceAnnouncements.test.ts` verifies queue serialization, chunk ordering, the two-chunk join, inline retry, early and mid-stream generation failure, cancellation between chunks and during playback, the announcement deadline with a chunk that never resolves, channel changes, limits, and cleanup of every chunk file.
 `tests/speechChunks.test.ts` verifies sentence boundaries, ASCII end marks inside names, preserved separators, decimal scores, hard cuts that keep words and numbers whole, short and long sentences and the length limits.
 `tests/voicePlayback.test.ts` uses the installed voice library's `entersState` with fake transports to verify playback lifecycle, chunk stitching, decoding before joining, gaps while a chunk generates, and failure cleanup.
