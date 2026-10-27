@@ -176,6 +176,7 @@ In a mock game the outcome is the result of the team of the account it was calle
 An account without an entry in that queue stays unranked.
 `setMockRankedEntry(puuid, entry)` replaces or adds an entry for tests and is rejected in real mode.
 `resetMockData()` clears the ranked state back to the fixtures.
+`/simulate outcome:晋级（模拟）` and `掉段（模拟）` place the account at GOLD I 90 or GOLD IV 5 with `setMockRankedEntry`, keeping its games, before they simulate a win or a loss; see [Announcements](announcements.md#段位播报).
 
 ### Rank tracking
 
@@ -189,6 +190,7 @@ It depends on an injected `readEntries(puuid)`, which is `getLeagueEntries` in p
 - While league-v4 has not caught up (`wins + losses` unchanged), the account is read again on that floor, at most 4 reads per account per match.
 - Only one snapshot read per account waits in the queue.
 - The worst case is therefore 3 reads per account in any 2 minutes (two reads a floor apart plus one first after-read), 30 for 10 accounts, and in practice about 2 per account. That leaves room under the na1 app limit of 100 per 2 minutes next to spectator's 60 for `/profile` and `/bind`.
+- `rebase(puuids)` exists for `/simulate` only and does nothing in real mode: in mock mode it forgets the accounts' earlier reads and reads them again at once, past the floor, so a mock entry that was just placed is the before-value of the next simulated game. Mock reads never reach Riot.
 - At shutdown `stop()` turns every queued read into a no-op, clears the retry timers and settles every pending row with no row; a read already sent is ignored when it answers.
 
 Failures never reach the report as an error:
