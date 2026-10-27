@@ -1,6 +1,6 @@
 # Local storage
 
-The bot keeps server bindings and announcer voice preferences in a local SQLite database.
+The bot keeps each server's tracked members, their Riot accounts and the announcer voice preference in a local SQLite database.
 Restarting the bot preserves these settings.
 The store API is synchronous, and importing the store modules alone does not create files or open a connection.
 
@@ -22,31 +22,57 @@ The database contains Discord member IDs and Riot account IDs, so keep it outsid
 
 | Data | Owner | Persistence |
 | --- | --- | --- |
-| One tracked Discord member per guild | `src/store/bindingStore.ts` | SQLite |
-| Ordered list of that member's Riot accounts | `src/store/bindingStore.ts` | SQLite |
+| Tracked Discord members per guild, in bind order | `src/store/bindingStore.ts` | SQLite (`tracked_members`) |
+| Ordered list of each member's Riot accounts | `src/store/bindingStore.ts` | SQLite (`member_accounts`) |
 | Announcer style, `sweet` or `old` (default `old`) | `src/store/announcerStore.ts` | SQLite |
 | Polling timer | `src/store/announcerStore.ts` | Memory only |
 | Current voice channel | `src/store/announcerStore.ts` | Memory only |
 | Session match baseline | `src/store/announcerStore.ts` | Memory only |
 
-An unconfigured guild uses the `sweet` voice.
-Removing a binding removes its account rows while keeping the guild's chosen voice.
+An unconfigured guild uses the `old` voice.
+Removing a tracked member removes only that member's account rows, and the guild's chosen voice stays.
 Each monitoring session establishes its own baseline, so old stored match IDs cannot trigger replay after restart.
 
-`setBinding` replaces the member and account list in one transaction.
-Duplicate PUUIDs within a guild are rejected and roll back the entire replacement.
-Different guilds can bind the same Riot account independently.
-The public command layer enforces the rule that changing the tracked member requires unbinding first.
+A guild can track several members, each with an ordered list of Riot accounts.
+`listTrackedMembers(guildId)` returns members in the order they were first bound, and `getTrackedMember(guildId, userId)` returns one.
+`setMemberAccounts(guildId, userId, accounts)` adds the member if needed, placing them after everyone already tracked, and replaces their accounts in one transaction.
+Re-saving an existing member keeps their place in the order.
+At least one account is required.
+A PUUID already owned by another member of the same guild throws `AccountBoundToOtherMemberError`, which carries the `puuid` and `ownerId`.
+A guild may hold at most 10 Riot accounts in total across all its members, and going over throws `GuildAccountLimitError`.
+Duplicate PUUIDs within one replacement are rejected too.
+Every one of these failures rolls back the whole replacement, including a newly created member.
+Different guilds can track the same Riot account independently.
+`removeTrackedMember(guildId, userId)` removes that member and their accounts, returns whether anyone was removed, and leaves other members and the voice preference alone.
+`findAccountOwner(guildId, puuid)` returns the owning member, and `listAllTracking()` returns every guild that has tracked members for startup reconciliation.
+The public command layer still enforces one tracked member per server until the multi-member command changes land.
 Store reads return fresh values, so changing a returned object does not silently modify persisted settings.
 
 `setVoiceStyle` persists its change before updating the runtime state.
 `resetAnnouncerRuntime(guildId)` clears that guild's polling timer, voice channel, and match baseline while retaining its voice choice.
-`listBindings()` returns saved bindings for startup reconciliation.
+
+## Schema versions and migration
+
+`src/store/database.ts` holds an ordered `MIGRATIONS` list, and entry `i` upgrades a database from schema version `i` to `i + 1`.
+Each step runs in its own transaction together with the `user_version` bump, so a failed step rolls back completely and leaves the file at the previous version with its data intact.
+A fresh database runs every step in order.
+A database from a newer bot is rejected with an error instead of being modified.
+Shipped migrations are never edited; a new schema change appends a new entry.
+
+| Version | Tables |
+| --- | --- |
+| 1 | `guild_bindings` (one member per guild), `bound_accounts`, `guild_preferences` |
+| 2 | `tracked_members`, `member_accounts`, `guild_preferences` |
+
+The 1 to 2 step copies each `guild_bindings` row into `tracked_members` at position 0 and each `bound_accounts` row into `member_accounts` with its account order, then drops the two old tables.
+`guild_preferences` is unchanged, so the voice choice carries over.
+Migration happens on the first launch of the new version, in place, with no downgrade path.
+Copy `bot.sqlite3` to a safe place before the first launch of the new version, because an older bot cannot open the upgraded file.
 
 ## Durability and shutdown
 
 `src/store/database.ts` owns connection initialization, schema versioning, and `closeDatabase()`.
-The schema uses foreign keys with cascading account deletion, WAL journaling, a five-second busy timeout, and full synchronous writes.
+The schema uses foreign keys with cascading account deletion from tracked member to accounts, WAL journaling, a five-second busy timeout, and full synchronous writes.
 Call `closeDatabase()` during graceful shutdown after stopping monitors.
 It closes only the SQLite connection; callers remain responsible for stopping their timers and voice processes.
 
@@ -60,5 +86,7 @@ To restore, stop the bot and place the saved database at the configured path bef
 ## Verification
 
 `tests/store.test.ts` uses temporary databases and separate Node processes to verify real restart behavior.
-It covers account ordering, guild isolation, atomic rollback, binding removal, voice preferences, runtime reset, filesystem permissions, configuration precedence, and visible failures for corrupt or unsupported database files.
+It covers member and account ordering, guild isolation, cross-member PUUID rejection, the 10-account cap, atomic rollback, member removal, voice preferences, runtime reset, filesystem permissions, configuration precedence, and visible failures for corrupt or unsupported database files.
+Migration tests build a literal version 1 file, upgrade it from a separate process, and check that members, account order, voice styles and file mode survive and the old tables are gone.
+They also check that a failing migration rolls back to version 1 and that reopening a version 2 file changes nothing.
 The tests do not write to the bot's actual data directory.
