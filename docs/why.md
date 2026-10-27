@@ -64,11 +64,16 @@ If rendering fails, the verdict is sent without the image and only the error cla
 
 ### Fonts
 
-No font is bundled.
-The renderer loads only known system CJK font files that exist, found once per process: PingFang (older macOS), Hiragino Sans GB and STHeiti on macOS, Noto Sans CJK and WenQuanYi on Linux, and Microsoft YaHei on Windows.
-The SVG asks for PingFang SC first, then Hiragino Sans GB, Heiti SC, Noto Sans CJK SC, Source Han Sans SC, Microsoft YaHei and WenQuanYi Micro Hei.
-Current macOS keeps PingFang outside the font folders resvg can read, so this Mac draws with Hiragino Sans GB.
-When none of the known files exists, the renderer logs a warning and scans every system font instead, which is slower but finds any installed CJK font.
+The radar bundles a subset of Noto Sans SC (SIL Open Font License 1.1), so the Chinese labels look the same on any host.
+`assets/fonts` holds `NotoSansSC-Regular.subset.otf` and `NotoSansSC-Bold.subset.otf` with the license and a README that records the download URL, the release and how the subset was made.
+Each is about 750 KB and keeps 3747 characters: the 3500 characters of the 通用规范汉字表 一级字表, every Chinese champion name in `src/data/championNamesZh.json`, the dimension, tier and position labels, the fixed strings of the card, ASCII and the punctuation it uses.
+`scripts/subset-radar-font.ts` regenerates them from a downloaded font and does no network access itself; regenerate after `npm run champions:update` or when the card gains new fixed text.
+The image names nobody, so the subset only has to cover those fixed labels and champion names.
+The 3500 characters are headroom for champions added in later patches.
+`tests/whyRadar.test.ts` fails when the radar can draw a character the files lack.
+The renderer loads the bundled files first, then the known system CJK font files that exist, found once per process: PingFang (older macOS), Hiragino Sans GB and STHeiti on macOS, Noto Sans CJK and WenQuanYi on Linux, and Microsoft YaHei on Windows.
+The SVG asks for Noto Sans SC first, then PingFang SC, Hiragino Sans GB, Heiti SC, Noto Sans CJK SC, Source Han Sans SC, Microsoft YaHei and WenQuanYi Micro Hei, so a character outside the subset is drawn by the first system font that has it, and by the font's placeholder box when no system font does.
+Only when the bundled files are missing and no known system font exists does the renderer log a warning and scan every system font instead, which is slower.
 
 ## 上诉
 
@@ -96,7 +101,7 @@ Every reply uses `allowedMentions` with nothing allowed, so a quoted member is s
 ## Verification
 
 `tests/horseVerdict.test.ts` covers the impact ordering, key dimensions, missing dimensions, neighbouring tiers and the 惜败 threshold, evidence, the summary and the ruling wording, and record selection.
-`tests/whyRadar.test.ts` compares the SVG with `tests/snapshots/why-radar-support.svg`, checks labels, the mock badge and escaping, renders PNGs of the expected size and checks that Chinese labels draw ink on macOS.
+`tests/whyRadar.test.ts` compares the SVG with `tests/snapshots/why-radar-support.svg`, checks labels, the mock badge and escaping, renders PNGs of the expected size, checks that the bundled font covers every character the radar can draw and that Chinese labels draw from it alone with system fonts disabled, and on macOS that a character outside the subset falls back to a system font.
 After reviewing an intended change to the image, run it with `UPDATE_SNAPSHOTS=1` to refresh the snapshot.
 It writes review images of a 没有马 support, a 特等马 jungler and a mock record to the ignored `test-results/why/`.
 `tests/why.test.ts` covers the command, the empty states, mock labeling, autocomplete, the appeal permission, the closed case, reopening after a failed send, mock and real cases staying separate and that the record is unchanged.

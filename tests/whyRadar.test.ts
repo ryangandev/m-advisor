@@ -1,10 +1,15 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { Resvg } from "@resvg/resvg-js";
-import { buildVerdict } from "../src/services/horseVerdict";
-import { RADAR_HEIGHT, RADAR_WIDTH, buildVerdictRadarSvg, radarFontSource, renderVerdictRadar } from "../src/utils/whyRadar";
+import championNames from "../src/data/championNamesZh.json";
+import { radarCharacters } from "../scripts/subset-radar-font";
+import { HORSE_TIERS } from "../src/services/horseRanking";
+import { POSITION_LABELS, buildVerdict } from "../src/services/horseVerdict";
+import { POSITIONS } from "../src/types";
+import { RADAR_HEIGHT, RADAR_WIDTH, buildVerdictRadarSvg, radarFontOptions, radarFontSource, renderVerdictRadar } from "../src/utils/whyRadar";
+import { fontCodePoints } from "./helpers/fontCmap";
 import { seededJungler, seededSupport } from "./helpers/verdicts";
 
 const SNAPSHOT = join(__dirname, "snapshots", "why-radar-support.svg");
@@ -70,15 +75,98 @@ test("the radar renders a valid PNG of the expected size for review", async () =
   }
 });
 
-test("a known CJK font is used on macOS and draws Chinese labels", { skip: process.platform !== "darwin" }, () => {
+type FontOptions = { loadSystemFonts: boolean; fontFiles: string[] };
+const render = (svg: string, font: FontOptions) => new Resvg(svg, { font }).render().pixels;
+
+/** The number of non-transparent pixels, for text drawn on a transparent background. */
+function ink(svg: string, font: FontOptions): number {
+  const pixels = render(svg, font);
+  let count = 0;
+  for (let index = 3; index < pixels.length; index += 4) if (pixels[index] > 0) count += 1;
+  return count;
+}
+
+/** The number of pixels that differ between two renderings of the same size. */
+function difference(a: Uint8Array, b: Uint8Array): number {
+  let count = 0;
+  for (let index = 0; index < a.length; index += 4) {
+    if (a[index] !== b[index] || a[index + 1] !== b[index + 1] || a[index + 2] !== b[index + 2] || a[index + 3] !== b[index + 3]) count += 1;
+  }
+  return count;
+}
+
+const labelSvg = (text: string, family = "'Noto Sans SC', 'PingFang SC', 'Hiragino Sans GB'") =>
+  `<svg xmlns="http://www.w3.org/2000/svg" width="400" height="60"><text x="5" y="42" font-size="36" font-family="${family}">${text}</text></svg>`;
+
+test("the bundled radar font is Noto Sans SC in regular and bold, with its license, and stays small", () => {
   const source = radarFontSource();
-  assert.equal(source.systemScan, false);
-  assert.ok(source.files.length > 0);
-  const label = new Resvg(
-    `<svg xmlns="http://www.w3.org/2000/svg" width="200" height="50"><text x="5" y="38" font-size="32" font-family="'PingFang SC', 'Hiragino Sans GB', 'Heiti SC'">没有马</text></svg>`,
-    { font: { loadSystemFonts: false, fontFiles: source.files } },
-  ).render();
-  let ink = 0;
-  for (let index = 3; index < label.pixels.length; index += 4) if (label.pixels[index] > 0) ink += 1;
-  assert.ok(ink > 500, `the label drew ${ink} pixels`);
+  assert.deepEqual(source.bundled.map((file) => file.split("/").pop()), ["NotoSansSC-Regular.subset.otf", "NotoSansSC-Bold.subset.otf"]);
+  const total = source.bundled.reduce((sum, file) => sum + statSync(file).size, 0);
+  assert.ok(total < 2_000_000, `the bundled fonts are ${total} bytes`);
+  const license = readFileSync(join(__dirname, "..", "assets", "fonts", "LICENSE"), "utf8");
+  assert.match(license, /SIL OPEN FONT LICENSE Version 1\.1/);
+  assert.match(buildVerdictRadarSvg(buildVerdict(seededSupport())), /font-family="'Noto Sans SC', /);
+});
+
+test("the bundled subset covers every character the radar can draw", () => {
+  const covered = fontCodePoints(radarFontSource().bundled[0]);
+  assert.deepEqual(fontCodePoints(radarFontSource().bundled[1]), covered, "regular and bold keep the same characters");
+  const missing = new Set<string>();
+  const needs = (text: string) => { for (const character of text.replace(/[\r\n]/g, "")) if (!covered.has(character.codePointAt(0)!)) missing.add(character); };
+
+  // The characters the subset script keeps are really in the files.
+  for (const character of radarCharacters()) needs(character);
+  // Every text node of real SVGs: each champion with each tier and position, real and mock, with and without data.
+  const champions = Object.entries(championNames.names);
+  champions.forEach(([id, name], index) => {
+    const tier = HORSE_TIERS[index % HORSE_TIERS.length];
+    const position = POSITIONS[index % POSITIONS.length];
+    for (const mock of [false, true]) {
+      const svg = buildVerdictRadarSvg(buildVerdict(seededSupport({ championId: Number(id), championName: name, tier, position, mock, won: index % 2 === 0 })));
+      needs(svg.replace(/<[^>]*>/g, ""));
+    }
+  });
+  needs(buildVerdictRadarSvg(buildVerdict(seededSupport({ position: null, dimensions: { damage: 0.4 } }))).replace(/<[^>]*>/g, ""));
+  for (const label of [...HORSE_TIERS, ...Object.values(POSITION_LABELS), "未知位置"]) needs(label);
+  assert.deepEqual([...missing], [], "characters the radar draws but the bundled font lacks");
+  assert.ok(covered.size >= 3500, `${covered.size} code points in the subset`);
+});
+
+test("with system fonts disabled the radar still draws its Chinese labels from the bundled font", async () => {
+  const bundledOnly = radarFontOptions(false);
+  assert.equal(bundledOnly.loadSystemFonts, false);
+  assert.deepEqual(bundledOnly.fontFiles, radarFontSource().bundled);
+  assert.ok(ink(labelSvg("没有马参团视野"), bundledOnly) > 1500);
+  assert.equal(ink(labelSvg("没有马参团视野", "'Hiragino Sans GB'"), { loadSystemFonts: false, fontFiles: [] }), 0, "with no font at all nothing is drawn");
+
+  // The whole radar: the same card with its text removed has far fewer inked pixels.
+  const svg = buildVerdictRadarSvg(buildVerdict(seededSupport()));
+  const labelPixels = difference(render(svg, bundledOnly), render(svg.replace(/<text[^>]*>.*?<\/text>/g, ""), bundledOnly));
+  assert.ok(labelPixels > 15_000, `the labels drew ${labelPixels} pixels`);
+  const png = await renderVerdictRadar(buildVerdict(seededSupport()), { systemFonts: false });
+  assert.deepEqual(pngSize(png), { width: RADAR_WIDTH, height: RADAR_HEIGHT });
+});
+
+test("the bundled bold weight is a different face from the regular one", () => {
+  const [regular, bold] = radarFontSource().bundled;
+  const text = "输出参团";
+  const regularInk = ink(labelSvg(text), { loadSystemFonts: false, fontFiles: [regular] });
+  const boldInk = ink(labelSvg(text).replace("<text ", `<text font-weight="bold" `), { loadSystemFonts: false, fontFiles: [regular, bold] });
+  assert.ok(boldInk > regularInk, `bold ${boldInk} vs regular ${regularInk}`);
+});
+
+test("a character outside the subset falls back to a system CJK font when one exists", { skip: process.platform !== "darwin" }, () => {
+  const outside = "镕";
+  assert.ok(!fontCodePoints(radarFontSource().bundled[0]).has(outside.codePointAt(0)!), "the test character must be outside the subset");
+  assert.ok(radarFontSource().system.length > 0);
+  // Without a system font the missing glyph is the font's placeholder box; with one, the real character is drawn instead.
+  const placeholder = render(labelSvg(outside), radarFontOptions(false));
+  const fallback = render(labelSvg(outside), radarFontOptions(true));
+  assert.ok(difference(placeholder, fallback) > 100, "a system font draws the character instead of the placeholder");
+  assert.ok(ink(labelSvg(outside), radarFontOptions(true)) > 100);
+  // The covered characters of the same name still come from the bundled font.
+  const mixedBundled = render(labelSvg(`没有马${outside}`), radarFontOptions(false));
+  const mixedFallback = render(labelSvg(`没有马${outside}`), radarFontOptions(true));
+  assert.ok(difference(mixedBundled, mixedFallback) > 100);
+  assert.ok(difference(render(labelSvg("没有马"), radarFontOptions(false)), render(labelSvg("没有马"), radarFontOptions(true))) === 0, "covered text is identical with or without system fonts");
 });

@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { renderAsync } from "@resvg/resvg-js";
 import { DIMENSION_LABELS } from "../services/horseProfile";
 import type { HorseTier } from "../services/horseRanking";
@@ -37,12 +38,19 @@ export const TIER_COLORS: Record<HorseTier, string> = {
   没有马: "#EF5350",
 };
 
-/** CJK families in order of preference; the first one installed is used. */
-const FONT_FAMILIES = ["PingFang SC", "Hiragino Sans GB", "Heiti SC", "Noto Sans CJK SC", "Source Han Sans SC", "Microsoft YaHei", "WenQuanYi Micro Hei"];
+/**
+ * The font family of the bundled subset (see assets/fonts/README.md), then CJK families in order of preference.
+ * A glyph the bundled subset lacks is drawn by the first listed system family that has it.
+ */
+const FONT_FAMILIES = ["Noto Sans SC", "PingFang SC", "Hiragino Sans GB", "Heiti SC", "Noto Sans CJK SC", "Source Han Sans SC", "Microsoft YaHei", "WenQuanYi Micro Hei"];
+
+/** The font subset shipped with the bot, regular first. `src/utils` and `dist/utils` are both two levels below the repository root. */
+const BUNDLED_FONT_DIRECTORY = join(__dirname, "..", "..", "assets", "fonts");
+const BUNDLED_FONT_NAMES = ["NotoSansSC-Regular.subset.otf", "NotoSansSC-Bold.subset.otf"];
 
 /**
- * Known locations of system CJK fonts on macOS, Linux and Windows. Loading only these is much faster than scanning
- * every system font; when none exists the renderer falls back to the full system scan, and nothing is bundled.
+ * Known locations of system CJK fonts on macOS, Linux and Windows, the fallback for glyphs the bundled subset lacks.
+ * Loading only these is much faster than scanning every system font.
  */
 const FONT_FILES = [
   "/System/Library/Fonts/PingFang.ttc",
@@ -60,9 +68,11 @@ const FONT_FILES = [
 ];
 
 export interface RadarFontSource {
-  /** The known CJK font files found on this machine. */
-  files: string[];
-  /** True when none was found and every system font is scanned instead. */
+  /** The bundled font subset files that exist. */
+  bundled: string[];
+  /** The known system CJK font files found on this machine, the fallback for glyphs outside the subset. */
+  system: string[];
+  /** True only when neither was found, so every system font is scanned as the last resort. */
   systemScan: boolean;
 }
 
@@ -71,12 +81,42 @@ let fontSource: RadarFontSource | undefined;
 /** Which fonts the radar is drawn with, found once per process. */
 export function radarFontSource(): RadarFontSource {
   if (!fontSource) {
-    const files = FONT_FILES.filter((file) => existsSync(file));
-    fontSource = { files, systemScan: files.length === 0 };
+    const bundled = BUNDLED_FONT_NAMES.map((name) => join(BUNDLED_FONT_DIRECTORY, name)).filter((file) => existsSync(file));
+    const system = FONT_FILES.filter((file) => existsSync(file));
+    fontSource = { bundled, system, systemScan: bundled.length === 0 && system.length === 0 };
+    if (bundled.length === 0) logWarn("The bundled /why radar font is missing from assets/fonts; falling back to system fonts.");
     if (fontSource.systemScan) logWarn("No known CJK font file was found; the /why radar scans all system fonts instead.");
   }
   return fontSource;
 }
+
+/** The resvg font options: the bundled subset first, then the system fallback unless `system` is false. */
+export function radarFontOptions(system = true): { loadSystemFonts: boolean; fontFiles: string[] } {
+  const source = radarFontSource();
+  return {
+    loadSystemFonts: system && source.systemScan,
+    fontFiles: system ? [...source.bundled, ...source.system] : [...source.bundled],
+  };
+}
+
+/**
+ * The fixed strings the radar draws itself. The labels from other modules (dimension names, tiers, positions, champion
+ * names) are listed by scripts/subset-radar-font.ts, which together with these decides which characters the bundled font keeps.
+ */
+const TEXT = {
+  score: "分",
+  won: "胜",
+  lost: "负",
+  teamRank: "队内第",
+  separator: "·",
+  keyMark: "★",
+  noData: "无数据",
+  mockBadge: "模拟数据",
+  legendKey: "最看重的维度　虚线 = 同位置中位数 (50%)",
+  legendPercent: "百分比 = 这一项超过了多少同位置玩家",
+  legendMock: "　模拟数据，不计入真实档案",
+} as const;
+export const RADAR_FIXED_TEXT: readonly string[] = Object.values(TEXT);
 
 const escapeXml = (text: string) => text.replace(/[&<>"']/g, (character) => `&#${character.charCodeAt(0)};`);
 const fixed = (value: number) => value.toFixed(1);
@@ -100,12 +140,12 @@ export function buildVerdictRadarSvg(verdict: Verdict): string {
   parts.push(`<rect x="1" y="1" width="${RADAR_WIDTH - 2}" height="${RADAR_HEIGHT - 2}" rx="32" fill="${COLORS.card}" stroke="${COLORS.cardEdge}" stroke-width="2"/>`);
 
   // Header: the verdict, then what was played.
-  parts.push(`<text x="48" y="96" font-size="56" font-weight="bold"><tspan fill="${tierColor}">${escapeXml(record.tier)}</tspan><tspan dx="24" fill="${COLORS.text}">${formatScore(record.score)} 分</tspan></text>`);
-  const subtitle = [championLabel(record), verdict.positionLabel, record.won ? "胜" : "负", `队内第 ${record.teamRank}/${record.teamSize}`].join("·");
+  parts.push(`<text x="48" y="96" font-size="56" font-weight="bold"><tspan fill="${tierColor}">${escapeXml(record.tier)}</tspan><tspan dx="24" fill="${COLORS.text}">${formatScore(record.score)} ${TEXT.score}</tspan></text>`);
+  const subtitle = [championLabel(record), verdict.positionLabel, record.won ? TEXT.won : TEXT.lost, `${TEXT.teamRank} ${record.teamRank}/${record.teamSize}`].join(TEXT.separator);
   parts.push(`<text x="48" y="146" font-size="28" fill="${COLORS.muted}">${escapeXml(subtitle)}</text>`);
   if (record.mock) {
     parts.push(`<rect x="588" y="48" width="164" height="52" rx="26" fill="${COLORS.badge}"/>`);
-    parts.push(`<text x="670" y="84" font-size="28" font-weight="bold" fill="${COLORS.text}" text-anchor="middle">模拟数据</text>`);
+    parts.push(`<text x="670" y="84" font-size="28" font-weight="bold" fill="${COLORS.text}" text-anchor="middle">${TEXT.mockBadge}</text>`);
   }
 
   // Grid: quarter rings, the dashed median ring and one axis per dimension, brighter where the position looks most.
@@ -134,28 +174,24 @@ export function buildVerdictRadarSvg(verdict: Verdict): string {
     const sin = Math.sin(angle(index));
     const anchor = cos > 0.25 ? "start" : cos < -0.25 ? "end" : "middle";
     const nameY = sin < -0.5 ? y - 36 : sin > 0.5 ? y + 22 : y - 4;
-    const name = `${entry.key ? "★" : ""}${DIMENSION_LABELS[entry.dimension]}`;
-    const value = entry.percentile === undefined ? "无数据" : percent(entry.percentile);
+    const name = `${entry.key ? TEXT.keyMark : ""}${DIMENSION_LABELS[entry.dimension]}`;
+    const value = entry.percentile === undefined ? TEXT.noData : percent(entry.percentile);
     const valueColor = entry.percentile === undefined ? COLORS.keyAxis : entry.percentile < MEDIAN ? COLORS.below : COLORS.above;
     parts.push(`<text x="${fixed(x)}" y="${fixed(nameY)}" font-size="30" text-anchor="${anchor}" fill="${entry.key ? COLORS.text : COLORS.muted}"${entry.key ? ` font-weight="bold"` : ""}>${name}</text>`);
     parts.push(`<text x="${fixed(x)}" y="${fixed(nameY + 32)}" font-size="26" text-anchor="${anchor}" fill="${valueColor}">${value}</text>`);
   });
 
   // Legend.
-  parts.push(`<text x="48" y="880" font-size="22" fill="${COLORS.faint}">★ ${escapeXml(verdict.positionLabel)}最看重的维度　虚线 = 同位置中位数 (50%)</text>`);
-  parts.push(`<text x="48" y="912" font-size="22" fill="${COLORS.faint}">百分比 = 这一项超过了多少同位置玩家${record.mock ? "　模拟数据，不计入真实档案" : ""}</text>`);
+  parts.push(`<text x="48" y="880" font-size="22" fill="${COLORS.faint}">${TEXT.keyMark} ${escapeXml(verdict.positionLabel)}${TEXT.legendKey}</text>`);
+  parts.push(`<text x="48" y="912" font-size="22" fill="${COLORS.faint}">${TEXT.legendPercent}${record.mock ? TEXT.legendMock : ""}</text>`);
   parts.push("</svg>");
   return parts.join("\n");
 }
 
 /** Rasterizes the radar to a PNG off the main thread. */
-export async function renderVerdictRadar(verdict: Verdict): Promise<Buffer> {
-  const source = radarFontSource();
+export async function renderVerdictRadar(verdict: Verdict, options: { systemFonts?: boolean } = {}): Promise<Buffer> {
   const image = await renderAsync(buildVerdictRadarSvg(verdict), {
-    font: {
-      loadSystemFonts: source.systemScan,
-      fontFiles: source.files,
-    },
+    font: radarFontOptions(options.systemFonts ?? true),
     fitTo: { mode: "width", value: RADAR_WIDTH },
     logLevel: "off",
   });
