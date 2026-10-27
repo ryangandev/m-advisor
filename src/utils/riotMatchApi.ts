@@ -1,6 +1,8 @@
 import { CHALLENGE_STATS, PERFORMANCE_STATS, POSITIONS } from "../types";
 import type { MatchDetail, MatchParticipant, ParticipantPerformance, Position, TeamObjectives } from "../types";
 import { getRiotMode, RiotApiError, riotFetch, riotNumber, riotObject } from "../services/riotData";
+import { parseMatchTimeline } from "./matchTimeline";
+import type { MatchTimeline } from "./matchTimeline";
 
 const AMERICAS = "https://americas.api.riotgames.com";
 // Current Riot game constants include Swiftplay and Quickplay; keep Blind Pick for older history.
@@ -42,6 +44,15 @@ export async function getMatchDetail(matchId: string): Promise<MatchDetail> {
   matchCache.set(cacheKey, structuredClone(detail));
   if (matchCache.size > 200) matchCache.delete(matchCache.keys().next().value!);
   return detail;
+}
+
+/**
+ * The match-v5 timeline, used only for optional commentary moments. It is not cached: each finished match
+ * is announced once, and a timeline is several hundred kilobytes.
+ */
+export async function getMatchTimeline(matchId: string): Promise<MatchTimeline> {
+  const timelineUrl = `${AMERICAS}/lol/match/v5/matches/${encodeURIComponent(matchId)}/timeline`;
+  return parseMatchTimeline(await riotFetch<unknown>(timelineUrl), matchId);
 }
 
 /** Validates a match-v5 response body and keeps the fields used for announcements and scoring. */
