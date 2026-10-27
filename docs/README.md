@@ -11,6 +11,7 @@
 | How are monitoring, retries and voice playback coordinated? | [Announcements](announcements.md) | Update with monitoring sessions and transport behavior |
 | How are teammates ranked from 特等马 to 没有马, and how is the reference refreshed? | [Horse ranking](scoring.md) | Update with scoring features, weights, benchmarks and commentary rules |
 | How do I verify the complete pipeline and finish live acceptance? | [Acceptance](acceptance.md) | Update with reproducible procedures and actual evidence |
+| Which feature ideas are deferred for later? | [Backlog](backlog.md) | Update when an idea is added, started or dropped |
 
 Subsystem implementation details belong in their routed document.
 Git history records completed tasks; status records current evidence and remaining blockers.
