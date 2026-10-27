@@ -18,10 +18,15 @@ An invalid mode, missing key, or failed real request produces an error instead o
 | `MockService#NA1` | Explicit simulated 503 service error |
 | `MockAuth#NA1` | Explicit simulated 401 authentication error |
 | `MockMissing#NA1` | Explicit simulated 404 account error |
+| `MockNoTimeline#NA1` | Normal profile and matches whose timelines fail with a simulated 404 |
 
 Mock matches are complete match-v5 response bodies with positions, champions, team objectives and the statistics used by [Horse ranking](scoring.md).
 They pass through the same parser as real matches.
 Their allied support has no kills but strong vision and protection, and their allied ADC feeds, so the ranking visibly differs from a KDA order.
+
+Each mock match also has a match-v5 timeline body, built on request by `buildMockTimeline()` and passed through the same parser as a real timeline.
+Hand-written key moments sit between filler kills, and every player's kills, deaths and assists and each team's dragons, barons and heralds match the match detail.
+In both outcomes the support carries a won objective fight and the feeding ADC is the first to fall in a lost one, so mock reports cite a moment for both the 特等马 and the 没有马.
 
 Other Riot IDs receive deterministic synthetic profiles, and previously persisted bindings can be tested in mock mode.
 This does not validate that a real player exists.
@@ -48,6 +53,13 @@ Errors carry a stable `code`, optional HTTP `status`, optional `retryAfterMs`, a
 Response parsers normalize omitted zero statistics and reject malformed profile, rank, or match shapes.
 `parseMatchDetail()` keeps each participant's position (team position, falling back to individual position), champion, K/D/A, result and the scoring statistics, plus team objective counts, the game end time when present, whether the game was a remake, and whether it was aborted without a winner (`endOfGameResult` other than `GameComplete`).
 Optional scoring statistics that are missing or non-numeric are omitted rather than treated as zero.
+
+`getMatchTimeline()` reads `/lol/match/v5/matches/{matchId}/timeline` on the Americas host with the same requester, retries and errors as match detail.
+`parseMatchTimeline()` in `src/utils/matchTimeline.ts` keeps only champion kills, multi-kills and epic monster kills, maps participant IDs to PUUIDs from `info.participants` (falling back to the order of `metadata.participants`), and skips malformed events instead of rejecting the timeline.
+Timelines are not cached, because each finished match is announced once.
+The timeline is optional flavor for the report: `fetchMatchEvents()` returns null and logs a warning when it fails, is malformed or takes longer than 5 seconds, and the report then uses statistics only.
+It never falls back to a mock timeline, and it skips the request for remakes, aborted games and games shorter than 10 minutes.
+The parser follows Riot's documented TimelineDto and has not yet been checked against a real timeline.
 
 The latest match lookup checks up to 20 matches for supported Summoner's Rift queues and caches at most 200 immutable match details.
 Supported queues are 400, 420, 430, 440, 480, and 490; this includes Swiftplay and Quickplay and preserves Blind Pick for older history.
