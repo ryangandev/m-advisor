@@ -86,6 +86,13 @@ Ryan confirmed that he heard the spoken report in the channel.
 The log shows no Riot, speech, transport or text-send error, and monitoring stopped normally when Ryan left voice.
 This is the first real-mode end-to-end acceptance; `/recent` has still not been run in the live channel.
 
+## Streamed speech delivery
+
+On 2026-10-27 announcements began playing after their first sentence instead of after the whole report.
+On a warm worker the mock win report's first audio arrived after 1.79 seconds instead of 24.53, and the whole announcement took 84.39 seconds instead of 96.30; see [Local voice](local-voice.md#sentence-chunk-latency).
+`npm run verify:local` passed with real Qwen speech in 14 chunks and simulated Discord transport.
+Live Discord playback and human listening of the chunked delivery are pending.
+
 ## User-only blockers
 
 | ID | Needed | Blocks |

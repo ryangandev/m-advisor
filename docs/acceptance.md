@@ -25,15 +25,18 @@ npm run verify:local
 
 This verifier forces mock data and local speech, creates an isolated temporary database and uses a simulated Discord channel.
 It binds `MockLoss#NA1`, establishes a silent baseline, creates a loss and runs the actual match-monitor and shared announcement queue.
-The installed Qwen model generates the full five-horse Chinese report, and the verifier checks that the speech reads all five tiers and the channel embed is labeled as mock.
-The installed FFmpeg binary converts it to 48 kHz stereo Opus.
+The installed Qwen model generates the full five-horse Chinese report one sentence chunk at a time, and the verifier checks that the speech reads all five tiers and the channel embed is labeled as mock.
+The simulated transport decodes and stitches the chunks with the same code as Discord playback, and the installed FFmpeg binary converts the stitched stream to 48 kHz stereo Opus.
 A subsequent poll must not speak again.
 The verifier then shuts down the worker, closes SQLite and removes its temporary data.
 
 The ignored `test-results/local-e2e.json` records the result and timings.
-`test-results/local-e2e.wav` preserves the generated audio for listening.
+`test-results/local-e2e.wav` preserves the stitched stream, as Discord would receive it, for listening.
+The report includes each chunk's generation time and the time until the first chunk was ready.
 On 2026-10-02 the earlier short KDA commentary passed with a 210,928-byte Opus output, 19.13 seconds of speech generation and 19.58 seconds total execution.
 On 2026-10-03 the 271-character five-horse report passed with 52.6 seconds of audio, a 515,836-byte Opus output, 28.48 seconds of speech generation including worker startup and 29.13 seconds total execution.
+On 2026-10-27 the 271-character loss report passed as 14 sentence chunks with 76.84 seconds of stitched audio and a 747,023-byte Opus output.
+The first chunk was ready 5.19 seconds after the announcement started, including worker startup, and all chunks took 26.25 seconds to generate.
 These timings are observations on this Mac and depend on model startup, available memory and workload.
 This check does not establish a Discord connection or prove that another participant heard the audio.
 
