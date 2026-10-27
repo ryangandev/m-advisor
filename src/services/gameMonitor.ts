@@ -21,6 +21,8 @@ import { fetchMatchEvents } from "./matchEvents";
 import type { MatchEvent } from "./matchEvents";
 import { buildHorseRecords } from "./horseRecords";
 import { listHorseRecords, recordHorseRecords } from "../store/horseRecordStore";
+import { recordRankResults } from "../store/rankStore";
+import type { RankResult } from "../store/rankStore";
 import type { HorseRecord } from "../store/horseRecordStore";
 import { buildHorseReportEmbed, buildPartyEmbed, buildRankAnnouncementEmbed, NO_MENTIONS } from "../utils/embeds";
 import { AnnouncementCancelledError, AnnouncementQueueFullError, announceTextToCurrentChannel } from "./voiceAnnouncements";
@@ -32,6 +34,7 @@ import type { GameStartDependencies, GameStartMemory, GameStartOutcome, GameStar
 import { getActiveGame } from "../utils/riotSpectatorApi";
 import { getLeagueEntries } from "../utils/riotLeagueApi";
 import { rankedQueueFor } from "./rankMath";
+import { buildRankResult } from "./rankResults";
 import { RankTracker } from "./rankTracker";
 import type { RankTracking } from "./rankTracker";
 import { buildRankVoiceLine, rankMoveOf, rankMoveText, rankRowText } from "./rankText";
@@ -85,6 +88,11 @@ export interface MonitorDependencies {
    * Without it reports have no 段位变化 field.
    */
   rank?: RankTracking;
+  /**
+   * Saves the final LP results of a report's members and returns how many were new; see recordRankResults.
+   * Without it nothing is stored. A failure is logged and never reaches the report.
+   */
+  recordRank?: (results: readonly RankResult[]) => number;
   mock: () => boolean;
   log: (error: unknown) => void;
   /** Progress messages for the operator, such as a newly detected match. */
@@ -901,8 +909,37 @@ export class GameMonitor {
     }
     // A promotion or demotion the first reads already show goes out right after the report's text.
     if (cast) void this.castRank(cast);
-    if (rows.pending) this.editRankLater(progress, matchId, party, message, cast);
+    if (rows.pending) this.editRankLater(guildId, progress, matchId, party, message, cast);
     this.recordHorses(guildId, progress, announcement, perspectivePuuid);
+    this.recordRanks(guildId, progress.detail, matchId, party);
+  }
+
+  /**
+   * Stores the final rows of the reported team's bound members: a change, promotion, demotion, placement or an
+   * unattributable change. Pending, stale and unavailable rows are not stored. Each member is stored once per match, however
+   * often the rows are read, because the key ignores a repeat. A failure is logged and never affects the report.
+   */
+  private recordRanks(guildId: string, detail: MatchDetail, matchId: string, party: readonly RankMember[]): void {
+    const rank = this.dependencies.rank;
+    const record = this.dependencies.recordRank;
+    if (!rank || !record) return;
+    try {
+      const recordedAt = Date.now();
+      const mock = this.dependencies.mock();
+      const results: RankResult[] = [];
+      for (const { memberId, puuid } of party) {
+        const row = rank.row(matchId, puuid);
+        const result = row && buildRankResult(row, {
+          guildId, discordUserId: memberId, matchId, mock, puuid, gameEndTimestamp: detail.info.gameEndTimestamp, recordedAt,
+        });
+        if (result) results.push(result);
+      }
+      if (results.length === 0) return;
+      const saved = record(results);
+      if (saved > 0) this.dependencies.info(`Saved ${saved} LP result${saved === 1 ? "" : "s"} for match ${matchId}.`);
+    } catch (error) {
+      this.dependencies.log(new Error(`The LP results of match ${matchId} were not saved: ${errorMessage(error)}`));
+    }
   }
 
   /** Reads the account as the before-value of its next ranked game. A failure is logged and changes nothing else. */
@@ -995,6 +1032,7 @@ export class GameMonitor {
    * failure is logged.
    */
   private editRankLater(
+    guildId: string,
     progress: MatchProgress,
     matchId: string,
     party: readonly RankMember[],
@@ -1007,6 +1045,8 @@ export class GameMonitor {
       .then(async () => {
         const posted = progress.reportMessage;
         if (this.closed || !posted) return;
+        // The rows have settled: the ones that became final since the report went out are stored, whether or not the edit succeeds.
+        this.recordRanks(guildId, progress.detail, matchId, party);
         try {
           const { content, embeds, allowedMentions } = message(this.rankRows(matchId, party).lines);
           await posted.edit({ ...(content === undefined ? {} : { content }), embeds, allowedMentions });
@@ -1234,6 +1274,7 @@ const monitor = new GameMonitor({
   events: (matchId, detail) => fetchMatchEvents(matchId, detail),
   record: recordHorseRecords,
   rank: rankTracker,
+  recordRank: recordRankResults,
   mock: () => getRiotMode() === "mock",
   log: (error) => logError(`Match monitoring failed: ${errorMessage(error)}`),
   info: logInfo,

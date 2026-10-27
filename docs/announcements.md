@@ -318,6 +318,15 @@ Every division and tier change counts as a promotion or demotion, in both queues
 No row is shown for an account that is unranked before and after, whose entry disappeared, whose tier is unknown, that has no before-value at all, or when LP is off after a 401 or 403.
 A mock before-value is never used in real mode, or the reverse.
 
+### Stored results
+
+A row that reaches a final state is also written to `rank_results` (see [LP results](storage.md#lp-results)), once per member and match, for the same members as the rows.
+The final states are a change, a promotion, a demotion, a placement and an unattributable change; a pending, stale or unavailable row and a row that is left out are not stored.
+The monitor writes at two points: with the report, for the rows the first reads already settled, and after the late update, for the rows that settled since.
+The late write offers every final row again, and the key ignores the ones already stored, so a row cannot be stored twice or changed.
+The write follows the posted report, so a match whose text report never posted stores nothing, and it stops at shutdown.
+A storage failure is logged as an error line, `The LP results of match <id> were not saved`, and never affects the report, the late edit, the 段位播报 or the voice attempt count.
+
 ## 段位播报
 
 A bound member on the reported team whose row in a ranked match (420 单双排 or 440 灵活组排) is a promotion or a demotion gets a separate announcement, in addition to the `段位变化` row.
