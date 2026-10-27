@@ -66,10 +66,12 @@ Shipped migrations are never edited; a new schema change appends a new entry.
 | 1 | `guild_bindings` (one member per guild), `bound_accounts`, `guild_preferences` |
 | 2 | `tracked_members`, `member_accounts`, `guild_preferences` |
 | 3 | The version 2 tables plus `horse_records` |
+| 4 | The version 3 tables plus `report_settings` and `report_marks` |
 
 The 1 to 2 step copies each `guild_bindings` row into `tracked_members` at position 0 and each `bound_accounts` row into `member_accounts` with its account order, then drops the two old tables.
 `guild_preferences` is unchanged, so the voice choice carries over.
 The 2 to 3 step only creates `horse_records` and its indexes, so every existing row is untouched.
+The 3 to 4 step only creates `report_settings` and `report_marks`, so every existing row is untouched.
 Migration happens in place, with no downgrade path, the first time any command opens an existing older database file.
 That includes `npm start`, `npm run dev`, `npm run doctor` (which only opens a file that already exists) and the `verify:*` scripts.
 `npm run register` does not open the database.
@@ -97,6 +99,14 @@ An existing key is left unchanged, so recording a match twice never makes a seco
 `listHorseRecords(guildId, { mock, discordUserId?, from?, to?, order?, limit? })` returns records whose `played_at` lies in `[from, to)`, and the `mock` flag is required so that mock and real records are never returned together.
 `listMatchHorseRecords`, `countMemberHorseRecords` and `eraseMemberHorseRecords` complete the API.
 Only tracked members are stored: no teammate or enemy PUUID, name or champion appears in the table.
+
+## 马报 (report settings)
+
+`report_settings` holds one row per server that was ever configured: the report channel, the daily, weekly and roles switches, the two role ids and the members the bot itself gave each role.
+`report_marks` holds, per server, data mode (`mock`) and kind (`day` or `week`), the start of the latest period that was posted or deliberately skipped, so a period is never posted twice.
+A mark only moves forward, and mock and real marks are separate.
+`src/store/reportStore.ts` owns both tables, and [马报](ma-bao.md) describes how they are used.
+Neither table has a foreign key, so `/unbind` and `/stable-erase` never touch them.
 
 ## Durability and shutdown
 
