@@ -95,6 +95,32 @@ A later chunk that fails on every attempt is still heard as a partial report on 
 `npm run verify:local` passed with real Qwen speech in 14 chunks and simulated Discord transport, before the two-chunk join and retry were added.
 Live Discord playback and human listening of the chunked delivery are pending.
 
+## Feature round delivery
+
+On 2026-10-27 the nine features chosen in the 2026-10-26 product review were delivered, followed by rank and LP changes.
+Each PR had an independent review before merge, and the final `npm run check` on main passed 827 tests.
+
+- Several tracked members per server, each with several Riot accounts, and each match announced in the channel where its players are ([#6](https://github.com/ryangandev/m-advisor/pull/6), [#9](https://github.com/ryangandev/m-advisor/pull/9), [#13](https://github.com/ryangandev/m-advisor/pull/13)).
+- Speech that starts after the first generated sentence ([#8](https://github.com/ryangandev/m-advisor/pull/8)); see [Streamed speech delivery](#streamed-speech-delivery).
+- Match-v5 timeline moments cited in the praise and roast ([#7](https://github.com/ryangandev/m-advisor/pull/7)).
+- 马厩 horse records with `/stable` and `/stable-erase` ([#10](https://github.com/ryangandev/m-advisor/pull/10)); see [马厩](stable.md).
+- `/why` 判决书 with a radar image and 上诉 ([#11](https://github.com/ryangandev/m-advisor/pull/11)); since [#28](https://github.com/ryangandev/m-advisor/pull/28) closed appeal cases survive restart and the radar bundles its own Chinese font; see [Why](why.md).
+- Daily and weekly 马报 with optional weekly roles ([#12](https://github.com/ryangandev/m-advisor/pull/12)); see [马报](ma-bao.md).
+- 车队内战 in-party ranking in the finished-game report ([#17](https://github.com/ryangandev/m-advisor/pull/17)).
+- 军师赛前锦囊 on the loading screen, rating teammates only, with a per-server voice switch ([#14](https://github.com/ryangandev/m-advisor/pull/14), [#15](https://github.com/ryangandev/m-advisor/pull/15), [#16](https://github.com/ryangandev/m-advisor/pull/16), [#18](https://github.com/ryangandev/m-advisor/pull/18)), and a text-only 锦囊回顾 on the finished report ([#19](https://github.com/ryangandev/m-advisor/pull/19)).
+- Rank and LP changes: each ranked report shows every bound member's tier, LP and LP change, promotions and demotions get a separate 段位播报 card and a short voice line, and final LP results are stored ([#27](https://github.com/ryangandev/m-advisor/pull/27), [#29](https://github.com/ryangandev/m-advisor/pull/29), [#30](https://github.com/ryangandev/m-advisor/pull/30), [#31](https://github.com/ryangandev/m-advisor/pull/31)); see [Announcements](announcements.md).
+- A Chinese user site at madvisor.rystudio.app ([#25](https://github.com/ryangandev/m-advisor/pull/25), [#32](https://github.com/ryangandev/m-advisor/pull/32)); see [Site](site.md).
+
+The schema is now at v7.
+Ryan's local database is still at v5 and upgrades on the next start, after writing a `.v5.bak` backup; a dry run on a copy of it kept every existing table unchanged.
+The 13 slash commands were registered again in Ry的四合院 after #30.
+
+This round's evidence is compilation and mock tests only.
+Live Discord posting and playback of the new cards, human listening of the 锦囊 and 段位播报 lines, and real Riot acceptance of these features are pending.
+A demotion row shows the new LP without a change until real games confirm the LP Riot reports after a demotion.
+The bot logs how long league-v4 takes to catch up after each game, and about 10 real ranked games are needed to tune the report's later edit.
+[#24](https://github.com/ryangandev/m-advisor/issues/24) waits for a spectator-v5 capture during a real game, and [#20](https://github.com/ryangandev/m-advisor/issues/20) waits for the undici release window after 2026-10-29.
+
 ## User-only blockers
 
 | ID | Needed | Blocks |
@@ -103,6 +129,9 @@ Live Discord playback and human listening of the chunked delivery are pending.
 | B2 | Resolved: Ryan heard the real five-horse report in General on 2026-10-07 | No longer blocks acceptance |
 | B3 | Resolved: a real game with Ryan's account bound in real mode was announced on 2026-10-07 | No longer blocks acceptance |
 | B4 | Resolved: Mac unlocked and Discord UI testing resumed | No longer blocks live operations |
+| B5 | Start the bot, run `/simulate` 晋级（模拟） and 掉段（模拟） in General and listen | Live acceptance of the feature round |
+| B6 | Play about 10 real ranked games with the bot running | Tuning the LP edit and showing the LP change on demotion |
+| B7 | Run the spectator probe once while in a real game | Closing [#24](https://github.com/ryangandev/m-advisor/issues/24) |
 
 Mock data allows implementation and voice integration to continue without B3.
 Discord Portal or server-permission changes become a blocker only if the actual test demonstrates they are required and unavailable to the agent.
@@ -110,7 +139,8 @@ Discord Portal or server-permission changes become a blocker only if the actual 
 ## Next
 
 The approved engineering delivery, mock-to-real-Discord workflow and real Riot acceptance are complete.
-The local bot is configured with `RIOT_MODE=real`, the eight registered commands, Ryan's real `not ry#tan90` binding and the Old Man voice preference; it is started on demand.
+The feature round is merged and waits on B5 to B7.
+The local bot is configured with `RIOT_MODE=real`, the 13 registered commands, Ryan's real `not ry#tan90` binding and the Old Man voice preference; it is started on demand.
 For later on-demand use, run `npm start` or double-click `scripts/launch.command`; see [Runtime](runtime.md).
 Run `/recent` once in the live channel to close the remaining diagnostics check.
 Record each verified acceptance separately; never treat mock success as real Riot success.
