@@ -14,12 +14,14 @@ import { getLatestSRMatchId, getMatchDetail } from "../src/utils/riotMatchApi";
 import { resetMockData } from "../src/services/riotData";
 import { isSyntheticAccount, mergeBoundAccount } from "../src/utils/bindingAccounts";
 
-// PR 1 keeps one effective member per server, so commands act on the first tracked member.
 const firstMember = (guildId: string) => listTrackedMembers(guildId)[0];
+const memberIds = (guildId: string) => listTrackedMembers(guildId).map((member) => member.discordUserId);
 
 const loader = createRequire(__filename);
 const calls = {
   starts: [] as Array<{ guildId: string; channelId: string }>,
+  /** Every sync's present member IDs, as the real lifecycle computes them. */
+  syncs: [] as string[][],
   stops: [] as string[],
   polls: [] as string[],
   pollChannels: [] as Array<string | undefined>,
@@ -56,30 +58,41 @@ stubModule("../src/services/voiceAnnouncements.ts", {
 });
 stubModule("../src/services/gameMonitor.ts", {
   POLL_INTERVAL_MS: 45_000,
-  getMonitorStatus: () => ({ active: calls.starts.length > 0, startedAt: 1, lastPollAt: 2, announced: new Set() }),
+  getMonitorStatus: () => ({ active: calls.starts.length > 0, startedAt: 1, lastPollAt: 2, announced: new Set(),
+    presentMemberIds: calls.syncs.at(-1) ?? [] }),
   // The real lifecycle passes the tracked members in voice; record the first one's channel as the session's start.
   syncMonitoring: (client: FakeClient, guildId: string, memberIds: string[]) => {
+    calls.syncs.push(memberIds);
     if (memberIds.length === 0) { calls.stops.push(guildId); return; }
     const member = client.guilds.cache.get(guildId)!.members.cache.get(memberIds[0])!;
     calls.starts.push({ guildId, channelId: member.voice.channelId! });
   },
   stopPolling: (guildId: string) => calls.stops.push(guildId),
+  // Each member's first account takes a baseline, then announces whatever changed since.
   pollGuildNow: async (_client: unknown, guildId: string, expectedChannelId?: string) => {
-    const binding = firstMember(guildId)!;
-    const matchId = (await getLatestSRMatchId(binding.accounts[0].puuid))!;
-    calls.polls.push(matchId);
+    const latest: Array<{ puuid: string; matchId: string }> = [];
+    for (const member of listTrackedMembers(guildId)) {
+      const puuid = member.accounts[0].puuid;
+      const matchId = (await getLatestSRMatchId(puuid))!;
+      calls.polls.push(matchId);
+      latest.push({ puuid, matchId });
+    }
     calls.pollChannels.push(expectedChannelId);
     await onPoll?.();
     if (pollFailure) return { announced: 0, errors: 1 };
-    const previous = baselines.get(guildId);
-    baselines.set(guildId, matchId);
-    setLastMatchId(guildId, binding.accounts[0].puuid, matchId);
-    if (!previous || previous === matchId) return { announced: 0, errors: 0 };
-    const detail = await getMatchDetail(matchId);
-    const tracked = detail.info.participants.find(player => player.puuid === binding.accounts[0].puuid)!;
-    calls.played.push({ channelId: calls.starts.at(-1)!.channelId,
-      text: `模拟数据：${tracked.win ? "胜利" : "失败"}`, style: "sweet" });
-    return { announced: 1, errors: 0 };
+    let announced = 0;
+    for (const { puuid, matchId } of latest) {
+      const previous = baselines.get(puuid);
+      baselines.set(puuid, matchId);
+      setLastMatchId(guildId, puuid, matchId);
+      if (!previous || previous === matchId) continue;
+      const detail = await getMatchDetail(matchId);
+      const tracked = detail.info.participants.find(player => player.puuid === puuid)!;
+      calls.played.push({ channelId: calls.starts.at(-1)!.channelId,
+        text: `模拟数据：${tracked.win ? "胜利" : "失败"}`, style: "sweet" });
+      announced++;
+    }
+    return { announced, errors: 0 };
   },
 });
 
@@ -175,7 +188,9 @@ function interactionFixture(options: { admin?: boolean; voice?: boolean; permiss
     inGuild: () => true,
     memberPermissions: { has: () => options.admin !== false },
     options: {
-      getUser: () => ({ id: options.targetId ?? tracked.id, username: options.targetId ?? "tracked-name" }),
+      // A required user option always has a value; /recent's optional one is set only when the test names a target.
+      getUser: (_name: string, required?: boolean) => required || options.targetId
+        ? { id: options.targetId ?? tracked.id, username: options.targetId ?? "tracked-name" } : null,
       getString: (name: string) => ({ riotid: options.riotId ?? "MockWin#NA1", outcome: options.outcome ?? "win", style: options.style ?? "old" })[name],
       getInteger: () => options.count ?? null,
     },
@@ -352,7 +367,7 @@ test("/bind starts monitoring when the tracked member is already in voice and la
   assert.match(replyText(f.replies.at(-1)), /MockWin#NA1（模拟账号，真实模式下不监听；用 \/bind 绑定真实 Riot ID 后会自动移除）/);
 });
 
-test("/bind rejects non-admins, malformed IDs, and a different tracked member without starting monitoring", async () => {
+test("/bind rejects non-admins and malformed IDs without starting monitoring", async () => {
   const unauthorized = interactionFixture({ admin: false });
   await commands.bind.execute(unauthorized.interaction);
   assert.match(replyText(unauthorized.replies[0]), /Administrator/);
@@ -361,12 +376,49 @@ test("/bind rejects non-admins, malformed IDs, and a different tracked member wi
   await commands.bind.execute(malformed.interaction);
   assert.match(replyText(malformed.replies[0]), /Invalid Riot ID/);
   assert.equal(firstMember(guildId), undefined);
-  await seedBinding();
-  const otherMember = interactionFixture({ targetId: "other-member" });
-  await commands.bind.execute(otherMember.interaction);
-  assert.match(replyText(otherMember.replies[0]), /\/unbind first/);
-  assert.equal(firstMember(guildId)?.discordUserId, "tracked-user");
   assert.equal(calls.starts.length, 0);
+});
+
+test("/bind adds a second member after the first and reconciles monitoring for both", async () => {
+  await seedBinding();
+  const f = interactionFixture({ targetId: "second-user", riotId: "MockLoss#NA1" });
+  f.members.set("second-user", { id: "second-user", voice: { channelId: f.channel.id, channel: f.channel } });
+  await commands.bind.execute(f.interaction);
+  assert.deepEqual(memberIds(guildId), ["tracked-user", "second-user"]);
+  assert.deepEqual(listTrackedMembers(guildId)[1].accounts.map((account) => account.gameName), ["MockLoss"]);
+  assert.deepEqual(listTrackedMembers(guildId)[0].accounts.map((account) => account.gameName), ["MockWin"], "the first member is untouched");
+  assert.deepEqual(calls.syncs, [["tracked-user", "second-user"]]);
+  const reply = f.replies.at(-1) as { allowedMentions?: unknown };
+  assert.match(replyText(reply), /Bound MockLoss#NA1 to <@second-user>/);
+  assert.deepEqual(reply.allowedMentions, { parse: [], roles: [], users: [], repliedUser: false });
+});
+
+test("/bind rejects an account another member owns, names the owner and changes nothing", async () => {
+  await seedBinding();
+  const f = interactionFixture({ targetId: "second-user", riotId: "MockWin#NA1" });
+  await commands.bind.execute(f.interaction);
+  const reply = f.replies.at(-1) as { allowedMentions?: unknown };
+  assert.match(replyText(reply), /That Riot account is already bound to <@tracked-user>; \/unbind them first\./);
+  assert.deepEqual(reply.allowedMentions, { parse: [], roles: [], users: [], repliedUser: false });
+  assert.deepEqual(memberIds(guildId), ["tracked-user"]);
+  assert.deepEqual(calls.syncs, [], "a rejected bind does not touch monitoring");
+});
+
+test("/bind in real mode removes only the target member's mock accounts", async () => {
+  await seedBinding();
+  const otherMock = await getAccountByRiotId("MockLoss", "NA1");
+  setMemberAccounts(guildId, "second-user", [otherMock]);
+  process.env.RIOT_MODE = "real";
+  process.env.RIOT_API_KEY = "test-key";
+  globalThis.fetch = async () => Response.json({ puuid: "real-puuid", gameName: "RealName", tagLine: "NA1" });
+  const f = interactionFixture({ riotId: "RealName#NA1" });
+  await commands.bind.execute(f.interaction);
+  assert.deepEqual(listTrackedMembers(guildId), [
+    { discordUserId: "tracked-user", accounts: [{ puuid: "real-puuid", gameName: "RealName", tagLine: "NA1" }] },
+    { discordUserId: "second-user", accounts: [otherMock] },
+  ]);
+  assert.match(replyText(f.replies.at(-1)), /Removed the simulated account MockWin#NA1/);
+  assert.doesNotMatch(replyText(f.replies.at(-1)), /MockLoss/);
 });
 
 test("/bind replaces a persisted synthetic identity with a real fetched PUUID for the same Riot ID", async () => {
@@ -414,7 +466,7 @@ test("/bind in real mode cleans mock accounts even when the real account is alre
   assert.deepEqual(firstMember(guildId)?.accounts, [real]);
   assert.match(replyText(f.replies.at(-1)), /Removed the simulated account MockWin#NA1/);
   await commands.bind.execute(f.interaction);
-  assert.equal(f.replies.at(-1), "This account is already bound.");
+  assert.match(replyText(f.replies.at(-1)), /^\{"content":"This account is already bound\."/);
 });
 
 test("/bind at the 10-account server limit explains the limit instead of a Riot lookup failure", async () => {
@@ -473,7 +525,23 @@ test("/unbind rejects non-admins and the wrong member without deleting an active
   assert.equal(calls.stops.length, 0);
 });
 
-test("/unbind stops monitoring and deletes accounts while preserving the voice preference", async () => {
+test("/unbind of one member keeps the others and reconciles monitoring for them", async () => {
+  await seedBinding();
+  setMemberAccounts(guildId, "second-user", [await getAccountByRiotId("MockLoss", "NA1")]);
+  const f = interactionFixture({ targetId: "tracked-user" });
+  f.members.set("second-user", { id: "second-user", voice: { channelId: f.channel.id, channel: f.channel } });
+  await commands.announcer.execute(f.interaction);
+  await commands.unbind.execute(f.interaction);
+  assert.deepEqual(memberIds(guildId), ["second-user"]);
+  assert.deepEqual(calls.syncs, [["second-user"]], "the session is reconciled to the remaining member, not stopped");
+  assert.deepEqual(calls.stops, []);
+  assert.deepEqual(getDatabase().prepare("SELECT voice_style FROM guild_preferences WHERE guild_id = ?").get(guildId), { voice_style: "old" });
+  const reply = f.replies.at(-1) as { allowedMentions?: unknown };
+  assert.match(replyText(reply), /Removed all bindings for <@tracked-user>/);
+  assert.deepEqual(reply.allowedMentions, { parse: [], roles: [], users: [], repliedUser: false });
+});
+
+test("/unbind of the last member stops monitoring and deletes accounts while preserving the voice preference", async () => {
   await seedBinding();
   const f = interactionFixture();
   await commands.announcer.execute(f.interaction);
@@ -493,6 +561,19 @@ test("/announcer writes selected style to SQLite and rejects DMs", async () => {
   (f.interaction as unknown as { guildId: null }).guildId = null;
   await commands.announcer.execute(f.interaction);
   assert.match(replyText(f.replies.at(-1)), /only be used in a server/);
+});
+
+test("/bindings shows one field per member in bind order with the mention in the value", async () => {
+  await seedBinding();
+  setMemberAccounts(guildId, "second-user", [await getAccountByRiotId("MockLoss", "NA1"), { puuid: "real-alt", gameName: "Alt", tagLine: "NA1" }]);
+  const f = interactionFixture();
+  await commands.bindings.execute(f.interaction);
+  const reply = f.replies.at(-1) as { embeds: Array<{ toJSON: () => { fields?: Array<{ name: string; value: string }> } }>; allowedMentions?: unknown };
+  assert.deepEqual(reply.embeds[0].toJSON().fields, [
+    { name: "Tracked Member 1", value: "<@tracked-user>\n• MockWin#NA1（模拟账号）", inline: false },
+    { name: "Tracked Member 2", value: "<@second-user>\n• MockLoss#NA1（模拟账号）\n• Alt#NA1", inline: false },
+  ]);
+  assert.deepEqual(reply.allowedMentions, { parse: [], roles: [], users: [], repliedUser: false });
 });
 
 test("/bindings labels even an empty mock server and restricts non-admins", async () => {
@@ -520,9 +601,36 @@ test("/recent lists the bound account's recent matches with the monitor's baseli
   await commands.recent.execute(f.interaction);
   const reply = replyText(f.replies[0]);
   assert.match(reply, /模拟数据 · 最近对局/);
-  assert.match(reply, /🟢 正在监听 <@tracked-user> · <#test-channel>/);
-  assert.match(reply, /"name":"MockWin#NA1"/);
+  assert.match(reply, /🟢 正在监听 · 每 45 秒检查一次/);
+  assert.match(reply, /1\. <@tracked-user> · <#test-channel>/);
+  assert.match(reply, /"name":"1\. MockWin#NA1"/);
   assert.match(reply, /📍 监听起点/);
+});
+
+test("/recent lists every member by default and one member when asked", async () => {
+  await seedBinding();
+  setMemberAccounts(guildId, "second-user", [await getAccountByRiotId("MockLoss", "NA1")]);
+  calls.starts.push({ guildId, channelId: "test-channel" });
+  calls.syncs.push(["tracked-user"]);
+  const all = interactionFixture();
+  await commands.recent.execute(all.interaction);
+  const everyone = replyText(all.replies[0]);
+  assert.match(everyone, /1\. <@tracked-user> · <#test-channel> · 监听中/);
+  assert.match(everyone, /2\. <@second-user> · 不在语音 · 未监听/);
+  assert.match(everyone, /"name":"1\. MockWin#NA1"/);
+  assert.match(everyone, /"name":"2\. MockLoss#NA1"/);
+  assert.deepEqual((all.replies[0] as { allowedMentions?: unknown }).allowedMentions, { parse: [], roles: [], users: [], repliedUser: false });
+
+  const one = interactionFixture({ targetId: "second-user" });
+  await commands.recent.execute(one.interaction);
+  const filtered = replyText(one.replies[0]);
+  assert.match(filtered, /2\. <@second-user> · 不在语音 · 未监听/);
+  assert.doesNotMatch(filtered, /tracked-user|MockWin/);
+  assert.match(filtered, /"name":"2\. MockLoss#NA1"/);
+
+  const stranger = interactionFixture({ targetId: "stranger" });
+  await commands.recent.execute(stranger.interaction);
+  assert.match(replyText(stranger.replies[0]), /<@stranger> 不是这个服务器的被追踪成员/);
 });
 
 test("/recent flags a mock account in real mode without calling Riot", async () => {
@@ -534,4 +642,25 @@ test("/recent flags a mock account in real mode without calling Riot", async () 
   const reply = replyText(f.replies[0]);
   assert.match(reply, /最近对局 · 策马军师/);
   assert.match(reply, /这是模拟账号，真实模式下监听会跳过它。用 \/bind 绑定真实 Riot ID 后会自动移除它。/);
+});
+
+test("/simulate uses the earliest-bound tracked member who is in the test channel and their first account", async () => {
+  // The first member is in another channel; the second and third are in the test channel.
+  setMemberAccounts(guildId, "away-user", [await getAccountByRiotId("MockLoss", "NA1")]);
+  setMemberAccounts(guildId, "tracked-user", [await getAccountByRiotId("MockWin", "NA1"), await getAccountByRiotId("MockAlt", "NA1")]);
+  setMemberAccounts(guildId, "third-user", [await getAccountByRiotId("MockThird", "NA1")]);
+  const [away, chosen, third] = listTrackedMembers(guildId);
+  const before = await Promise.all([away, third].map((member) => getLatestSRMatchId(member.accounts[0].puuid)));
+  const alternate = await getLatestSRMatchId(chosen.accounts[1].puuid);
+  const f = interactionFixture({ outcome: "loss" });
+  f.members.set("away-user", { id: "away-user", voice: { channelId: "elsewhere", channel: null } });
+  f.members.set("third-user", { id: "third-user", voice: { channelId: f.channel.id, channel: f.channel } });
+  await commands.simulate.execute(f.interaction);
+  assert.match(replyText(f.replies.at(-1)), /失败比赛播报完成/);
+  assert.equal(calls.played.length, 1);
+  assert.match(calls.played[0].text, /失败/);
+  assert.match((await getLatestSRMatchId(chosen.accounts[0].puuid))!, /_1$/, "the simulated match went to the chosen member's first account");
+  assert.equal(await getLatestSRMatchId(chosen.accounts[1].puuid), alternate);
+  assert.deepEqual(await Promise.all([away, third].map((member) => getLatestSRMatchId(member.accounts[0].puuid))), before);
+  assert.deepEqual(calls.syncs, [["away-user", "tracked-user", "third-user"]], "monitoring was reconciled before the poll");
 });

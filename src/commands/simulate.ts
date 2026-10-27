@@ -24,11 +24,14 @@ const command: BotCommand = {
       await withSimulationLock(channel.guild.id, async () => {
         assertRunning();
         if (getRiotMode() !== "mock") throw new Error("模拟比赛只允许在 RIOT_MODE=mock 时使用。");
-        const binding = listTrackedMembers(channel.guild.id)[0];
-        if (!binding) throw new Error("请先使用 /bind 绑定一个测试账号，例如 MockWin#NA1。");
-        const member = await channel.guild.members.fetch(binding.discordUserId);
+        const tracked = listTrackedMembers(channel.guild.id);
+        if (tracked.length === 0) throw new Error("请先使用 /bind 绑定一个测试账号，例如 MockWin#NA1。");
+        const states = await Promise.all(tracked.map((member) =>
+          channel.guild.members.fetch(member.discordUserId).catch(() => null)));
         assertRunning();
-        if (member.voice.channelId !== channel.id) throw new Error("请先让被追踪成员进入同一个测试语音频道。");
+        // The earliest-bound tracked member in the test channel plays the simulated match on their first account.
+        const binding = tracked.find((_, index) => states[index]?.voice.channelId === channel.id);
+        if (!binding) throw new Error("请先让被追踪成员进入同一个测试语音频道。");
         await reconcileGuildMonitoring(interaction.client, channel.guild.id);
         assertRunning();
         const baseline = await pollGuildNow(interaction.client, channel.guild.id, channel.id);

@@ -6,20 +6,29 @@ import {
 } from "discord.js";
 import { getRiotDataLabel, isMockData } from "../services/riotData";
 import { isSyntheticAccount } from "../utils/bindingAccounts";
-import { BotCommand } from "../types";
+import { BotCommand, RiotAccount } from "../types";
 import { isAdmin } from "../utils/permissions";
+import { NO_MENTIONS } from "../utils/embeds";
 import { listTrackedMembers } from "../store/bindingStore";
+
+function accountLine(account: RiotAccount): string {
+  const label = isSyntheticAccount(account)
+    ? (isMockData() ? "（模拟账号）" : "（模拟账号，真实模式下不监听；用 /bind 绑定真实 Riot ID 后会自动移除）")
+    : "";
+  return `• ${account.gameName}#${account.tagLine}${label}`;
+}
 
 const bindingsCommand: BotCommand = {
   data: new SlashCommandBuilder()
     .setName("bindings")
-    .setDescription("View the current server binding (Admin only)"),
+    .setDescription("View every tracked member of this server and their accounts (Admin only)"),
 
   async execute(interaction: ChatInputCommandInteraction): Promise<void> {
     if (!isAdmin(interaction)) {
       await interaction.reply({
         content: "You need Administrator permission to use this command.",
         flags: MessageFlags.Ephemeral,
+        allowedMentions: NO_MENTIONS,
       });
       return;
     }
@@ -34,39 +43,26 @@ const bindingsCommand: BotCommand = {
             .setDescription("This command can only be used in a server."),
         ],
         flags: MessageFlags.Ephemeral,
+        allowedMentions: NO_MENTIONS,
       });
       return;
     }
 
-    const binding = listTrackedMembers(guildId)[0];
-    if (!binding) {
-      await interaction.reply({
-        embeds: [
-          new EmbedBuilder()
-            .setColor(0x5865F2)
-            .setTitle("Server Bindings")
-            .setDescription("No bindings set for this server.")
-            .setFooter({ text: `NA Server • M-Advisor • ${getRiotDataLabel()}` }),
-        ],
-        flags: MessageFlags.Ephemeral,
-      });
-      return;
+    const embed = new EmbedBuilder().setTitle("Server Bindings").setColor(0x5865F2);
+    const members = listTrackedMembers(guildId);
+    if (members.length === 0) {
+      embed.setDescription("No bindings set for this server.");
+    } else {
+      // One field per member in bind order; at most 10 accounts per server keeps this inside Discord's 25 fields.
+      embed.addFields(members.map((member, index) => ({
+        name: `Tracked Member ${index + 1}`,
+        value: [`<@${member.discordUserId}>`, ...member.accounts.map(accountLine)].join("\n").slice(0, 1024),
+        inline: false,
+      })));
     }
+    embed.setFooter({ text: `NA Server • M-Advisor • ${getRiotDataLabel()}` });
 
-    const accountList = binding.accounts
-      .map((account) => `• ${account.gameName}#${account.tagLine}${isSyntheticAccount(account) ? (isMockData() ? "（模拟账号）" : "（模拟账号，真实模式下不监听；用 /bind 绑定真实 Riot ID 后会自动移除）") : ""}`)
-      .join("\n");
-
-    const embed = new EmbedBuilder()
-      .setTitle("Server Bindings")
-      .setColor(0x5865F2)
-      .addFields(
-        { name: "Tracked Member", value: `<@${binding.discordUserId}>`, inline: false },
-        { name: "Bound Accounts", value: accountList || "None", inline: false },
-      )
-      .setFooter({ text: `NA Server • M-Advisor • ${getRiotDataLabel()}` });
-
-    await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+    await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral, allowedMentions: NO_MENTIONS });
   },
 };
 

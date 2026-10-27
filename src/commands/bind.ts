@@ -6,9 +6,9 @@ import {
   SlashCommandOptionsOnlyBuilder,
 } from "discord.js";
 import { BotCommand } from "../types";
-import { buildErrorEmbed } from "../utils/embeds";
+import { buildErrorEmbed, NO_MENTIONS } from "../utils/embeds";
 import { isAdmin } from "../utils/permissions";
-import { listTrackedMembers, setMemberAccounts } from "../store/bindingStore";
+import { AccountBoundToOtherMemberError, getTrackedMember, setMemberAccounts } from "../store/bindingStore";
 import { getAccountByRiotId } from "../utils/riotApi";
 import { INVALID_RIOT_ID_MESSAGE, parseRiotId } from "../utils/riotId";
 import { reconcileGuildMonitoring } from "../services/monitorLifecycle";
@@ -40,6 +40,7 @@ const bindCommand: BotCommand = {
       await interaction.reply({
         content: "You need Administrator permission to use this command.",
         flags: MessageFlags.Ephemeral,
+        allowedMentions: NO_MENTIONS,
       });
       return;
     }
@@ -51,6 +52,7 @@ const bindCommand: BotCommand = {
     if (!guildId) {
       await interaction.editReply({
         embeds: [buildErrorEmbed("This command can only be used in a server.")],
+        allowedMentions: NO_MENTIONS,
       });
       return;
     }
@@ -62,6 +64,7 @@ const bindCommand: BotCommand = {
     if (!parsedRiotId) {
       await interaction.editReply({
         embeds: [buildErrorEmbed(INVALID_RIOT_ID_MESSAGE)],
+        allowedMentions: NO_MENTIONS,
       });
       return;
     }
@@ -72,25 +75,14 @@ const bindCommand: BotCommand = {
     try {
       account = await getAccountByRiotId(gameName, tagLine);
     } catch (error) {
-      await interaction.editReply({ embeds: [buildErrorEmbed(getRiotUserErrorMessage(error))] });
+      await interaction.editReply({ embeds: [buildErrorEmbed(getRiotUserErrorMessage(error))], allowedMentions: NO_MENTIONS });
       return;
     }
 
     assertRunning();
-    const existingBinding = listTrackedMembers(guildId)[0];
-    if (existingBinding && existingBinding.discordUserId !== user.id) {
-      await interaction.editReply({
-        embeds: [
-          buildErrorEmbed(
-            `This server already has a binding for <@${existingBinding.discordUserId}>. Use /unbind first.`,
-          ),
-        ],
-      });
-      return;
-    }
-
-    // Real mode never monitors saved mock accounts, so binding a real account replaces them.
-    const savedAccounts = existingBinding?.accounts ?? [];
+    // Binding adds the member after everyone already tracked, or adds an account to them; other members are untouched.
+    // Real mode never monitors saved mock accounts, so binding a real account replaces this member's mock accounts only.
+    const savedAccounts = getTrackedMember(guildId, user.id)?.accounts ?? [];
     const removedMocks = isMockData() ? [] : savedAccounts.filter(isSyntheticAccount);
     const duplicate = savedAccounts.some(
       (boundAccount) =>
@@ -100,18 +92,22 @@ const bindCommand: BotCommand = {
     );
 
     if (duplicate && removedMocks.length === 0) {
-      await interaction.editReply("This account is already bound.");
+      await interaction.editReply({ content: "This account is already bound.", allowedMentions: NO_MENTIONS });
       return;
     }
 
     const updatedAccounts = mergeBoundAccount(savedAccounts.filter((boundAccount) => !removedMocks.includes(boundAccount)), account);
 
     try {
+      // Rejects an account another member owns and the per-server account limit, changing nothing.
       setMemberAccounts(guildId, user.id, updatedAccounts);
     } catch (error) {
-      const message = getBindingStoreErrorMessage(error);
+      // The administrator sees who owns the account; the mention sits in an embed and notifies no one.
+      const message = error instanceof AccountBoundToOtherMemberError
+        ? `That Riot account is already bound to <@${error.ownerId}>; /unbind them first.`
+        : getBindingStoreErrorMessage(error);
       if (!message) throw error;
-      await interaction.editReply({ embeds: [buildErrorEmbed(message)] });
+      await interaction.editReply({ embeds: [buildErrorEmbed(message)], allowedMentions: NO_MENTIONS });
       return;
     }
 
@@ -131,7 +127,7 @@ const bindCommand: BotCommand = {
       .setDescription(`Bound ${normalizedRiotId} to <@${user.id}>`
         + (removedRiotIds ? `\nRemoved the simulated account ${removedRiotIds}, which real mode does not monitor.` : ""));
 
-    await interaction.editReply({ embeds: [successEmbed] });
+    await interaction.editReply({ embeds: [successEmbed], allowedMentions: NO_MENTIONS });
   },
 };
 
