@@ -12,6 +12,7 @@ import type { MatchEvent } from "../src/services/matchEvents";
 import { getAnnouncerState, getLastMatchId } from "../src/store/announcerStore";
 import { setMemberAccounts } from "../src/store/bindingStore";
 import { closeDatabase } from "../src/store/database";
+import { listRankResults, recordRankResults, type RankResult } from "../src/store/rankStore";
 import { listMatchHorseRecords, recordHorseRecords, type HorseRecord } from "../src/store/horseRecordStore";
 import { getLatestSRMatchId, getMatchDetail } from "../src/utils/riotMatchApi";
 import { RankTracker, type RankTracking } from "../src/services/rankTracker";
@@ -1633,17 +1634,23 @@ async function until(condition: () => boolean, what: string): Promise<void> {
   assert.fail(`timed out waiting for ${what}`);
 }
 
+/** A starting entry from the options: the default when absent, none at all (still unranked) when null. */
+const startEntries = (start: Record<string, RankedEntry | null> | undefined, puuid: string, fallback: RankedEntry): RankedEntry[] => {
+  const given = start?.[puuid];
+  return given === null ? [] : [given ?? fallback];
+};
+
 /** Alice and Bob on one team, Zed, a bound friend, on the other; all in channel x and all ranked. */
-async function rankedTrio(guildId: string, options: { retryFloorMs?: number; start?: Record<string, RankedEntry> } = {}) {
+async function rankedTrio(guildId: string, options: { retryFloorMs?: number; start?: Record<string, RankedEntry | null> } = {}) {
   const bot = harness(guildId, [
     { id: "alice-id", puuids: ["alice"], channel: "x" },
     { id: "bob-id", puuids: ["bob"], channel: "x" },
     { id: "zed-id", puuids: ["zed"], channel: "x" },
   ]);
   const rank = withRank(bot, options);
-  rank.league.set("alice", [options.start?.alice ?? ranked("GOLD", "II", 64)]);
-  rank.league.set("bob", [options.start?.bob ?? ranked("SILVER", "I", 31)]);
-  rank.league.set("zed", [options.start?.zed ?? ranked("PLATINUM", "III", 50)]);
+  rank.league.set("alice", startEntries(options.start, "alice", ranked("GOLD", "II", 64)));
+  rank.league.set("bob", startEntries(options.start, "bob", ranked("SILVER", "I", 31)));
+  rank.league.set("zed", startEntries(options.start, "zed", ranked("PLATINUM", "III", 50)));
   await bot.start();
   await until(() => rank.reads.length === 3, "the baseline snapshots");
   const detail = match("ranked-trio", ["alice", "bob", "cara", "dan", "eve"], ["zed"]);
@@ -2134,4 +2141,179 @@ test("a real match is titled 段位播报 and its line has no mock prefix", asyn
   assert.equal(postedEmbeds(castsOf(bot)[0])[0].title, "段位播报");
   assert.doesNotMatch(queued[1], /模拟/);
   assert.match(queued[1], /铂金四/);
+});
+
+// LP results: the final 段位变化 rows of the reported team are stored once, in the store's own database.
+
+/** The monitor's rank-result writer on the real store, recording every batch it was given. */
+function storingRankResults(bot: ReturnType<typeof harness>) {
+  const calls: RankResult[][] = [];
+  bot.dependencies.recordRank = (results) => { calls.push([...results]); return recordRankResults(results); };
+  return calls;
+}
+
+const storedByUser = (guildId: string) => Object.fromEntries(listRankResults(guildId, { mock: true }).map((result) => [result.discordUserId, result]));
+
+test("a final row of each reported member is stored once, with its ranks, and nobody else is", async () => {
+  const { bot, rank } = await rankedTrio("rank-store-guild", { start: { alice: ranked("GOLD", "II", 64), bob: ranked("SILVER", "I", 31) } });
+  storingRankResults(bot);
+  rank.league.set("alice", [ranked("GOLD", "II", 86, 11, 10)]);
+  rank.league.set("bob", [ranked("SILVER", "I", 12, 10, 11)]);
+  rank.league.set("zed", [ranked("PLATINUM", "III", 71, 11, 10)]);
+  assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
+  await delay(50);
+
+  const stored = listRankResults("rank-store-guild", { mock: true });
+  assert.deepEqual(stored.map((result) => [result.discordUserId, result.puuid, result.kind, result.tier, result.division, result.leaguePoints, result.lpDelta, result.beforeTier, result.beforeDivision, result.beforeLeaguePoints]), [
+    ["alice-id", "alice", "change", "GOLD", "II", 86, 22, "GOLD", "II", 64],
+    ["bob-id", "bob", "change", "SILVER", "I", 12, -19, "SILVER", "I", 31],
+  ], "the friend on the other team and the strangers have no result");
+  assert.ok(stored.every((result) => result.matchId === "ranked-trio" && result.queueType === "solo" && result.mock));
+  assert.deepEqual(listRankResults("rank-store-guild", { mock: false }), [], "mock results are never real ones");
+  assert.deepEqual(listRankResults("other-guild", { mock: true }), []);
+  assert.ok(bot.infos.includes("Saved 2 LP results for match ranked-trio."));
+  assert.deepEqual(bot.errors, []);
+});
+
+test("real mode stores real results, apart from mock ones of the same match", async () => {
+  const bot = harness("rank-store-real-guild", [
+    { id: "alice-id", puuids: ["alice"], channel: "x" },
+    { id: "bob-id", puuids: ["bob"], channel: "x" },
+  ]);
+  // Real from the start: a mock baseline would never be a real before-value.
+  bot.dependencies.mock = () => false;
+  const rank = withRank(bot);
+  storingRankResults(bot);
+  rank.league.set("alice", [ranked("GOLD", "II", 64)]);
+  await bot.start();
+  await until(() => rank.reads.length >= 1, "the baseline snapshot");
+  bot.matches.set("real-duo", match("real-duo", ["alice", "bob", "cara", "dan", "eve"]));
+  bot.latestIds.set("alice", "real-duo");
+  rank.league.set("alice", [ranked("GOLD", "II", 86, 11, 10)]);
+  assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
+  await delay(50);
+  assert.deepEqual(listRankResults("rank-store-real-guild", { mock: false }).map((result) => [result.discordUserId, result.mock]), [["alice-id", false]]);
+  assert.deepEqual(listRankResults("rank-store-real-guild", { mock: true }), []);
+  // The same match number in mock mode is a second row, not the same one.
+  assert.equal(recordRankResults([{ ...listRankResults("rank-store-real-guild", { mock: false })[0], mock: true }]), 1);
+  assert.equal(listRankResults("rank-store-real-guild", { mock: false }).length, 1);
+});
+
+test("every final kind is stored: promotion, demotion without its delta, placement and an unattributable change", async () => {
+  const { bot, rank } = await rankedTrio("rank-store-kinds-guild", {
+    start: { alice: ranked("GOLD", "II", 90), bob: ranked("SILVER", "IV", 5) },
+  });
+  storingRankResults(bot);
+  rank.league.set("alice", [ranked("PLATINUM", "IV", 12, 11, 10)]);
+  rank.league.set("bob", [ranked("BRONZE", "I", 75, 10, 11)]);
+  assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
+  await delay(50);
+  const stored = storedByUser("rank-store-kinds-guild");
+  assert.equal(stored["alice-id"].kind, "promoted");
+  assert.equal(stored["alice-id"].lpDelta, 122, "GOLD II 90 to PLATINUM IV 12");
+  assert.equal(stored["bob-id"].kind, "demoted");
+  assert.equal(stored["bob-id"].lpDelta, null, "a demotion's ladder distance is not stored as an LP change");
+  assert.deepEqual([stored["bob-id"].tier, stored["bob-id"].division, stored["bob-id"].leaguePoints], ["BRONZE", "I", 75]);
+  assert.deepEqual([stored["bob-id"].beforeTier, stored["bob-id"].beforeDivision, stored["bob-id"].beforeLeaguePoints], ["SILVER", "IV", 5], "the before-value is kept");
+
+  // Placement: no entry before the game, one after.
+  const placement = await rankedTrio("rank-store-placed-guild", { start: { alice: null } });
+  storingRankResults(placement.bot);
+  placement.rank.league.set("alice", [ranked("GOLD", "IV", 0, 1, 0)]);
+  assert.deepEqual(await placement.bot.poll(), { announced: 1, errors: 0 });
+  await delay(50);
+  const placed = storedByUser("rank-store-placed-guild")["alice-id"];
+  assert.deepEqual([placed.kind, placed.lpDelta, placed.beforeTier, placed.tier], ["placed", null, null, "GOLD"]);
+
+  // Three games passed between the reads.
+  const gap = await rankedTrio("rank-store-gap-guild");
+  storingRankResults(gap.bot);
+  gap.rank.league.set("alice", [ranked("GOLD", "II", 50, 13, 10)]);
+  assert.deepEqual(await gap.bot.poll(), { announced: 1, errors: 0 });
+  await delay(50);
+  const lost = storedByUser("rank-store-gap-guild")["alice-id"];
+  assert.deepEqual([lost.kind, lost.lpDelta, lost.beforeTier, lost.tier], ["unattributable", null, null, "GOLD"]);
+});
+
+test("pending, stale and unavailable rows are not stored", async () => {
+  // League-v4 never catches up: the row is pending, then stale after the last read.
+  const stuck = await rankedTrio("rank-store-stale-guild", { retryFloorMs: 5 });
+  storingRankResults(stuck.bot);
+  assert.deepEqual(await stuck.bot.poll(), { announced: 1, errors: 0 });
+  assert.match(rankFieldOf(stuck.bot.messages[0])!, /稍后补上/);
+  assert.deepEqual(listRankResults("rank-store-stale-guild", { mock: true }), [], "a pending row is not a result");
+  await until(() => stuck.rank.tracker.row("ranked-trio", "alice")?.state.kind === "stale", "the rows going stale");
+  await until(() => stuck.bot.edits.length === 1, "the late edit");
+  await delay(50);
+  assert.deepEqual(listRankResults("rank-store-stale-guild", { mock: true }), [], "a stale row is not a result");
+
+  // The read fails: "段位暂时查不到".
+  const failing = harness("rank-store-failing-guild");
+  const rank = withRank(failing);
+  rank.league.set("tracked", [ranked("GOLD", "II", 64)]);
+  await failing.start();
+  await until(() => rank.reads.length === 1, "the baseline snapshot");
+  storingRankResults(failing);
+  rank.league.set("tracked", new RiotApiError("Riot API error 503: service unavailable.", "unavailable", 503));
+  failing.latestIds.set("tracked", "lp-failed");
+  assert.deepEqual(await failing.poll(), { announced: 1, errors: 0 });
+  assert.equal(rankFieldOf(failing.messages[0]), "<@member-1> 单双排 · 段位暂时查不到");
+  assert.deepEqual(listRankResults("rank-store-failing-guild", { mock: true }), []);
+});
+
+test("a late update stores the rows it settles and never writes a second row for one already stored", async () => {
+  // Alice's read has caught up when the report goes out; Bob's has not.
+  const { bot, rank } = await rankedTrio("rank-store-late-guild", { retryFloorMs: 30 });
+  const calls = storingRankResults(bot);
+  rank.league.set("alice", [ranked("GOLD", "II", 86, 11, 10)]);
+  assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
+  await delay(10);
+  const first = listRankResults("rank-store-late-guild", { mock: true });
+  assert.deepEqual(first.map((result) => result.discordUserId), ["alice-id"], "only the final row is stored with the report");
+  assert.equal(bot.edits.length, 0);
+
+  rank.league.set("bob", [ranked("SILVER", "I", 12, 10, 11)]);
+  await until(() => bot.edits.length === 1, "the late edit");
+  await delay(100);
+  const all = listRankResults("rank-store-late-guild", { mock: true });
+  assert.deepEqual(all.map((result) => result.discordUserId), ["alice-id", "bob-id"], "one row each");
+  assert.deepEqual(all[0], first[0], "Alice's row is the one stored first, untouched by the late update");
+  assert.deepEqual(calls.map((results) => results.map((result) => result.discordUserId)), [["alice-id"], ["alice-id", "bob-id"]]);
+  assert.deepEqual(bot.errors, []);
+});
+
+test("a storage failure is only logged: the report, the edit, the 段位播报 and the voice are unaffected", async () => {
+  const { bot, rank } = await rankedTrio("rank-store-throw-guild", { retryFloorMs: 30, start: { alice: ranked("GOLD", "II", 90) } });
+  bot.dependencies.recordRank = () => { throw new Error("disk is full"); };
+  const queued = recordAnnouncements(bot);
+  // Alice is promoted in the first reads; Bob catches up late.
+  rank.league.set("alice", [ranked("PLATINUM", "IV", 12, 11, 10)]);
+  assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
+  assert.equal(rankFieldOf(bot.messages[0])?.includes("晋级"), true, "the report still has its 段位变化 rows");
+  rank.league.set("bob", [ranked("SILVER", "I", 12, 10, 11)]);
+  await until(() => bot.edits.length === 1, "the late edit");
+  await delay(100);
+  assert.equal(bot.status().lastError, undefined);
+  assert.equal(bot.played.length >= 1, true, "the report was voiced");
+  assert.equal(getLastMatchId(bot.guildId, "alice"), "ranked-trio", "consumed after one voice attempt");
+  assert.equal(castsOf(bot).length, 1, "the 段位播报 was still posted");
+  assert.ok(queued.some((text) => text.startsWith("模拟段位播报，")), "and its voice line was still queued");
+  const failures = bot.errors.map((error) => (error as Error).message);
+  assert.deepEqual(failures, [
+    "The LP results of match ranked-trio were not saved: disk is full",
+    "The LP results of match ranked-trio were not saved: disk is full",
+  ], "once with the report and once with the late update, and nothing else failed");
+});
+
+test("nothing is stored after the monitor shut down", async () => {
+  const { bot, rank } = await rankedTrio("rank-store-shutdown-guild", { retryFloorMs: 30 });
+  const calls = storingRankResults(bot);
+  assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
+  bot.monitor.stopAll();
+  rank.league.set("alice", [ranked("GOLD", "II", 86, 11, 10)]);
+  rank.league.set("bob", [ranked("SILVER", "I", 12, 10, 11)]);
+  await until(() => rank.tracker.row("ranked-trio", "alice")?.state.kind === "change", "the rows settling");
+  await delay(100);
+  assert.deepEqual(calls, []);
+  assert.deepEqual(listRankResults("rank-store-shutdown-guild", { mock: true }), []);
 });
