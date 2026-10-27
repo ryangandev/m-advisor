@@ -11,6 +11,8 @@ import type { PregameBrief, PregameTeammate } from "./pregameBrief";
 import { buildPregameEmbed, pregameAllowedMentions, pregameMentionContent } from "../utils/pregameEmbed";
 import { AnnouncementCancelledError, AnnouncementQueueFullError } from "./voiceAnnouncements";
 import type { announceTextToCurrentChannel } from "./voiceAnnouncements";
+import { rankedQueueFor } from "./rankMath";
+import type { RankTracking } from "./rankTracker";
 
 /** How often present members' accounts are asked whether they are in a game. */
 export const GAME_START_INTERVAL_MS = 20_000;
@@ -51,6 +53,8 @@ export interface GameStartDependencies {
   info: (message: string) => void;
   /** The clock; Date.now by default. Tests pass a fake one. */
   now?: () => number;
+  /** The LP tracker: a ranked game's start reads its bound players' rank as the before-value. */
+  rank?: RankTracking;
 }
 
 /** What the watcher needs from the monitoring session that owns it. */
@@ -396,6 +400,9 @@ export class GameStartWatcher {
     const matchId = matchIdOf(game);
     const known = this.gameStarts.get(matchId);
     if (known?.status === "started") return false;
+    // LP does not move during a game, so its start, announced or skipped, is the best before-value; it absorbs a
+    // dodge or decay since the last read. A game whose finished match is already known is over, so it reads nothing.
+    if (!known && !this.host.finished(matchId)) this.snapshotRank(game);
     const fresh = isLoading(game) || (previous === "notInGame" && game.gameLength <= FRESH_GAME_SECONDS);
     const reason = !isAnnouncedGame(game) ? `queue ${game.gameQueueConfigId ?? "unknown"} on map ${game.mapId ?? "unknown"} is not announced`
       : this.host.finished(matchId) ? "it has already finished"
@@ -412,6 +419,18 @@ export class GameStartWatcher {
     this.dependencies.info(`Detected game start ${matchId}: ${isLoading(game) ? "loading" : `${Math.round(game.gameLength)} s in`}, `
       + `queue ${game.gameQueueConfigId}.`);
     return true;
+  }
+
+  /** Reads the rank of every bound player of a ranked game, both teams. A failure is logged and changes nothing else. */
+  private snapshotRank(game: ActiveGame): void {
+    const rank = this.dependencies.rank;
+    if (!rank || game.gameQueueConfigId === null || !rankedQueueFor(game.gameQueueConfigId)) return;
+    try {
+      const members = this.dependencies.members(this.host.guildId);
+      rank.snapshot(liveParticipants(members, boundParticipants(members, game.participants)).map(({ puuid }) => puuid));
+    } catch (error) {
+      this.dependencies.log(new Error(`The LP snapshot of game ${matchIdOf(game)} was skipped: ${errorMessage(error)}`));
+    }
   }
 
   private remember(entry: GameStartEntry): void {

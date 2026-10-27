@@ -1,4 +1,5 @@
 import { Client, VoiceChannel } from "discord.js";
+import type { Message, MessageCreateOptions } from "discord.js";
 import type { MatchDetail, RiotAccount, TrackedMember } from "../types";
 import { listTrackedMembers } from "../store/bindingStore";
 import {
@@ -28,6 +29,11 @@ import type { BoundParticipant } from "./channelChoice";
 import { createGameStartMemory, GameStartWatcher, recallPick } from "./gameStartWatcher";
 import type { GameStartDependencies, GameStartMemory, GameStartOutcome, GameStartTickResult } from "./gameStartWatcher";
 import { getActiveGame } from "../utils/riotSpectatorApi";
+import { getLeagueEntries } from "../utils/riotLeagueApi";
+import { rankedQueueFor } from "./rankMath";
+import { RankTracker } from "./rankTracker";
+import type { RankTracking } from "./rankTracker";
+import { rankRowText } from "./rankText";
 
 /** What the game start watcher needs beyond what the match monitor already has. */
 export type GameStartWatcherInputs = Pick<GameStartDependencies, "activeGame" | "records" | "pregameVoice" | "voiceStyle" | "now"> & {
@@ -72,6 +78,11 @@ export interface MonitorDependencies {
    * Without it a session watches finished matches only.
    */
   gameStart?: GameStartWatcherInputs;
+  /**
+   * Rank snapshots around ranked games for the 段位变化 field: one process-wide tracker shared by every guild.
+   * Without it reports have no 段位变化 field.
+   */
+  rank?: RankTracking;
   mock: () => boolean;
   log: (error: unknown) => void;
   /** Progress messages for the operator, such as a newly detected match. */
@@ -79,6 +90,12 @@ export interface MonitorDependencies {
 }
 
 export type { BoundParticipant } from "./channelChoice";
+
+/** A bound member on the reported team and the account they played on: one 段位变化 row at most. */
+interface RankMember {
+  memberId: string;
+  puuid: string;
+}
 
 /**
  * One finished match found by a poll, before it is announced.
@@ -148,6 +165,8 @@ interface MatchProgress {
   speakerPuuid?: string;
   /** The text report was posted, and the 马厩 records were written with it. */
   textPosted: boolean;
+  /** The posted report, kept so a late 段位变化 can edit it once. */
+  reportMessage?: Message;
   /**
    * Attempts that failed once the match had a channel, whether building the report or speaking it.
    * Cancellations and a full voice queue do not count.
@@ -371,7 +390,7 @@ export class GameMonitor {
       lastChannelId: () => session.lastChannelId,
       rememberChannel: (channelId) => { session.lastChannelId = channelId; },
       memory: this.gameStartMemoryOf(guildId),
-    }, { ...inputs, members, resolveChannel, announce, mock, log: inputs.log ?? log, info });
+    }, { ...inputs, members, resolveChannel, announce, mock, log: inputs.log ?? log, info, rank: this.dependencies.rank });
   }
 
   private describe(client: Client, guildId: string, member: TrackedMember): string {
@@ -535,6 +554,8 @@ export class GameMonitor {
           // null is a valid baseline for an account with no SR match history.
           state.baselined = true;
           if (matchId) setLastMatchId(guildId, account.puuid, matchId);
+          // The fallback before-value of the account's next ranked game, when no game start read replaces it.
+          this.rankSnapshot(account.puuid);
           this.dependencies.info(`Baseline for ${account.gameName}#${account.tagLine}: ${matchId ?? "no Summoner's Rift history"}; `
             + "only matches that finish after this are announced.");
           continue;
@@ -574,6 +595,7 @@ export class GameMonitor {
           ? "end time unknown" : `ended ${Math.round((match.detectedAt - match.detail.info.gameEndTimestamp) / 1000)} s ago`;
         this.dependencies.info(`Detected finished match ${match.matchId} for ${riotIds(match.reporters)}: ${ended}, `
           + `queue ${match.detail.info.queueId}, ${Math.round(match.detail.info.gameDuration / 60)} min.`);
+        this.rankFinished(guildId, match.matchId, match.detail);
         ready.push(match);
       }
       ready.sort(byGameEnd);
@@ -658,7 +680,12 @@ export class GameMonitor {
     const detail = match.detail!;
     const participantIds = () => this.liveParticipantIds(guildId, boundParticipants);
     if (progress.events === undefined) {
-      progress.events = await this.timeline(match.matchId, detail, session.controller.signal);
+      // The first LP reads wait inside the timeline's wait, never longer, so they add nothing to the worst case.
+      const [events] = await Promise.all([
+        this.timeline(match.matchId, detail, session.controller.signal),
+        this.rankWait(match.matchId, session.controller.signal),
+      ]);
+      progress.events = events;
       if (!this.current(guildId, session)) throw new AnnouncementCancelledError();
     }
     // Chosen after the timeline request, which can take a few seconds.
@@ -708,7 +735,7 @@ export class GameMonitor {
     if (!canPlay()) throw new AnnouncementCancelledError();
     if (!progress.textPosted) {
       await this.postReport(guildId, initial, boundParticipants, progress, announcement, speaker.puuid, result,
-        this.pregameRecap(guildId, match.matchId, announcement));
+        this.pregameRecap(guildId, match.matchId, announcement), { matchId: match.matchId, party });
       if (!this.current(guildId, session)) throw new AnnouncementCancelledError();
     }
     await this.dependencies.announce(
@@ -797,15 +824,23 @@ export class GameMonitor {
     perspectivePuuid: string,
     result: PollResult,
     recap?: string,
+    rank: { matchId: string; party: readonly RankMember[] } = { matchId: progress.detail.metadata.matchId, party: [] },
   ): Promise<void> {
+    const { matchId, party } = rank;
     const mentions = this.liveParticipantIds(guildId, boundParticipants).filter((memberId) => channel.members.has(memberId));
+    const message = (rankRows: readonly string[]): MessageCreateOptions => ({
+      ...(mentions.length > 0 ? { content: mentions.map((memberId) => `<@${memberId}>`).join(" ") } : {}),
+      // The 车队内战, when there is one, is a second embed right after the report; it mentions without pinging.
+      embeds: [
+        buildHorseReportEmbed(announcement.report, recap, rankRows),
+        ...(announcement.party ? [buildPartyEmbed(announcement.party)] : []),
+      ],
+      allowedMentions: { parse: [], roles: [], users: mentions, repliedUser: false },
+    });
+    const rows = this.rankRows(matchId, party);
+    let posted: Message;
     try {
-      await channel.send({
-        ...(mentions.length > 0 ? { content: mentions.map((memberId) => `<@${memberId}>`).join(" ") } : {}),
-        // The 车队内战, when there is one, is a second embed right after the report; it mentions without pinging.
-        embeds: [buildHorseReportEmbed(announcement.report, recap), ...(announcement.party ? [buildPartyEmbed(announcement.party)] : [])],
-        allowedMentions: { parse: [], roles: [], users: mentions, repliedUser: false },
-      });
+      posted = await channel.send(message(rows.lines));
     } catch (error) {
       // Tried again only if the voice also fails and the match is retried.
       result.errors++;
@@ -813,7 +848,116 @@ export class GameMonitor {
       return;
     }
     progress.textPosted = true;
+    progress.reportMessage = posted;
+    if (rows.pending) this.editRankLater(posted, matchId, party, message);
     this.recordHorses(guildId, progress, announcement, perspectivePuuid);
+  }
+
+  /** Reads the account as the before-value of its next ranked game. A failure is logged and changes nothing else. */
+  private rankSnapshot(puuid: string): void {
+    try {
+      this.dependencies.rank?.snapshot([puuid]);
+    } catch (error) {
+      this.dependencies.log(new Error(`The LP snapshot was skipped: ${errorMessage(error)}`));
+    }
+  }
+
+  /**
+   * Starts the after-reads of a ranked match that counted, for every bound player of it in this guild, both teams:
+   * a successful read is the next game's before-value, though only the reported team gets a row.
+   * A remake or an aborted game reads nothing.
+   */
+  private rankFinished(guildId: string, matchId: string, detail: MatchDetail): void {
+    const rank = this.dependencies.rank;
+    const { info } = detail;
+    if (!rank || info.earlySurrender || info.aborted || !rankedQueueFor(info.queueId)) return;
+    try {
+      const members = this.dependencies.members(guildId);
+      const label = (puuid: string) => {
+        const account = members.flatMap((member) => member.accounts).find((candidate) => candidate.puuid === puuid);
+        return account ? `${account.gameName}#${account.tagLine}` : "an unbound account";
+      };
+      const accounts = this.boundParticipants(guildId, detail).map(({ puuid }) => ({ puuid, label: label(puuid) }));
+      rank.matchFinished({ matchId, queueId: info.queueId, gameEndTimestamp: info.gameEndTimestamp, accounts });
+    } catch (error) {
+      this.dependencies.log(new Error(`The LP reads of match ${matchId} were not started: ${errorMessage(error)}`));
+    }
+  }
+
+  /**
+   * Waits for the match's first LP reads at most as long as the timeline wait, and ends at once when the session stops.
+   * It never rejects: LP can make a report wait, but never fail.
+   */
+  private async rankWait(matchId: string, signal: AbortSignal): Promise<void> {
+    const rank = this.dependencies.rank;
+    if (!rank) return;
+    let timer: NodeJS.Timeout | undefined;
+    let onAbort: (() => void) | undefined;
+    try {
+      if (signal.aborted) return;
+      await Promise.race([
+        Promise.resolve().then(() => rank.firstReads(matchId)),
+        new Promise<void>((resolve) => { timer = setTimeout(resolve, this.dependencies.timelineWaitMs ?? TIMELINE_WAIT_MS); }),
+        new Promise<void>((resolve) => {
+          onAbort = resolve;
+          signal.addEventListener("abort", onAbort, { once: true });
+        }),
+      ]);
+    } catch (error) {
+      this.dependencies.log(new Error(`The LP reads of match ${matchId} broke off: ${errorMessage(error)}`));
+    } finally {
+      clearTimeout(timer);
+      if (onAbort) signal.removeEventListener("abort", onAbort);
+    }
+  }
+
+  /**
+   * The 段位变化 rows of the reported team's bound members, in party order, and whether any is still pending.
+   * Strangers, enemies and a friend on the other team are not in the party, so they never get a row.
+   * A failure here is logged and leaves the field out.
+   */
+  private rankRows(matchId: string, party: readonly RankMember[]): { lines: string[]; pending: boolean } {
+    const rank = this.dependencies.rank;
+    if (!rank) return { lines: [], pending: false };
+    try {
+      const lines: string[] = [];
+      let pending = false;
+      for (const { memberId, puuid } of party) {
+        const row = rank.row(matchId, puuid);
+        if (!row) continue;
+        const text = rankRowText(memberId, row);
+        if (!text) continue;
+        lines.push(text);
+        if (row.state.kind === "pending") pending = true;
+      }
+      return { lines, pending };
+    } catch (error) {
+      this.dependencies.log(new Error(`The 段位变化 of match ${matchId} was left out: ${errorMessage(error)}`));
+      return { lines: [], pending: false };
+    }
+  }
+
+  /**
+   * Edits the posted report once, when the pending rows have settled, with the same mentions and allowedMentions.
+   * It runs apart from the poll, and a failure is only logged.
+   */
+  private editRankLater(
+    posted: Message,
+    matchId: string,
+    party: readonly RankMember[],
+    message: (rankRows: readonly string[]) => MessageCreateOptions,
+  ): void {
+    const rank = this.dependencies.rank!;
+    void Promise.resolve()
+      .then(() => rank.settled(matchId, party.map(({ puuid }) => puuid)))
+      .then(async () => {
+        const { content, embeds, allowedMentions } = message(this.rankRows(matchId, party).lines);
+        await posted.edit({ ...(content === undefined ? {} : { content }), embeds, allowedMentions });
+        this.dependencies.info(`Updated the 段位变化 of match ${matchId}.`);
+      })
+      .catch((error: unknown) => {
+        this.dependencies.log(new Error(`The 段位变化 of match ${matchId} was not updated: ${errorMessage(error)}`));
+      });
   }
 
   /**
@@ -885,6 +1029,18 @@ export function logGameStartFailure(error: unknown): void {
   logError(`Game start check failed: ${errorMessage(error)}`);
 }
 
+/** The process-wide LP tracker: one serialized reader for every guild, through the league requester. */
+const rankTracker = new RankTracker({
+  readEntries: async (puuid) => {
+    const { entries, dropped } = await getLeagueEntries(puuid);
+    if (dropped > 0) logInfo(`League-v4 sent ${dropped} malformed ranked entr${dropped === 1 ? "y" : "ies"}; ${dropped === 1 ? "it was" : "they were"} left out.`);
+    return entries;
+  },
+  mock: () => getRiotMode() === "mock",
+  log: (error) => logError(`LP tracking failed: ${errorMessage(error)}`),
+  info: logInfo,
+});
+
 const monitor = new GameMonitor({
   latest: getLatestSRMatchId,
   detail: getMatchDetail,
@@ -893,6 +1049,7 @@ const monitor = new GameMonitor({
   announce: announceTextToCurrentChannel,
   events: (matchId, detail) => fetchMatchEvents(matchId, detail),
   record: recordHorseRecords,
+  rank: rankTracker,
   mock: () => getRiotMode() === "mock",
   log: (error) => logError(`Match monitoring failed: ${errorMessage(error)}`),
   info: logInfo,

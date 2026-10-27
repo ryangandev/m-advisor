@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, test } from "node:test";
-import { VoiceChannel, type Client, type MessageCreateOptions } from "discord.js";
-import type { MatchDetail, TrackedMember } from "../src/types";
+import { VoiceChannel, type Client, type MessageCreateOptions, type MessageEditOptions } from "discord.js";
+import type { MatchDetail, RankedEntry, TrackedMember } from "../src/types";
 import { GameMonitor, MAX_VOICE_ATTEMPTS, resolveMonitoredVoiceChannel, type MonitorDependencies } from "../src/services/gameMonitor";
 import { AnnouncementQueueFullError, VoiceAnnouncementService, type VoiceAnnouncementDependencies } from "../src/services/voiceAnnouncements";
 import { resetMockData, RiotApiError, simulateMockMatch } from "../src/services/riotData";
@@ -14,6 +14,7 @@ import { setMemberAccounts } from "../src/store/bindingStore";
 import { closeDatabase } from "../src/store/database";
 import { listMatchHorseRecords, recordHorseRecords, type HorseRecord } from "../src/store/horseRecordStore";
 import { getLatestSRMatchId, getMatchDetail } from "../src/utils/riotMatchApi";
+import { RankTracker, type RankTracking } from "../src/services/rankTracker";
 import { testMatch } from "./helpers/matches";
 
 const monitors: GameMonitor[] = [];
@@ -76,7 +77,11 @@ function harness(guildId: string, specs: string[] | MemberSpec[] = ["tracked"]) 
         id,
         guild: { id: guildId },
         members: new Map(),
-        send: async (message) => { sent.push({ channelId: created.id, message }); return {}; },
+        send: async (message) => {
+          sent.push({ channelId: created.id, message });
+          // A posted message that records its edits, like the 段位变化 update.
+          return { edit: async (options: MessageEditOptions) => { edits.push({ channelId: created.id, options }); return {}; } };
+        },
       };
       existing = created;
       channels.set(id, existing);
@@ -104,6 +109,7 @@ function harness(guildId: string, specs: string[] | MemberSpec[] = ["tracked"]) 
   const infos: string[] = [];
   const records: HorseRecord[][] = [];
   const timelines: string[] = [];
+  const edits: Array<{ channelId: string; options: MessageEditOptions }> = [];
   let generate = async (text: string): Promise<string> => { generated.push(text); return "mock-audio.wav"; };
   let play: VoiceAnnouncementDependencies["play"] = async (target) => { played.push(target.id); };
   const service = new VoiceAnnouncementService({
@@ -135,7 +141,7 @@ function harness(guildId: string, specs: string[] | MemberSpec[] = ["tracked"]) 
   const inVoice = () => members.filter((member) => location.get(member.discordUserId)).map((member) => member.discordUserId);
   return {
     guildId, monitor, client, dependencies, latestIds, matches, lookups, generated, played, cleaned, errors, infos, sent, channel, move, blocked,
-    records, timelines,
+    records, timelines, edits,
     get messages() { return sent.map((entry) => entry.message); },
     get members() { return members; },
     set members(value: TrackedMember[]) { members = value; },
@@ -1585,4 +1591,194 @@ test("a voice retry posts the 车队内战 once and speaks it on the retry", asy
   assert.equal(bot.generated.length, 3);
   assert.equal(bot.generated[0], bot.generated[2]);
   assert.match(bot.generated[2], /车队内战，/);
+});
+
+// 段位变化: LP rows for the reported team's bound members.
+
+const SOLO_QUEUE = "RANKED_SOLO_5x5";
+const ranked = (tier: string, division: string, leaguePoints: number, wins = 10, losses = 10): RankedEntry =>
+  ({ queueType: SOLO_QUEUE, tier, rank: division, leaguePoints, wins, losses });
+
+/** A real tracker on a fake league-v4 for the harness; every read is counted, and its retries are milliseconds apart. */
+function withRank(bot: ReturnType<typeof harness>, options: { retryFloorMs?: number } = {}) {
+  const league = new Map<string, readonly RankedEntry[] | Error>();
+  const reads: string[] = [];
+  const logs: string[] = [];
+  const infos: string[] = [];
+  const tracker = new RankTracker({
+    readEntries: async (puuid) => {
+      reads.push(puuid);
+      const answer = league.get(puuid) ?? [];
+      if (answer instanceof Error) throw answer;
+      return answer;
+    },
+    mock: () => bot.dependencies.mock(),
+    log: (error) => { logs.push(error instanceof Error ? error.message : String(error)); },
+    info: (message) => { infos.push(message); },
+    retryFloorMs: options.retryFloorMs ?? 5,
+  });
+  bot.dependencies.rank = tracker;
+  return { tracker, league, reads, logs, infos };
+}
+
+const rankFieldOf = (message: MessageCreateOptions | MessageEditOptions): string | undefined =>
+  postedEmbeds(message as MessageCreateOptions)[0].fields?.find((field) => field.name === "段位变化")?.value;
+
+async function until(condition: () => boolean, what: string): Promise<void> {
+  for (let attempt = 0; attempt < 400; attempt++) {
+    if (condition()) return;
+    await delay(5);
+  }
+  assert.fail(`timed out waiting for ${what}`);
+}
+
+/** Alice and Bob on one team, Zed, a bound friend, on the other; all in channel x and all ranked. */
+async function rankedTrio(guildId: string, options: { retryFloorMs?: number } = {}) {
+  const bot = harness(guildId, [
+    { id: "alice-id", puuids: ["alice"], channel: "x" },
+    { id: "bob-id", puuids: ["bob"], channel: "x" },
+    { id: "zed-id", puuids: ["zed"], channel: "x" },
+  ]);
+  const rank = withRank(bot, options);
+  rank.league.set("alice", [ranked("GOLD", "II", 64)]);
+  rank.league.set("bob", [ranked("SILVER", "I", 31)]);
+  rank.league.set("zed", [ranked("PLATINUM", "III", 50)]);
+  await bot.start();
+  await until(() => rank.reads.length === 3, "the baseline snapshots");
+  const detail = match("ranked-trio", ["alice", "bob", "cara", "dan", "eve"], ["zed"]);
+  bot.matches.set("ranked-trio", detail);
+  for (const puuid of ["alice", "bob", "zed"]) bot.latestIds.set(puuid, "ranked-trio");
+  return { bot, rank, detail };
+}
+
+test("the 段位变化 field has a row for each bound member of the reported team, and none for strangers, enemies or a friend on the other side", async () => {
+  const { bot, rank } = await rankedTrio("rank-team-guild");
+  rank.league.set("alice", [ranked("GOLD", "II", 86, 11, 10)]);
+  rank.league.set("bob", [ranked("SILVER", "I", 12, 10, 11)]);
+  rank.league.set("zed", [ranked("PLATINUM", "III", 71, 11, 10)]);
+  assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
+  assert.equal(rankFieldOf(bot.messages[0]), "<@alice-id> 单双排 黄金 II · 86 LP · 本局 +22\n<@bob-id> 单双排 白银 I · 12 LP · 本局 -19");
+  assert.doesNotMatch(JSON.stringify(postedEmbeds(bot.messages[0])), /zed/, "the friend on the other side is never named or rated");
+  assert.deepEqual(new Set(rank.reads), new Set(["alice", "bob", "zed"]), "strangers and enemies are never read");
+  assert.deepEqual(bot.messages[0].allowedMentions, { parse: [], roles: [], users: ["alice-id", "bob-id", "zed-id"], repliedUser: false });
+  assert.doesNotMatch(bot.generated[0], /LP|段位|晋级|掉段/, "the spoken report never mentions LP");
+  assert.equal(bot.edits.length, 0, "nothing was pending, so nothing is edited");
+  assert.ok(rank.infos.some((line) => /^LP of match ranked-trio for alice#NA1: league-v4 caught up \d+ s after game end \(read 1\)\.$/.test(line)));
+});
+
+test("an LP read that never answers still lets the report post within the timeline wait", async () => {
+  const bot = harness("rank-stuck-guild");
+  const never = new Promise<void>(() => {});
+  const fake: RankTracking = {
+    snapshot: () => undefined,
+    matchFinished: () => undefined,
+    firstReads: () => never,
+    row: () => ({ queueType: SOLO_QUEUE, state: { kind: "pending" } }),
+    settled: () => never,
+  };
+  bot.dependencies.rank = fake;
+  bot.dependencies.timelineWaitMs = 40;
+  await bot.start();
+  bot.latestIds.set("tracked", "stuck-lp");
+  const started = Date.now();
+  const result = await Promise.race([bot.poll(), delay(2_000).then(() => "still waiting" as const)]);
+  assert.deepEqual(result, { announced: 1, errors: 0 });
+  assert.ok(Date.now() - started < 1_000, "no longer than the timeline wait and the voice");
+  assert.equal(rankFieldOf(bot.messages[0]), "<@member-1> 单双排 · 段位还没更新，稍后补上");
+});
+
+test("an LP failure never fails the report, delays it or counts as a voice failure", async () => {
+  // A real tracker whose reads fail: the row says so and the report is unchanged otherwise.
+  const failing = harness("rank-error-guild");
+  const rank = withRank(failing);
+  rank.league.set("tracked", [ranked("GOLD", "II", 64)]);
+  await failing.start();
+  await until(() => rank.reads.length === 1, "the baseline snapshot");
+  rank.league.set("tracked", new RiotApiError("Riot API error 503: service unavailable.", "unavailable", 503));
+  failing.latestIds.set("tracked", "lp-503");
+  assert.deepEqual(await failing.poll(), { announced: 1, errors: 0 });
+  assert.equal(rankFieldOf(failing.messages[0]), "<@member-1> 单双排 · 段位暂时查不到");
+  assert.equal(rank.logs.length, 1);
+  assert.deepEqual(failing.errors, []);
+
+  // A tracker that throws from every method: no field, and still exactly one report and one voice.
+  const broken = harness("rank-throw-guild");
+  const boom = () => { throw new Error("tracker exploded"); };
+  broken.dependencies.rank = { snapshot: boom, matchFinished: boom, firstReads: boom, row: boom, settled: boom };
+  await broken.start();
+  broken.latestIds.set("tracked", "lp-throw");
+  assert.deepEqual(await broken.poll(), { announced: 1, errors: 0 });
+  assert.equal(broken.sent.length, 1);
+  assert.equal(rankFieldOf(broken.messages[0]), undefined);
+  assert.equal(broken.played.length, 1);
+  assert.equal(getLastMatchId(broken.guildId, "tracked"), "lp-throw", "consumed after one voice attempt");
+  assert.equal(broken.status().lastError, undefined);
+  assert.ok(broken.errors.length >= 2 && broken.errors.every((error) => /LP|段位变化/.test((error as Error).message)));
+});
+
+test("an LP 403 turns off LP only: matches are still announced, with no field and no more reads", async () => {
+  const bot = harness("rank-403-guild");
+  const rank = withRank(bot);
+  rank.league.set("tracked", new RiotApiError("Riot API error 403: access denied.", "forbidden", 403));
+  await bot.start();
+  await until(() => rank.tracker.isDisabled, "LP turning off");
+  for (const matchId of ["lp-off-1", "lp-off-2"]) {
+    bot.latestIds.set("tracked", matchId);
+    assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
+  }
+  assert.equal(bot.sent.length, 2);
+  assert.ok(bot.messages.every((message) => rankFieldOf(message) === undefined));
+  assert.equal(bot.played.length, 2);
+  assert.equal(rank.reads.length, 1, "nothing is read after the 403");
+  assert.equal(rank.logs.filter((line) => line.includes("LP reads are off")).length, 1);
+  assert.equal(bot.status().active, true);
+});
+
+test("a late LP read edits the report once, with the same mentions and allowedMentions", async () => {
+  const { bot, rank } = await rankedTrio("rank-late-guild", { retryFloorMs: 30 });
+  // League-v4 has not caught up when the report goes out.
+  assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
+  assert.equal(rankFieldOf(bot.messages[0]), "<@alice-id> 单双排 · 段位还没更新，稍后补上\n<@bob-id> 单双排 · 段位还没更新，稍后补上");
+  assert.equal(bot.edits.length, 0);
+  rank.league.set("alice", [ranked("GOLD", "II", 86, 11, 10)]);
+  rank.league.set("bob", [ranked("SILVER", "I", 12, 10, 11)]);
+  rank.league.set("zed", [ranked("PLATINUM", "III", 71, 11, 10)]);
+  await until(() => bot.edits.length === 1, "the late edit");
+  await delay(100);
+  assert.equal(bot.edits.length, 1, "edited once");
+  const [{ channelId, options }] = bot.edits;
+  assert.equal(channelId, bot.sent[0].channelId);
+  assert.equal(options.content, bot.messages[0].content);
+  assert.deepEqual(options.allowedMentions, bot.messages[0].allowedMentions);
+  assert.deepEqual(options.allowedMentions, { parse: [], roles: [], users: ["alice-id", "bob-id", "zed-id"], repliedUser: false });
+  assert.equal(rankFieldOf(options), "<@alice-id> 单双排 黄金 II · 86 LP · 本局 +22\n<@bob-id> 单双排 白银 I · 12 LP · 本局 -19");
+  const embeds = postedEmbeds(options as MessageCreateOptions);
+  assert.equal(embeds.length, 2, "the 车队内战 stays");
+  assert.equal(embeds[1].title, "模拟战报 · 车队内战");
+  const withoutRank = (embed: ReturnType<typeof postedEmbeds>[number]) => ({ ...embed, fields: embed.fields?.filter((field) => field.name !== "段位变化") });
+  assert.deepEqual(withoutRank(embeds[0]), withoutRank(postedEmbeds(bot.messages[0])[0]), "only the 段位变化 changes");
+  assert.ok(bot.infos.includes("Updated the 段位变化 of match ranked-trio."));
+});
+
+test("a remake, an aborted game and a queue without LP read nothing and show no field", async () => {
+  const bot = harness("rank-skip-guild");
+  const rank = withRank(bot);
+  rank.league.set("tracked", [ranked("GOLD", "II", 64)]);
+  await bot.start();
+  await until(() => rank.reads.length === 1, "the baseline snapshot");
+  const shapes: Array<[string, (detail: MatchDetail) => void]> = [
+    ["lp-remake", (detail) => { detail.info.earlySurrender = true; }],
+    ["lp-aborted", (detail) => { detail.info.aborted = true; }],
+    ["lp-normal", (detail) => { detail.info.queueId = 400; }],
+  ];
+  for (const [matchId, shape] of shapes) {
+    const detail = testMatch(matchId, ["tracked"]);
+    detail.info.gameEndTimestamp = Date.now();
+    shape(detail);
+    bot.matches.set(matchId, detail);
+    bot.latestIds.set("tracked", matchId);
+    assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
+  }
+  assert.equal(rank.reads.length, 1, "only the baseline");
+  assert.ok(bot.messages.every((message) => rankFieldOf(message) === undefined));
 });

@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, mock, test } from "node:test";
 import type { Client, MessageCreateOptions, VoiceChannel } from "discord.js";
-import type { ActiveGame, ActiveGameParticipant, MatchDetail, TrackedMember } from "../src/types";
+import type { ActiveGame, ActiveGameParticipant, MatchDetail, RankedEntry, TrackedMember } from "../src/types";
+import { RankTracker } from "../src/services/rankTracker";
 import { GameMonitor, logGameStartFailure, type MonitorDependencies } from "../src/services/gameMonitor";
 import { GAME_START_INTERVAL_MS, GAME_START_WINDOW_MS, PICK_MEMORY_MS } from "../src/services/gameStartWatcher";
 import { buildPregameRecap, RECAP_FIELD_NAME, RECAP_PHRASES, spacedName } from "../src/services/pregameRecap";
@@ -216,6 +217,9 @@ function harness(specs: MemberSpec[], options: { mock?: boolean; realSpectator?:
   };
   return {
     monitor, client, channel, move, blocked, games, requests, records, latest, matches, generated, played, errors, infos, settings, sent, order, enter, leaveGame,
+    dependencies,
+    /** The fake clock the watcher reads. */
+    now: () => clock,
     get messages() { return sent.map((entry) => entry.message); },
     get members() { return members; },
     set members(value: TrackedMember[]) { members = value; },
@@ -1214,4 +1218,81 @@ test("a remake or an aborted game has no 锦囊回顾, however good the pick was
     assert.equal(reportMessages(bot).length, 1, `${label}: the report was posted`);
     assert.equal(recapOf(bot), undefined, label);
   }
+});
+
+// LP: a ranked game's start is the before-value of its 段位变化 row.
+
+const solo = (tier: string, division: string, leaguePoints: number, wins = 10, losses = 10): RankedEntry =>
+  ({ queueType: "RANKED_SOLO_5x5", tier, rank: division, leaguePoints, wins, losses });
+
+/** A real tracker on a fake league-v4, on the harness clock. Set before the session starts, so its watcher has it. */
+function rankOn(bot: Harness) {
+  const league = new Map<string, readonly RankedEntry[]>();
+  const reads: string[] = [];
+  bot.dependencies.rank = new RankTracker({
+    readEntries: async (puuid) => { reads.push(puuid); return league.get(puuid) ?? []; },
+    mock: () => false,
+    log: () => undefined,
+    info: () => undefined,
+    now: bot.now,
+  });
+  return { league, reads };
+}
+
+const rankFieldOfReport = (bot: Harness): string | undefined =>
+  ((reportMessages(bot)[0].embeds![0] as { toJSON(): { fields?: RecapField[] } }).toJSON().fields ?? []).find((field) => field.name === "段位变化")?.value;
+
+test("a ranked game's start reads every bound player's rank, so a dodge before it never shows as this game's LP", async () => {
+  const bot = harness([
+    { id: A, puuids: ["acct-a"], channel: "voice-1" },
+    { id: F, puuids: ["acct-f"], channel: "voice-1" },
+  ]);
+  const { league, reads } = rankOn(bot);
+  league.set("acct-a", [solo("GOLD", "II", 64)]);
+  league.set("acct-f", [solo("SILVER", "I", 31)]);
+  bot.sync();
+  await bot.monitor.poll(bot.client, GUILD);
+  await until(() => reads.length === 2, "the monitoring baselines");
+
+  // A dodge costs 5 LP and no game; then a ranked game loads with the friend on the other side.
+  league.set("acct-a", [solo("GOLD", "II", 59)]);
+  bot.advance(5 * 60_000);
+  bot.enter(spectatorGame(7001, [
+    { puuid: "acct-a", teamId: 100, championId: AHRI },
+    { puuid: "acct-f", teamId: 200, championId: LUX },
+  ]));
+  await bot.tick();
+  await until(() => reads.length === 4, "the game start reads");
+  assert.deepEqual(reads.slice(2).sort(), ["acct-a", "acct-f"], "both teams' bound players, no stranger or enemy");
+
+  league.set("acct-a", [solo("GOLD", "II", 81, 11, 10)]);
+  league.set("acct-f", [solo("SILVER", "I", 12, 10, 11)]);
+  await finishGame(bot, "NA1_7001", ["acct-a"], (detail) => {
+    detail.info.participants[5].puuid = "acct-f";
+    detail.metadata.participants = detail.info.participants.map((player) => player.puuid);
+  });
+  assert.equal(rankFieldOfReport(bot), `<@${A}> 单双排 黄金 II · 81 LP · 本局 +22`, "the dodge is not in this game's LP");
+});
+
+test("a ranked game first seen in progress is read too; a game without LP is not", async () => {
+  const bot = harness([
+    { id: A, puuids: ["acct-a"], channel: "voice-1" },
+    { id: B, puuids: ["acct-b"], channel: "voice-1" },
+    { id: C, puuids: ["acct-c"], channel: "voice-1" },
+  ]);
+  const { reads } = rankOn(bot);
+  bot.sync();
+  await bot.monitor.poll(bot.client, GUILD);
+  await until(() => reads.length === 3, "the monitoring baselines");
+  bot.advance(5 * 60_000);
+  // Already five minutes in: skipped for the 锦囊, but LP has not moved, so it is still read.
+  bot.enter(spectatorGame(7002, [{ puuid: "acct-a", teamId: 100, championId: AHRI }], { start: bot.now() - 300_000, length: 300 }));
+  // A flex game reads; a normal draft game has no LP.
+  bot.enter(spectatorGame(7003, [{ puuid: "acct-b", teamId: 100, championId: LUX }], { queue: 440 }));
+  bot.enter(spectatorGame(7004, [{ puuid: "acct-c", teamId: 100, championId: LEE_SIN }], { queue: 400 }));
+  await bot.tick();
+  await until(() => reads.length === 5, "the game start reads");
+  await delay(30);
+  assert.deepEqual(reads.slice(3).sort(), ["acct-a", "acct-b"]);
+  assert.ok(bot.infos.some((line) => line.startsWith("Game NA1_7002 is not announced at its start: it was already 300 s in")));
 });
