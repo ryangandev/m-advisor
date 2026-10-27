@@ -7,6 +7,7 @@ import {
   getLastMatchId,
   resetAnnouncerRuntime,
   setLastMatchId,
+  getPregameVoiceEnabled,
   setPollingInterval,
 } from "../store/announcerStore";
 import { getLatestSRMatchId, getMatchDetail } from "../utils/riotMatchApi";
@@ -16,13 +17,19 @@ import type { MatchAnnouncement } from "./announcementText";
 import { fetchMatchEvents } from "./matchEvents";
 import type { MatchEvent } from "./matchEvents";
 import { buildHorseRecords } from "./horseRecords";
-import { recordHorseRecords } from "../store/horseRecordStore";
+import { listHorseRecords, recordHorseRecords } from "../store/horseRecordStore";
 import type { HorseRecord } from "../store/horseRecordStore";
 import { buildHorseReportEmbed, buildPartyEmbed } from "../utils/embeds";
 import { AnnouncementCancelledError, AnnouncementQueueFullError, announceTextToCurrentChannel } from "./voiceAnnouncements";
 import { logError, logInfo } from "../utils/log";
 import { boundParticipants, chooseChannel, liveParticipantIds, liveParticipants, perspective } from "./channelChoice";
 import type { BoundParticipant } from "./channelChoice";
+import { GameStartWatcher } from "./gameStartWatcher";
+import type { GameStartDependencies, GameStartOutcome, GameStartTickResult } from "./gameStartWatcher";
+import { getActiveGame } from "../utils/riotSpectatorApi";
+
+/** What the game start watcher needs beyond what the match monitor already has. */
+export type GameStartWatcherInputs = Pick<GameStartDependencies, "activeGame" | "records" | "pregameVoice" | "voiceStyle" | "now">;
 
 export const POLL_INTERVAL_MS = 45_000;
 /** After this many failed voice attempts a match is consumed without voice; its text report was already posted. */
@@ -56,6 +63,11 @@ export interface MonitorDependencies {
   record: (records: readonly HorseRecord[]) => number;
   /** How long a report waits for its timeline; TIMELINE_WAIT_MS by default. */
   timelineWaitMs?: number;
+  /**
+   * Riot spectator, 马厩 records and the pregame settings for the game start watcher (军师赛前锦囊).
+   * Without it a session watches finished matches only.
+   */
+  gameStart?: GameStartWatcherInputs;
   mock: () => boolean;
   log: (error: unknown) => void;
   /** Progress messages for the operator, such as a newly detected match. */
@@ -160,6 +172,8 @@ interface MonitorSession {
   inFlightTargets?: Set<string>;
   /** Someone joined or gained an account while a poll was running, so poll again right after it. */
   pollAgain?: boolean;
+  /** Watches for games on their loading screen with its own timer; absent without spectator dependencies. */
+  watcher?: GameStartWatcher;
 }
 
 function riotIds(accounts: RiotAccount[]): string {
@@ -225,12 +239,14 @@ export class GameMonitor {
       };
       this.track(session, members);
       this.sessions.set(guildId, session);
+      session.watcher = this.createWatcher(client, guildId, session);
       this.dependencies.info(`Monitoring started for ${members.map((member) => this.describe(client, guildId, member)).join("; ")}; `
         + `checking every ${POLL_INTERVAL_MS / 1000} s.`);
       const interval = setInterval(() => { void this.poll(client, guildId); }, POLL_INTERVAL_MS);
       interval.unref();
       setPollingInterval(guildId, interval);
       void this.poll(client, guildId);
+      session.watcher?.start();
       return;
     }
     const previous = session.present;
@@ -246,6 +262,7 @@ export class GameMonitor {
     for (const member of joined) this.dependencies.info(`Monitoring now also covers ${this.describe(client, guildId, member)}.`);
     this.prune(guildId, session, members);
     this.track(session, members, now);
+    session.watcher?.sync(members);
     const needsBaseline = members.some((member) => member.accounts.some((account) =>
       !session.accounts.get(account.puuid)?.baselined && (this.dependencies.mock() || !account.puuid.startsWith("MOCK-"))));
     if (joined.length > 0 || needsBaseline) this.pollSoon(client, guildId, session);
@@ -268,6 +285,7 @@ export class GameMonitor {
   stop(guildId: string, reason = "monitoring was stopped"): void {
     const session = this.sessions.get(guildId);
     session?.controller.abort(new AnnouncementCancelledError());
+    session?.watcher?.stop();
     this.sessions.delete(guildId);
     resetAnnouncerRuntime(guildId);
     if (session) this.dependencies.info(`Monitoring stopped: ${reason}.`);
@@ -311,6 +329,35 @@ export class GameMonitor {
     return poll;
   }
 
+  /**
+   * Check for games on their loading screen now, as /simulate does, and wait for the 锦囊 of `matchId` to settle.
+   * A stopped guild, a session without a watcher or an unknown game returns null for the outcome.
+   */
+  async pollGameStart(guildId: string, matchId?: string, requiredVoiceChannelId?: string): Promise<{ tick: GameStartTickResult; outcome: GameStartOutcome | null }> {
+    const watcher = this.sessions.get(guildId)?.watcher;
+    if (!watcher) return { tick: { started: 0, posted: 0, errors: 0 }, outcome: null };
+    const tick = await watcher.tick(requiredVoiceChannelId);
+    return { tick, outcome: matchId ? await watcher.outcome(matchId) : null };
+  }
+
+  /** The session's game start watcher, sharing its members, channel choice, voice queue and abort signal. */
+  private createWatcher(client: Client, guildId: string, session: MonitorSession): GameStartWatcher | undefined {
+    const inputs = this.dependencies.gameStart;
+    if (!inputs) return undefined;
+    const { members, resolveChannel, announce, mock, log, info } = this.dependencies;
+    return new GameStartWatcher({
+      client,
+      guildId,
+      signal: session.controller.signal,
+      current: () => this.current(guildId, session),
+      isPresent: (memberId) => session.present.has(memberId),
+      // The game is over once its finished match is known: waiting for a channel, being announced or announced.
+      finished: (matchId) => session.announced.has(matchId) || session.progress.has(matchId) || session.waiting.has(matchId),
+      lastChannelId: () => session.lastChannelId,
+      rememberChannel: (channelId) => { session.lastChannelId = channelId; },
+    }, { ...inputs, members, resolveChannel, announce, mock, log, info });
+  }
+
   private describe(client: Client, guildId: string, member: TrackedMember): string {
     const channel = this.dependencies.resolveChannel(client, guildId, member.discordUserId);
     const where = channel ? `voice channel ${(channel as { name?: string }).name ?? channel.id}` : "a voice channel announcements cannot use";
@@ -333,6 +380,7 @@ export class GameMonitor {
       if (!session.present.has(member.discordUserId)) continue;
       for (const account of member.accounts) owners.set(account.puuid, member.discordUserId);
     }
+    session.watcher?.prune(members);
     const dropped = [...session.accounts].filter(([puuid, state]) => owners.get(puuid) !== state.owner).map(([puuid]) => puuid);
     for (const puuid of dropped) session.accounts.delete(puuid);
     clearLastMatchIds(guildId, dropped);
@@ -803,6 +851,12 @@ const monitor = new GameMonitor({
   mock: () => getRiotMode() === "mock",
   log: (error) => logError(`Match monitoring failed: ${errorMessage(error)}`),
   info: logInfo,
+  gameStart: {
+    activeGame: (puuid) => getActiveGame(puuid),
+    records: (guildId, discordUserId, mock) => listHorseRecords(guildId, { mock, discordUserId, order: "desc", limit: 200 }),
+    pregameVoice: getPregameVoiceEnabled,
+    voiceStyle: (guildId) => getAnnouncerState(guildId).voiceStyle,
+  },
 });
 
 /** Point the guild's session at the tracked members who are in voice now; an empty list stops it. */
@@ -820,6 +874,11 @@ export function getMonitorStatus(guildId: string): MonitorStatus {
 
 export function pollGuildNow(client: Client, guildId: string, requiredVoiceChannelId?: string): Promise<PollResult> {
   return monitor.poll(client, guildId, requiredVoiceChannelId);
+}
+
+/** Check the guild's present accounts for a game on its loading screen now and wait for the 锦囊 of `matchId`; see /simulate. */
+export function pollGameStartNow(guildId: string, matchId?: string, requiredVoiceChannelId?: string): ReturnType<GameMonitor["pollGameStart"]> {
+  return monitor.pollGameStart(guildId, matchId, requiredVoiceChannelId);
 }
 
 export function stopAllPolling(): void {
