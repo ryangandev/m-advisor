@@ -12,7 +12,9 @@ import {
 } from "../store/announcerStore";
 import { getLatestSRMatchId, getMatchDetail } from "../utils/riotMatchApi";
 import { getRiotMode, RiotApiError } from "./riotData";
-import { buildMatchAnnouncement } from "./announcementText";
+import { buildMatchAnnouncement, MIN_RANKED_MINUTES } from "./announcementText";
+import { buildPregameRecap } from "./pregameRecap";
+import { rankTeam } from "./horseRanking";
 import type { MatchAnnouncement } from "./announcementText";
 import { fetchMatchEvents } from "./matchEvents";
 import type { MatchEvent } from "./matchEvents";
@@ -24,7 +26,7 @@ import { AnnouncementCancelledError, AnnouncementQueueFullError, announceTextToC
 import { logError, logInfo } from "../utils/log";
 import { boundParticipants, chooseChannel, liveParticipantIds, liveParticipants, perspective } from "./channelChoice";
 import type { BoundParticipant } from "./channelChoice";
-import { createGameStartMemory, GameStartWatcher } from "./gameStartWatcher";
+import { createGameStartMemory, GameStartWatcher, recallPick } from "./gameStartWatcher";
 import type { GameStartDependencies, GameStartMemory, GameStartOutcome, GameStartTickResult } from "./gameStartWatcher";
 import { getActiveGame } from "../utils/riotSpectatorApi";
 
@@ -706,7 +708,8 @@ export class GameMonitor {
     // The text goes out only when the voice is about to be queued, so a report that cannot play yet posts nothing.
     if (!canPlay()) throw new AnnouncementCancelledError();
     if (!progress.textPosted) {
-      await this.postReport(guildId, initial, boundParticipants, progress, announcement, speaker.puuid, result);
+      await this.postReport(guildId, initial, boundParticipants, progress, announcement, speaker.puuid, result,
+        this.pregameRecap(guildId, match.matchId, detail, speaker));
       if (!this.current(guildId, session)) throw new AnnouncementCancelledError();
     }
     await this.dependencies.announce(
@@ -794,13 +797,14 @@ export class GameMonitor {
     announcement: MatchAnnouncement,
     perspectivePuuid: string,
     result: PollResult,
+    recap?: string,
   ): Promise<void> {
     const mentions = this.liveParticipantIds(guildId, boundParticipants).filter((memberId) => channel.members.has(memberId));
     try {
       await channel.send({
         ...(mentions.length > 0 ? { content: mentions.map((memberId) => `<@${memberId}>`).join(" ") } : {}),
         // The 车队内战, when there is one, is a second embed right after the report; it mentions without pinging.
-        embeds: [buildHorseReportEmbed(announcement.report), ...(announcement.party ? [buildPartyEmbed(announcement.party)] : [])],
+        embeds: [buildHorseReportEmbed(announcement.report, recap), ...(announcement.party ? [buildPartyEmbed(announcement.party)] : [])],
         allowedMentions: { parse: [], roles: [], users: mentions, repliedUser: false },
       });
     } catch (error) {
@@ -811,6 +815,30 @@ export class GameMonitor {
     }
     progress.textPosted = true;
     this.recordHorses(guildId, progress, announcement, perspectivePuuid);
+  }
+
+  /**
+   * The 锦囊回顾 line for the report's embed, or undefined. Text only: it never reaches the speech.
+   * It needs the pregame pick of this match in the same data mode, still bound to that member, on the report's team,
+   * and a rated match. A failure here is logged and never affects the report.
+   */
+  private pregameRecap(guildId: string, matchId: string, detail: MatchDetail, speaker: BoundParticipant): string | undefined {
+    try {
+      const memory = this.gameStartMemory.get(guildId);
+      const pick = memory && recallPick(memory, matchId, (this.dependencies.gameStart?.now ?? Date.now)());
+      if (!pick || pick.mock !== this.dependencies.mock()) return undefined;
+      const account = this.dependencies.members(guildId)
+        .find((member) => member.discordUserId === pick.memberId)?.accounts.find((candidate) => candidate.puuid === pick.puuid);
+      if (!account) return undefined;
+      // Only the speaker's team is ranked, so a pick on the other side or outside the match finds no horse.
+      const ranking = rankTeam(detail, speaker.puuid);
+      if (ranking.aborted || ranking.remake || ranking.durationMinutes < MIN_RANKED_MINUTES) return undefined;
+      const horse = ranking.horses.find((candidate) => candidate.participant.puuid === pick.puuid);
+      return horse ? buildPregameRecap({ matchId, name: account.gameName, tier: horse.tier }) : undefined;
+    } catch (error) {
+      this.dependencies.log(new Error(`The 锦囊回顾 of match ${matchId} was left out: ${errorMessage(error)}`));
+      return undefined;
+    }
   }
 
   /** Writes the posted announcement's 马厩 records; a failure is logged and never affects the announcement. */
