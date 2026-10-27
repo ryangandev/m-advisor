@@ -1,0 +1,30 @@
+---
+import Default from "@astrojs/starlight/components/Footer.astro";
+---
+
+<Default {...Astro.props}><slot /></Default>
+
+<div class="legal">
+  <p lang="en">
+    M-Advisor isn't endorsed by Riot Games and doesn't reflect the views or opinions of Riot Games or anyone officially
+    involved in producing or managing Riot Games properties. Riot Games, and all associated properties are trademarks or
+    registered trademarks of Riot Games, Inc.
+  </p>
+  <p lang="zh-CN">
+    策马军师是非官方的社区工具，未获 Riot Games 认可，不代表 Riot Games 的观点；Riot Games 及相关产品是 Riot Games, Inc. 的商标或注册商标。
+  </p>
+</div>
+
+<style>
+  .legal {
+    margin-top: 2rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--sl-color-hairline);
+    font-size: var(--sl-text-xs);
+    line-height: 1.6;
+    color: var(--sl-color-gray-3);
+  }
+  .legal p + p {
+    margin-top: 0.5rem;
+  }
+</style>

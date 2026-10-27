@@ -1,0 +1,22 @@
+/* Accent colors come from the bot's avatar: lacquer red and gold. */
+:root {
+  --sl-color-accent-low: #3d0f0d;
+  --sl-color-accent: #c8322b;
+  --sl-color-accent-high: #f2a49f;
+  --sl-font-system: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", "Source Han Sans SC", system-ui, sans-serif;
+}
+
+:root[data-theme="light"] {
+  --sl-color-accent-low: #f9d9d6;
+  --sl-color-accent: #b02a24;
+  --sl-color-accent-high: #6e1210;
+}
+
+/* Chinese reads better with a little more line height and no italics. */
+.sl-markdown-content {
+  line-height: 1.8;
+}
+.sl-markdown-content :is(em, i) {
+  font-style: normal;
+  font-weight: 600;
+}
