@@ -19,7 +19,8 @@ async function doctor(): Promise<void> {
   const db = new Database(":memory:");
   try { db.prepare("SELECT 1").get(); } finally { db.close(); }
   const database = getDatabasePath();
-  // Read saved bindings only from an existing file; the doctor never creates the bot's database.
+  // Read saved bindings only from an existing file; the doctor never creates the bot's database,
+  // but opening an older existing file upgrades it in place (after a .bak copy), like starting the bot.
   const tracking = database !== ":memory:" && existsSync(database) ? listAllTracking() : [];
   const warnings = getRiotMode() === "real" ? skippedMockAccountWarnings(tracking) : [];
   console.log(JSON.stringify({ node: process.version, riotMode: getRiotMode(), ttsProvider: "local", discordConfigured: Boolean(process.env.DISCORD_TOKEN && process.env.CLIENT_ID), riotKeyPresent: Boolean(process.env.RIOT_API_KEY), testGuildConfigured: Boolean(process.env.TEST_GUILD_ID), testChannelConfigured: Boolean(process.env.TEST_VOICE_CHANNEL_ID), database, savedBindings: tracking.reduce((total, guild) => total + guild.members.length, 0), logDirectory: getLogDirectory(), ffmpegExecutable: true, sqliteReady: true, aes256gcm: getCiphers().includes("aes-256-gcm") }, null, 2));
