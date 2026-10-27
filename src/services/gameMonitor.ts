@@ -21,6 +21,8 @@ import type { HorseRecord } from "../store/horseRecordStore";
 import { buildHorseReportEmbed, buildPartyEmbed } from "../utils/embeds";
 import { AnnouncementCancelledError, AnnouncementQueueFullError, announceTextToCurrentChannel } from "./voiceAnnouncements";
 import { logError, logInfo } from "../utils/log";
+import { boundParticipants, chooseChannel, liveParticipantIds, liveParticipants, perspective } from "./channelChoice";
+import type { BoundParticipant } from "./channelChoice";
 
 export const POLL_INTERVAL_MS = 45_000;
 /** After this many failed voice attempts a match is consumed without voice; its text report was already posted. */
@@ -60,12 +62,7 @@ export interface MonitorDependencies {
   info: (message: string) => void;
 }
 
-/** A tracked member's account that took part in a match. */
-export interface BoundParticipant {
-  memberId: string;
-  puuid: string;
-  teamId: number;
-}
+export type { BoundParticipant } from "./channelChoice";
 
 /**
  * One finished match found by a poll, before it is announced.
@@ -179,15 +176,6 @@ function errorMessage(error: unknown): string {
 
 function isCredentialFailure(error: unknown): boolean {
   return error instanceof RiotApiError && ["missing_key", "unauthorized", "forbidden", "invalid_mode"].includes(error.code);
-}
-
-/** People in a channel other than bots; used only to break a tie between channels. */
-function humanCount(channel: VoiceChannel): number {
-  let count = 0;
-  for (const member of channel.members.values()) {
-    if (!(member as { user?: { bot?: boolean } }).user?.bot) count++;
-  }
-  return count;
 }
 
 /** Oldest finished match first; matches without an end time go last, then by match ID. */
@@ -369,38 +357,12 @@ export class GameMonitor {
     return this.dependencies.members(guildId).find((member) => member.accounts.some((account) => account.puuid === puuid))?.discordUserId;
   }
 
-  /**
-   * The channel with the most participating tracked members.
-   * Ties keep the previous pick, then go to the channel with more people, then the earliest-bound member's channel, then the lower ID.
-   */
   private chooseChannel(client: Client, guildId: string, participatingMemberIds: string[], previousId?: string): VoiceChannel | null {
-    const tallies = new Map<string, { channel: VoiceChannel; members: number; order: number }>();
-    participatingMemberIds.forEach((memberId, order) => {
-      const channel = this.dependencies.resolveChannel(client, guildId, memberId);
-      if (!channel) return;
-      const tally = tallies.get(channel.id);
-      if (tally) tally.members++;
-      else tallies.set(channel.id, { channel, members: 1, order });
-    });
-    const ranked = [...tallies.values()].sort((a, b) => b.members - a.members
-      || Number(b.channel.id === previousId) - Number(a.channel.id === previousId)
-      || humanCount(b.channel) - humanCount(a.channel)
-      || a.order - b.order
-      || (a.channel.id < b.channel.id ? -1 : a.channel.id > b.channel.id ? 1 : 0));
-    return ranked[0]?.channel ?? null;
+    return chooseChannel(this.dependencies.resolveChannel, client, guildId, participatingMemberIds, previousId);
   }
 
   private boundParticipants(guildId: string, detail: MatchDetail): BoundParticipant[] {
-    const result: BoundParticipant[] = [];
-    for (const member of this.dependencies.members(guildId)) {
-      for (const account of member.accounts) {
-        const participant = detail.info.participants.find((player) => player.puuid === account.puuid);
-        if (participant && !result.some((entry) => entry.puuid === participant.puuid)) {
-          result.push({ memberId: member.discordUserId, puuid: participant.puuid, teamId: participant.teamId });
-        }
-      }
-    }
-    return result;
+    return boundParticipants(this.dependencies.members(guildId), detail.info.participants);
   }
 
   /**
@@ -408,28 +370,17 @@ export class GameMonitor {
    * Read live, so someone unbound during the report neither counts for the channel nor gets mentioned.
    */
   private liveParticipantIds(guildId: string, participants: BoundParticipant[]): string[] {
-    return [...new Set(this.liveParticipants(guildId, participants).map((participant) => participant.memberId))];
+    return liveParticipantIds(this.dependencies.members(guildId), participants);
   }
 
   /** The participants who still own the account they played on, in bind order. */
   private liveParticipants(guildId: string, participants: BoundParticipant[]): BoundParticipant[] {
-    const members = this.dependencies.members(guildId);
-    return participants.filter((participant) => members.some((member) =>
-      member.discordUserId === participant.memberId && member.accounts.some((account) => account.puuid === participant.puuid)));
+    return liveParticipants(this.dependencies.members(guildId), participants);
   }
 
-  /**
-   * The team with the most participating members in the channel, then the earliest-bound member's team; that team's earliest-bound member speaks.
-   * Members the session covers are preferred, since the speaker must still be in voice when playback starts.
-   */
+  /** See `perspective` in channelChoice: members the session covers are preferred. */
   private perspective(client: Client, guildId: string, session: MonitorSession, participants: BoundParticipant[], channel: VoiceChannel): BoundParticipant | undefined {
-    const inChannel = participants.filter((participant) =>
-      this.dependencies.resolveChannel(client, guildId, participant.memberId)?.id === channel.id);
-    const present = inChannel.filter((participant) => session.present.has(participant.memberId));
-    const pool = present.length > 0 ? present : inChannel.length > 0 ? inChannel : participants;
-    const teamSize = (teamId: number) => pool.filter((participant) => participant.teamId === teamId).length;
-    const largest = Math.max(...pool.map((participant) => teamSize(participant.teamId)));
-    return pool.find((participant) => teamSize(participant.teamId) === largest);
+    return perspective(this.dependencies.resolveChannel, client, guildId, (memberId) => session.present.has(memberId), participants, channel);
   }
 
   /** Whether an account is still the one this lookup started for, after an await: same session, same owner, owner still present. */
