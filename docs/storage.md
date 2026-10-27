@@ -1,6 +1,6 @@
 # Local storage
 
-The bot keeps each server's tracked members, their Riot accounts and the announcer voice preference in a local SQLite database.
+The bot keeps each server's tracked members, their Riot accounts, the announcer voice preference and the 马厩 horse records in a local SQLite database.
 Restarting the bot preserves these settings.
 The store API is synchronous, and importing the store modules alone does not create files or open a connection.
 
@@ -25,6 +25,7 @@ The database contains Discord member IDs and Riot account IDs, so keep it outsid
 | Tracked Discord members per guild, in bind order | `src/store/bindingStore.ts` | SQLite (`tracked_members`) |
 | Ordered list of each member's Riot accounts | `src/store/bindingStore.ts` | SQLite (`member_accounts`) |
 | Announcer style, `sweet` or `old` (default `old`) | `src/store/announcerStore.ts` | SQLite |
+| One horse record per tracked member per announced match | `src/store/horseRecordStore.ts` | SQLite (`horse_records`) |
 | Polling timer | `src/store/announcerStore.ts` | Memory only |
 | Current voice channel | `src/store/announcerStore.ts` | Memory only |
 | Session match baseline | `src/store/announcerStore.ts` | Memory only |
@@ -63,9 +64,11 @@ Shipped migrations are never edited; a new schema change appends a new entry.
 | --- | --- |
 | 1 | `guild_bindings` (one member per guild), `bound_accounts`, `guild_preferences` |
 | 2 | `tracked_members`, `member_accounts`, `guild_preferences` |
+| 3 | The version 2 tables plus `horse_records` |
 
 The 1 to 2 step copies each `guild_bindings` row into `tracked_members` at position 0 and each `bound_accounts` row into `member_accounts` with its account order, then drops the two old tables.
 `guild_preferences` is unchanged, so the voice choice carries over.
+The 2 to 3 step only creates `horse_records` and its indexes, so every existing row is untouched.
 Migration happens in place, with no downgrade path, the first time any command opens an existing older database file.
 That includes `npm start`, `npm run dev`, `npm run doctor` (which only opens a file that already exists) and the `verify:*` scripts.
 `npm run register` does not open the database.
@@ -78,6 +81,20 @@ A fresh database and `:memory:` are not backed up, and once the file is current,
 The backup is not deleted automatically; remove it once the upgraded bot has run well.
 An older bot cannot open the upgraded file, so to go back, stop the bot and restore the `.bak` file as `bot.sqlite3`.
 Copying `bot.sqlite3` yourself before the first launch of the new version is optional extra safety.
+
+## 马厩 (horse records)
+
+`horse_records` holds one row per tracked member per announced match, keyed by (`guild_id`, `discord_user_id`, `match_id`).
+[马厩](stable.md) describes what each column stores and why.
+It deliberately has no foreign key to `tracked_members`, so removing a member never deletes their history.
+`/unbind` keeps the history; only `eraseMemberHorseRecords(guildId, userId)`, behind the administrator command `/stable-erase`, deletes it.
+Rebinding the same Discord member continues the same history, because the key is the Discord user and not the binding.
+
+`recordHorseRecords(records)` validates every record, saves the batch in one transaction and returns how many were new.
+An existing key is left unchanged, so recording a match twice never makes a second row.
+`listHorseRecords(guildId, { mock, discordUserId?, from?, to?, order?, limit? })` returns records whose `played_at` lies in `[from, to)`, and the `mock` flag is required so that mock and real records are never returned together.
+`listMatchHorseRecords`, `countMemberHorseRecords` and `eraseMemberHorseRecords` complete the API.
+Only tracked members are stored: no teammate or enemy PUUID, name or champion appears in the table.
 
 ## Durability and shutdown
 
@@ -97,7 +114,8 @@ To restore, stop the bot and place the saved database at the configured path bef
 
 `tests/store.test.ts` uses temporary databases and separate Node processes to verify real restart behavior.
 It covers member and account ordering, guild isolation, cross-member PUUID rejection, the 10-account cap, atomic rollback, member removal, voice preferences, runtime reset, filesystem permissions, configuration precedence, and visible failures for corrupt or unsupported database files.
+`tests/horseRecordStore.test.ts` holds the version 2 to 3 migration tests: a literal version 2 file written by a separate process without a checkpoint, the `.v2.bak` backup, a failing step that rolls back to version 2, and the horse record API.
 Migration tests build a literal version 1 file in WAL mode, written by a process that exits without closing so rows remain in an uncheckpointed `-wal` file, and upgrade it from a separate process.
 They check that members, account order, voice styles and file mode survive and the old tables are gone.
-They also check the automatic backup (present, mode `0600`, holding the version 1 data, never overwritten, not repeated), two processes opening the same old file concurrently, that a failing migration rolls back to version 1, and that reopening a version 2 file changes nothing.
+They also check the automatic backup (present, mode `0600`, holding the version 1 data, never overwritten, not repeated), two processes opening the same old file concurrently, that a failing migration rolls back to version 1, and that reopening a current file changes nothing.
 The tests do not write to the bot's actual data directory.

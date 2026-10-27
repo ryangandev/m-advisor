@@ -10,11 +10,13 @@ The default setup uses mock Riot data and the installed offline Qwen3-TTS model,
 | `/unbind user` | Administrator | Remove that member's accounts and stop monitoring |
 | `/bindings` | Administrator | Show saved accounts and identify simulated accounts |
 | `/recent count` | Everyone, private reply | Show the bound accounts' recent matches and whether monitoring will announce them |
+| `/stable user` | Everyone, public reply | Show a friend's 马厩 profile: tier counts and rates, average score, streaks, strongest and weakest dimension and recent games (default: you) |
+| `/stable-erase user confirm` | Administrator, private reply | Erase one member's whole 马厩 history; without `confirm` it only counts the records |
 | `/announcer style` | Everyone | Choose Serena (`sweet`) or Uncle_Fu (`old`, the default) |
 | `/testvoice` | Administrator, configured test server | Play a short announcement in the caller's voice channel |
 | `/simulate outcome` | Administrator, configured test server, mock mode | Run a simulated win or loss through the match announcement pipeline |
 
-Bindings and voice preferences persist in SQLite.
+Bindings, voice preferences and each tracked member's 马厩 history persist in SQLite, and `/unbind` keeps the history.
 Each server tracks one Discord member with multiple LoL accounts.
 Real profiles currently use the North America region.
 New monitoring sessions establish a baseline, so starting the bot does not replay old games.
