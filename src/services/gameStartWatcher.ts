@@ -24,6 +24,11 @@ export const FRESH_GAME_SECONDS = 60;
 const GAME_STARTS_LIMIT = 50;
 /** A guild remembers a game whose 锦囊 went out this long, far past any loading screen. */
 export const ANNOUNCED_MEMORY_MS = 15 * 60_000;
+/**
+ * A guild remembers the 军师之选 of a game this long: a long game, plus a report that waits for a channel.
+ * Far longer than ANNOUNCED_MEMORY_MS, which only has to cover a loading screen.
+ */
+export const PICK_MEMORY_MS = 3 * 60 * 60_000;
 /** Records read per teammate; the brief uses the latest ten and the champion history among them. */
 const RECORDS_PER_TEAMMATE = 200;
 const SMITE = 11;
@@ -74,12 +79,38 @@ export interface GameStartHost {
 export interface GameStartMemory {
   /** Games whose 锦囊 went out (its text was attempted), by match ID, with the time; forgotten after ANNOUNCED_MEMORY_MS. */
   announced: Map<string, number>;
+  /** The 军师之选 of games whose 锦囊 had one, by match ID, for the 锦囊回顾; at most GAME_STARTS_LIMIT, each for PICK_MEMORY_MS. */
+  picks: Map<string, GamePick>;
   /** When each account was last asked, by PUUID; an account is asked at most once per GAME_START_INTERVAL_MS. */
   checked: Map<string, number>;
 }
 
+/** The 军师之选 of a game: the member, the account they played on, and which data mode the card was in. */
+export interface GamePick {
+  memberId: string;
+  puuid: string;
+  /** Mock and real never mix: a mock pick decorates only a mock report, and the reverse. */
+  mock: boolean;
+  at: number;
+}
+
 export function createGameStartMemory(): GameStartMemory {
-  return { announced: new Map(), checked: new Map() };
+  return { announced: new Map(), picks: new Map(), checked: new Map() };
+}
+
+/** Remembers a game's pick, dropping the expired ones first and then the oldest beyond the cap. */
+export function rememberPick(memory: GameStartMemory, matchId: string, pick: GamePick): void {
+  const { picks } = memory;
+  for (const [id, remembered] of picks) if (pick.at - remembered.at >= PICK_MEMORY_MS) picks.delete(id);
+  picks.delete(matchId);
+  picks.set(matchId, pick);
+  if (picks.size > GAME_STARTS_LIMIT) picks.delete(picks.keys().next().value!);
+}
+
+/** The game's pick while it is younger than PICK_MEMORY_MS, otherwise undefined. */
+export function recallPick(memory: GameStartMemory, matchId: string, now: number): GamePick | undefined {
+  const pick = memory.picks.get(matchId);
+  return pick && now - pick.at < PICK_MEMORY_MS ? pick : undefined;
 }
 
 /** Where an account stands in the current presence of its member. */
@@ -276,9 +307,10 @@ export class GameStartWatcher {
 
   /** Drops what the guild's memory no longer needs: check times past the interval, and 锦囊 older than the memory. */
   private forget(now: number): void {
-    const { checked, announced } = this.host.memory;
+    const { checked, announced, picks } = this.host.memory;
     for (const [puuid, at] of checked) if (now - at >= GAME_START_INTERVAL_MS) checked.delete(puuid);
     for (const [matchId, at] of announced) if (now - at >= ANNOUNCED_MEMORY_MS) announced.delete(matchId);
+    for (const [matchId, pick] of picks) if (now - pick.at >= PICK_MEMORY_MS) picks.delete(matchId);
   }
 
   private async check(result: GameStartTickResult, requiredChannelId?: string): Promise<void> {
@@ -448,6 +480,10 @@ export class GameStartWatcher {
         entry.pickMemberId = entry.brief.pick.memberId;
         entry.pickPuuid = participants.find((participant) => participant.memberId === entry.brief!.pick!.memberId
           && participant.teamId === speaker.teamId)?.puuid;
+        // Outlives the 15 minute memory above: the finished report of a long game may want it hours later.
+        if (entry.pickPuuid) {
+          rememberPick(this.host.memory, entry.matchId, { memberId: entry.pickMemberId, puuid: entry.pickPuuid, mock: entry.brief.mock, at: this.now() });
+        }
       }
       // Text first, fixed now; a failed post is logged and the voice still plays.
       const mentions = ids().filter((memberId) => channel.members.has(memberId));
