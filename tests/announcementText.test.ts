@@ -158,8 +158,8 @@ test("the channel report lists every tier with its score", () => {
 
 test("timeline moments replace the statistic in the praise and the roast", () => {
   for (const [outcome, praise, roast] of [
-    ["win", "第24分钟大龙团你参与4个击杀还全身而退，大龙顺手就收了。", "第14分钟小龙团你第一个倒下，对面转身就把小龙拿了。"],
-    ["loss", "第12分钟小龙团你参与3个击杀还全身而退，小龙顺手就收了。", "第22分钟大龙团你第一个倒下，对面转身就把大龙拿了。"],
+    ["win", "24分钟大龙团你参与4个击杀还全身而退，大龙顺手就收了。", "14分钟小龙团你第一个倒下，对面转身就把小龙拿了。"],
+    ["loss", "12分钟小龙团你参与3个击杀还全身而退，小龙顺手就收了。", "22分钟大龙团你第一个倒下，对面转身就把大龙拿了。"],
   ] as const) {
     const { detail, timeline } = testMatchWithTimeline(`MOMENT-${outcome}`, ["tracked"], outcome);
     const plain = buildMatchAnnouncement(detail, "tracked", true);
@@ -220,13 +220,36 @@ test("moment lines never name an enemy, only their position", () => {
     for (const events of kinds) {
       const { speech, report: withEvent } = buildMatchAnnouncement(detail, "tracked", true, { events });
       const line = events[0].puuid === best ? withEvent.praise! : withEvent.roast!;
-      assert.match(line, /第\d+分钟/, `${events[0].kind} is cited`);
+      assert.match(line, /(?<!第)(?<![\d])[1-9]\d*分钟|1分钟不到/, `${events[0].kind} is cited`);
       seen.add(line);
       for (const text of [speech, JSON.stringify(buildHorseReportEmbed(withEvent).toJSON())]) {
         for (const name of forbidden) assert.ok(!text.includes(name), `${name} in ${line}`);
       }
-      if (position && "enemy" in events[0]) assert.ok(line.includes(`对面${({ TOP: "上单", JUNGLE: "打野", MIDDLE: "中单", BOTTOM: "下路", UTILITY: "辅助" })[position]}`), line);
+      if ("enemy" in events[0]) {
+        const role = position ? ({ TOP: "上单", JUNGLE: "打野", MIDDLE: "中单", BOTTOM: "下路", UTILITY: "辅助" })[position] : "一人";
+        assert.ok(line.includes(`对面${role}`), line);
+      }
     }
   }
-  assert.ok([...seen].some((line) => line.includes("第1分钟就被对面")), "an event before the first minute reads as minute 1");
+  assert.ok([...seen].some((line) => line.includes("1分钟不到就被对面")), "an event before the first minute never reads as 0分钟");
+  assert.ok([...seen].every((line) => !/第\d+分钟|(?<!\d)0分钟/.test(line)));
+});
+
+test("moment minutes follow the game clock, and late first blood drops the opening wording", () => {
+  const detail = testMatch("MINUTES", ["tracked"], "win");
+  const { report } = buildMatchAnnouncement(detail, "tracked", true);
+  const puuidOf = (name: string) => detail.info.participants.find((player) => player.riotIdGameName === name)!.puuid;
+  const best = puuidOf(report.lines[0].name);
+  const worst = puuidOf(report.lines[4].name);
+  const praiseFor = (event: MatchEvent) => buildMatchAnnouncement(detail, "tracked", true, { events: [event] }).report.praise!;
+  const roastFor = (event: MatchEvent) => buildMatchAnnouncement(detail, "tracked", true, { events: [event] }).report.roast!;
+  assert.ok(roastFor({ puuid: worst, timestamp: 22 * 60_000 + 40_000, kind: "lostFightFirstDeath", monster: "BARON" })
+    .includes("22分钟大龙团你第一个倒下，对面转身就把大龙拿了。"));
+  assert.ok(praiseFor({ puuid: best, timestamp: 3 * 60_000 + 10_000, kind: "firstBlood", solo: true, enemy: "TOP" })
+    .includes("3分钟单杀对面上单拿下一血，开局就把对面打懵了。"));
+  const late = praiseFor({ puuid: best, timestamp: 7 * 60_000, kind: "firstBlood", solo: false, enemy: null });
+  assert.ok(late.includes("7分钟拿下对面一人的一血，全场第一滴血归你。"), late);
+  const lateGiven = roastFor({ puuid: worst, timestamp: 6 * 60_000, kind: "firstBloodGiven", enemy: "JUNGLE" });
+  assert.ok(lateGiven.includes("6分钟被对面打野拿走一血，全场第一个给对面发红包的就是你。"), lateGiven);
+  for (const text of [late, lateGiven]) assert.doesNotMatch(text, /开局/);
 });

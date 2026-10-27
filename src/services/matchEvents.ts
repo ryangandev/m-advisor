@@ -1,22 +1,30 @@
 import type { MatchDetail, MatchParticipant, Position } from "../types";
 import { logWarn } from "../utils/log";
-import type { EpicMonster, MatchTimeline } from "../utils/matchTimeline";
+import type { EpicMonster, MapPoint, MatchTimeline } from "../utils/matchTimeline";
 import { getMatchTimeline } from "../utils/riotMatchApi";
 import { RiotApiError } from "./riotData";
 
-/** Deaths no more than this far apart belong to the same fight. */
+/** A death joins a fight when it is no more than this long after the fight's previous death. */
 export const FIGHT_GAP_MS = 15_000;
-/** A run of deaths counts as a teamfight from this many deaths. */
+/** A fight never spans longer than this from its first death. */
+export const FIGHT_MAX_SPAN_MS = 60_000;
+/** A death joins a fight when it is this close, in map units, to the fight's previous death or its centroid. */
+export const FIGHT_RADIUS = 3_000;
+/** A fight counts from this many deaths. */
 export const FIGHT_MIN_DEATHS = 3;
 /** An epic monster taken this soon after a fight or a death is tied to it. */
 export const OBJECTIVE_WINDOW_MS = 45_000;
+/** A fight or death is at a monster when it is this close to the monster's pit. */
+export const PIT_RADIUS = 3_500;
 export const MIN_MULTI_KILL = 3;
 export const MIN_FIGHT_TAKEDOWNS = 3;
 export const MIN_SHUTDOWN_BOUNTY = 400;
-/** A timeline that has not arrived by then is skipped, so it never holds up the announcement. */
-export const TIMELINE_TIMEOUT_MS = 5_000;
 // The same bar as announcementText's MIN_RANKED_MINUTES: shorter games are not judged, so need no timeline.
 const MIN_JUDGED_SECONDS = 10 * 60;
+/** Fixed pit centers on Summoner's Rift; the herald spawns in the baron pit. */
+export const MONSTER_PITS: Record<EpicMonster, MapPoint> = {
+  BARON: { x: 5007, y: 10471 }, HERALD: { x: 5007, y: 10471 }, DRAGON: { x: 9866, y: 4414 }, ELDER: { x: 9866, y: 4414 },
+};
 
 /**
  * A concrete moment from the timeline about one teammate. An enemy appears only as a position, never as a
@@ -78,39 +86,52 @@ interface Death {
   killer?: MatchParticipant;
   assisters: MatchParticipant[];
   shutdownBounty: number;
+  position: MapPoint | null;
 }
 interface Objective { timestamp: number; teamId: number; monster: EpicMonster }
 
-/** The strongest epic monster the team took in the window, if any. */
-function objectiveIn(objectives: Objective[], teamId: number, from: number, to: number): EpicMonster | undefined {
-  return objectives.filter((objective) => objective.teamId === teamId && objective.timestamp >= from && objective.timestamp <= to)
-    .sort((a, b) => MONSTER_WEIGHT[b.monster] - MONSTER_WEIGHT[a.monster] || a.timestamp - b.timestamp)[0]?.monster;
-}
-
+const distance = (a: MapPoint, b: MapPoint) => Math.hypot(a.x - b.x, a.y - b.y);
+const nearPit = (point: MapPoint, monster: EpicMonster) => distance(point, MONSTER_PITS[monster]) <= PIT_RADIUS;
+const MONSTER_ORDER = (a: Objective, b: Objective) => MONSTER_WEIGHT[b.monster] - MONSTER_WEIGHT[a.monster] || a.timestamp - b.timestamp;
 const withMonster = (monster: EpicMonster | undefined) => monster ? { monster } : {};
 
-/** Splits deaths into runs whose consecutive deaths are at most FIGHT_GAP_MS apart. */
+function centroid(deaths: Death[]): MapPoint {
+  const points = deaths.map((death) => death.position!);
+  return { x: points.reduce((sum, point) => sum + point.x, 0) / points.length, y: points.reduce((sum, point) => sum + point.y, 0) / points.length };
+}
+
+/**
+ * Groups deaths into fights by time and place, so deaths in different lanes never chain into one teamfight.
+ * A death without a position never joins a fight.
+ */
 function fights(deaths: Death[]): Death[][] {
-  const runs: Death[][] = [];
+  const groups: Death[][] = [];
   for (const death of deaths) {
-    const run = runs.at(-1);
-    if (run && death.timestamp - run.at(-1)!.timestamp <= FIGHT_GAP_MS) run.push(death);
-    else runs.push([death]);
+    if (!death.position) continue;
+    const reach = (group: Death[]) => Math.min(distance(death.position!, group.at(-1)!.position!), distance(death.position!, centroid(group)));
+    const open = groups.filter((group) => death.timestamp - group.at(-1)!.timestamp <= FIGHT_GAP_MS
+      && death.timestamp - group[0].timestamp <= FIGHT_MAX_SPAN_MS && reach(group) <= FIGHT_RADIUS);
+    const nearest = open.sort((a, b) => reach(a) - reach(b))[0];
+    if (nearest) nearest.push(death);
+    else groups.push([death]);
   }
-  return runs.filter((run) => run.length >= FIGHT_MIN_DEATHS);
+  return groups.filter((group) => group.length >= FIGHT_MIN_DEATHS);
 }
 
 function fightEvents(fight: Death[], objectives: Objective[], players: MatchParticipant[]): MatchEvent[] {
   const events: MatchEvent[] = [];
   const start = fight[0].timestamp;
   const until = fight.at(-1)!.timestamp + OBJECTIVE_WINDOW_MS;
+  const center = centroid(fight);
+  // A fight is named after a monster only when it happened at that monster's pit and the team took it.
+  const monsterFor = (teamId: number) => objectives.filter((objective) => objective.teamId === teamId
+    && objective.timestamp >= start && objective.timestamp <= until && nearPit(center, objective.monster)).sort(MONSTER_ORDER)[0]?.monster;
   const deathsOf = (teamId: number) => fight.filter((death) => death.victim.teamId === teamId).length;
   const enemyTeam = (teamId: number) => players.find((player) => player.teamId !== teamId)?.teamId ?? -1;
   // The first to fall in a fight their team did not win.
   const first = fight[0].victim;
   if (deathsOf(first.teamId) >= deathsOf(enemyTeam(first.teamId))) {
-    events.push({ puuid: first.puuid, timestamp: start, kind: "lostFightFirstDeath",
-      ...withMonster(objectiveIn(objectives, enemyTeam(first.teamId), start, until)) });
+    events.push({ puuid: first.puuid, timestamp: start, kind: "lostFightFirstDeath", ...withMonster(monsterFor(enemyTeam(first.teamId))) });
   }
   // A survivor of a won fight who took part in most of its kills.
   for (const player of players) {
@@ -119,9 +140,24 @@ function fightEvents(fight: Death[], objectives: Objective[], players: MatchPart
     const takedowns = fight.filter((death) => death.victim.teamId === enemy
       && (death.killer === player || death.assisters.includes(player))).length;
     if (takedowns >= MIN_FIGHT_TAKEDOWNS) {
-      events.push({ puuid: player.puuid, timestamp: start, kind: "wonFight", takedowns,
-        ...withMonster(objectiveIn(objectives, player.teamId, start, until)) });
+      events.push({ puuid: player.puuid, timestamp: start, kind: "wonFight", takedowns, ...withMonster(monsterFor(player.teamId)) });
     }
+  }
+  return events;
+}
+
+/**
+ * For each epic monster, the first teammate on the other team to die at its pit in the window before it was taken.
+ * Nobody on that team may have died at the pit in the window before them, so "you fell first" is always true.
+ */
+function objectiveDeaths(deaths: Death[], objectives: Objective[]): MatchEvent[] {
+  const events: MatchEvent[] = [];
+  for (const objective of objectives) {
+    const atPit = deaths.filter((death) => death.victim.teamId !== objective.teamId && death.position && nearPit(death.position, objective.monster));
+    const index = atPit.findIndex((death) => death.timestamp >= objective.timestamp - OBJECTIVE_WINDOW_MS && death.timestamp <= objective.timestamp);
+    const first = atPit[index];
+    if (!first || atPit.slice(0, index).some((death) => death.timestamp >= first.timestamp - OBJECTIVE_WINDOW_MS)) continue;
+    events.push({ puuid: first.victim.puuid, timestamp: first.timestamp, kind: "objectiveDeath", monster: objective.monster });
   }
   return events;
 }
@@ -141,6 +177,7 @@ export function extractMatchEvents(detail: MatchDetail, timeline: MatchTimeline)
   const deaths: Death[] = [];
   const objectives: Objective[] = [];
   const events: MatchEvent[] = [];
+  let firstBlood: { timestamp: number; killer: MatchParticipant } | undefined;
   for (const event of timeline.events) {
     if (event.type === "kill") {
       const victim = player(event.victimId);
@@ -150,21 +187,25 @@ export function extractMatchEvents(detail: MatchDetail, timeline: MatchTimeline)
       const enemyKiller = killer && killer.teamId !== victim.teamId ? killer : undefined;
       const assisters = enemyKiller
         ? event.assistIds.map(player).filter((ally): ally is MatchParticipant => ally?.teamId === enemyKiller.teamId) : [];
-      deaths.push({ timestamp: event.timestamp, victim, killer: enemyKiller, assisters, shutdownBounty: event.shutdownBounty });
+      deaths.push({ timestamp: event.timestamp, victim, killer: enemyKiller, assisters, shutdownBounty: event.shutdownBounty, position: event.position });
     } else if (event.type === "monster") {
       const teamId = event.teamId || player(event.killerId)?.teamId;
       if (teamId) objectives.push({ timestamp: event.timestamp, teamId, monster: event.monster });
+    } else if (event.type === "firstBlood") {
+      const killer = player(event.killerId);
+      if (killer && !firstBlood) firstBlood = { timestamp: event.timestamp, killer };
     } else if (event.length >= MIN_MULTI_KILL) {
       const killer = player(event.killerId);
       if (killer) events.push({ puuid: killer.puuid, timestamp: event.timestamp, kind: "multiKill", kills: event.length });
     }
   }
 
-  const firstDeath = deaths[0];
-  if (firstDeath?.killer) {
-    const { killer, victim, timestamp } = firstDeath;
-    events.push({ puuid: killer.puuid, timestamp, kind: "firstBlood", solo: firstDeath.assisters.length === 0, enemy: victim.position });
-    events.push({ puuid: victim.puuid, timestamp, kind: "firstBloodGiven", enemy: killer.position });
+  // Riot's first blood award; the victim comes from the champion kill it was awarded for.
+  if (firstBlood) {
+    const { killer, timestamp } = firstBlood;
+    const kill = deaths.find((death) => death.killer === killer && Math.abs(death.timestamp - timestamp) <= 1_000);
+    events.push({ puuid: killer.puuid, timestamp, kind: "firstBlood", solo: kill ? kill.assisters.length === 0 : false, enemy: kill?.victim.position ?? null });
+    if (kill) events.push({ puuid: kill.victim.puuid, timestamp: kill.timestamp, kind: "firstBloodGiven", enemy: killer.position });
   }
   for (const { killer, victim, timestamp, shutdownBounty } of deaths) {
     if (killer && shutdownBounty >= MIN_SHUTDOWN_BOUNTY) {
@@ -172,12 +213,7 @@ export function extractMatchEvents(detail: MatchDetail, timeline: MatchTimeline)
       events.push({ puuid: victim.puuid, timestamp, kind: "shutdownGiven", bounty: shutdownBounty, enemy: killer.position });
     }
   }
-  // Any death, including an execution, that the enemy turned into an epic monster.
-  for (const { victim, timestamp } of deaths) {
-    const enemy = players.find((other) => other.teamId !== victim.teamId)?.teamId;
-    const monster = enemy === undefined ? undefined : objectiveIn(objectives, enemy, timestamp, timestamp + OBJECTIVE_WINDOW_MS);
-    if (monster) events.push({ puuid: victim.puuid, timestamp, kind: "objectiveDeath", monster });
-  }
+  events.push(...objectiveDeaths(deaths, objectives));
   for (const fight of fights(deaths)) events.push(...fightEvents(fight, objectives, players));
   return events.sort((a, b) => a.timestamp - b.timestamp);
 }
@@ -185,30 +221,21 @@ export function extractMatchEvents(detail: MatchDetail, timeline: MatchTimeline)
 export interface FetchMatchEventsOptions {
   timeline?: (matchId: string) => Promise<MatchTimeline>;
   warn?: (message: string) => void;
-  timeoutMs?: number;
 }
 
 /**
- * Timeline moments for an announcement, or null when the timeline is unavailable. It never throws and gives up
- * after TIMELINE_TIMEOUT_MS, so a missing or slow timeline only means the report falls back to its statistics.
+ * Timeline moments for an announcement, or null when the timeline is unavailable. It never throws, and the
+ * timeline request itself is aborted after TIMELINE_TIMEOUT_MS, so a missing or slow timeline only means the
+ * report falls back to its statistics.
  */
 export async function fetchMatchEvents(matchId: string, detail: MatchDetail, options: FetchMatchEventsOptions = {}): Promise<MatchEvent[] | null> {
   const { info } = detail;
   if (info.aborted || info.earlySurrender || info.gameDuration < MIN_JUDGED_SECONDS) return null;
-  const warn = options.warn ?? logWarn;
-  let timer: NodeJS.Timeout | undefined;
-  const timeout = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(() => reject(new RiotApiError("Riot API timeline request timed out.", "timeout")), options.timeoutMs ?? TIMELINE_TIMEOUT_MS);
-    timer.unref();
-  });
   try {
-    const timeline = await Promise.race([(options.timeline ?? getMatchTimeline)(matchId), timeout]);
-    return extractMatchEvents(detail, timeline);
+    return extractMatchEvents(detail, await (options.timeline ?? getMatchTimeline)(matchId));
   } catch (error) {
     const reason = error instanceof RiotApiError ? `${error.code}: ${error.message}` : error instanceof Error ? error.message : "unknown error";
-    warn(`Timeline for match ${matchId} is unavailable (${reason}); the report uses end-of-game statistics only.`);
+    (options.warn ?? logWarn)(`Timeline for match ${matchId} is unavailable (${reason}); the report uses end-of-game statistics only.`);
     return null;
-  } finally {
-    clearTimeout(timer);
   }
 }

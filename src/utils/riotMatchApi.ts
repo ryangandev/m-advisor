@@ -1,6 +1,6 @@
 import { CHALLENGE_STATS, PERFORMANCE_STATS, POSITIONS } from "../types";
 import type { MatchDetail, MatchParticipant, ParticipantPerformance, Position, TeamObjectives } from "../types";
-import { getRiotMode, RiotApiError, riotFetch, riotNumber, riotObject } from "../services/riotData";
+import { createRiotRequester, getRiotMode, isMockData, RiotApiError, riotFetch, riotNumber, riotObject } from "../services/riotData";
 import { parseMatchTimeline } from "./matchTimeline";
 import type { MatchTimeline } from "./matchTimeline";
 
@@ -46,13 +46,23 @@ export async function getMatchDetail(matchId: string): Promise<MatchDetail> {
   return detail;
 }
 
+/** A timeline request is aborted after this long, so it never holds up the announcement. */
+export const TIMELINE_TIMEOUT_MS = 5_000;
+/**
+ * Timelines are optional flavor, so they get their own requester: one attempt, aborted at the timeout, and a 429
+ * on it never sets the shared cooldown that profile and match requests honor. Its own cooldown fails fast instead of waiting.
+ */
+export const TIMELINE_REQUESTER_OPTIONS = { timeoutMs: TIMELINE_TIMEOUT_MS, maxRetries: 0, maxRetryDelayMs: 0 } as const;
+const timelineRequest = createRiotRequester(TIMELINE_REQUESTER_OPTIONS);
+
 /**
  * The match-v5 timeline, used only for optional commentary moments. It is not cached: each finished match
  * is announced once, and a timeline is several hundred kilobytes.
  */
-export async function getMatchTimeline(matchId: string): Promise<MatchTimeline> {
+export async function getMatchTimeline(matchId: string, request: <T>(url: string) => Promise<T> = timelineRequest): Promise<MatchTimeline> {
   const timelineUrl = `${AMERICAS}/lol/match/v5/matches/${encodeURIComponent(matchId)}/timeline`;
-  return parseMatchTimeline(await riotFetch<unknown>(timelineUrl), matchId);
+  const body = isMockData() ? await riotFetch<unknown>(timelineUrl) : await request<unknown>(timelineUrl);
+  return parseMatchTimeline(body, matchId);
 }
 
 /** Validates a match-v5 response body and keeps the fields used for announcements and scoring. */

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, test } from "node:test";
 import { getAccountByRiotId, getRankedEntries, getSummonerByPuuid } from "../src/utils/riotApi";
-import { getLatestSRMatchId, getMatchDetail, getMatchTimeline, parseMatchDetail, SR_QUEUE_IDS } from "../src/utils/riotMatchApi";
+import { getLatestSRMatchId, getMatchDetail, getMatchTimeline, parseMatchDetail, SR_QUEUE_IDS, TIMELINE_REQUESTER_OPTIONS } from "../src/utils/riotMatchApi";
 import { fetchMatchEvents } from "../src/services/matchEvents";
 import { createRiotRequester, getRiotDataLabel, getRiotMode, isMockData, resetMockData, RiotApiError, simulateMockMatch } from "../src/services/riotData";
 
@@ -123,6 +123,49 @@ test("real timelines use the Americas match-v5 timeline endpoint", async () => {
   const timeline = await getMatchTimeline("NA1_42");
   assert.deepEqual(urls, ["https://americas.api.riotgames.com/lol/match/v5/matches/NA1_42/timeline"]);
   assert.deepEqual(timeline, { matchId: "NA1_42", participants: new Map([[1, "p1"]]), events: [] });
+});
+
+// Runs after the endpoint test: the timeline requester's own 60 second cooldown lasts for the rest of this file.
+test("a timeline 429 stays on the timeline requester and never blocks match requests", async () => {
+  process.env.RIOT_MODE = "real";
+  process.env.RIOT_API_KEY = "test-key";
+  const paths: string[] = [];
+  globalThis.fetch = async (input) => {
+    const pathname = new URL(input.toString()).pathname;
+    paths.push(pathname);
+    if (pathname.endsWith("/timeline")) return new Response(null, { status: 429, headers: { "Retry-After": "60" } });
+    return Response.json({ metadata: { matchId: "NA1_COOLDOWN" }, info: { queueId: 420, participants: [{ puuid: "p", teamId: 100, win: true }] } });
+  };
+  await assert.rejects(getMatchTimeline("NA1_COOLDOWN"), { code: "rate_limited", retryAfterMs: 60_000 });
+  await assert.rejects(getMatchTimeline("NA1_COOLDOWN"), { code: "rate_limited" }, "fails fast during its own cooldown");
+  assert.equal((await getMatchDetail("NA1_COOLDOWN")).metadata.matchId, "NA1_COOLDOWN");
+  assert.deepEqual(paths, ["/lol/match/v5/matches/NA1_COOLDOWN/timeline", "/lol/match/v5/matches/NA1_COOLDOWN"]);
+});
+
+test("timeline requests make one attempt and are aborted at the timeout", async () => {
+  process.env.RIOT_MODE = "real";
+  assert.deepEqual(TIMELINE_REQUESTER_OPTIONS, { timeoutMs: 5_000, maxRetries: 0, maxRetryDelayMs: 0 });
+  const requester = (fetchImpl: typeof fetch, timeoutMs: number = TIMELINE_REQUESTER_OPTIONS.timeoutMs) => createRiotRequester({
+    ...TIMELINE_REQUESTER_OPTIONS, timeoutMs, apiKey: () => "test-secret", fetch: fetchImpl, sleep: async () => assert.fail("timelines never wait or retry"),
+  });
+  let attempts = 0;
+  let aborted = false;
+  const keepAlive = setTimeout(() => undefined, 100);
+  try {
+    const hanging = (async (_input, init) => new Promise<Response>((_resolve, reject) => {
+      attempts++;
+      init?.signal?.addEventListener("abort", () => { aborted = true; reject(new Error("aborted")); }, { once: true });
+    })) as typeof fetch;
+    await assert.rejects(getMatchTimeline("NA1_SLOW", requester(hanging, 10)), { code: "timeout" });
+  } finally { clearTimeout(keepAlive); }
+  assert.equal(attempts, 1);
+  assert.equal(aborted, true, "the request itself is aborted, not just abandoned");
+  for (const status of [503, 429]) {
+    attempts = 0;
+    const failing = (async () => { attempts++; return new Response(null, { status, headers: { "Retry-After": "1" } }); }) as typeof fetch;
+    await assert.rejects(getMatchTimeline("NA1_FAIL", requester(failing)), { status });
+    assert.equal(attempts, 1, `${status} is not retried`);
+  }
 });
 
 test("real mode and invalid mode never fall back to fixtures", async () => {

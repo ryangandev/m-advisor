@@ -138,6 +138,10 @@ interface TimelineScript { kills: ScriptedKill[]; monsters: ScriptedMonster[] }
 const SLOT_POSITIONS: Record<string, Position> = { T: "TOP", J: "JUNGLE", M: "MIDDLE", B: "BOTTOM", S: "UTILITY" };
 const BARON_PIT = { x: 5007, y: 10471 };
 const DRAGON_PIT = { x: 9866, y: 4414 };
+// Lane spots where filler deaths happen, each more than 3500 units from both pits.
+const LANE_SPOTS: Record<Position, { x: number; y: number }> = {
+  TOP: { x: 1500, y: 12500 }, JUNGLE: { x: 7400, y: 7400 }, MIDDLE: { x: 7400, y: 7400 }, BOTTOM: { x: 13000, y: 1800 }, UTILITY: { x: 13000, y: 1800 },
+};
 
 // Hand-written key moments that respect every player's K/D/A in the fixture match; the remaining kills are
 // filled in between them. In both games the support carries a won fight before an objective, and the feeding
@@ -170,7 +174,7 @@ const TIMELINE_SCRIPTS: Record<MockOutcome, TimelineScript> = {
   },
 };
 
-interface TimelineKillDraft { seconds: number; killerId: number; victimId: number; assists: number[]; shutdownBounty: number }
+interface TimelineKillDraft { seconds: number; killerId: number; victimId: number; assists: number[]; shutdownBounty: number; scripted: boolean }
 type Budget = { kills: number; deaths: number; assists: number };
 
 /**
@@ -200,7 +204,7 @@ export function buildMockTimeline(match: RawMatch): RawTimeline {
     for (const id of kill.assists) remaining.get(id)!.assists--;
   };
   const kills: TimelineKillDraft[] = script.kills.map(([seconds, killer, victim, assists, shutdownBounty = 0]) => {
-    const kill = { seconds, killerId: slotId(killer), victimId: slotId(victim), assists: assists.map(slotId), shutdownBounty };
+    const kill = { seconds, killerId: slotId(killer), victimId: slotId(victim), assists: assists.map(slotId), shutdownBounty, scripted: true };
     spend(kill);
     return kill;
   });
@@ -246,7 +250,7 @@ export function buildMockTimeline(match: RawMatch): RawTimeline {
     const assistsLeft = mates.reduce((total, id) => total + remaining.get(id)!.assists, 0);
     const count = Math.max(Math.ceil(assistsLeft / teamKills.length), mates.filter((id) => slack(id) <= 0).length);
     const assists = mates.slice(0, Math.min(4, count)).sort((a, b) => a - b);
-    const kill = { seconds: slots[index], killerId, victimId, assists, shutdownBounty: 0 };
+    const kill = { seconds: slots[index], killerId, victimId, assists, shutdownBounty: 0, scripted: false };
     spend(kill);
     kills.push(kill);
   });
@@ -259,8 +263,10 @@ export function buildMockTimeline(match: RawMatch): RawTimeline {
   let streak = { killerId: 0, length: 0, at: -Infinity };
   kills.forEach((kill, index) => {
     const timestamp = kill.seconds * 1000;
-    const pit = script.monsters.find(([seconds]) => Math.abs(seconds - kill.seconds) <= 60);
-    const position = pit ? (pit[2] === "DRAGON" ? DRAGON_PIT : BARON_PIT) : { x: 7400 + (index % 5) * 300, y: 7400 - (index % 3) * 400 };
+    // Scripted kills near an objective happen around its pit; everything else happens in the victim's lane.
+    const pit = kill.scripted ? script.monsters.find(([seconds]) => Math.abs(seconds - kill.seconds) <= 60) : undefined;
+    const center = pit ? (pit[2] === "DRAGON" ? DRAGON_PIT : BARON_PIT) : LANE_SPOTS[participants[kill.victimId - 1].teamPosition as Position];
+    const position = pit ? { x: center.x + ((index % 3) - 1) * 250, y: center.y + (index % 2) * 250 } : center;
     events.push({
       type: "CHAMPION_KILL", timestamp, killerId: kill.killerId, victimId: kill.victimId,
       ...(kill.assists.length ? { assistingParticipantIds: kill.assists } : {}),
