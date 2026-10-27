@@ -117,7 +117,7 @@ A server without a row has the switch on.
 It is a separate table because `guild_preferences.voice_style` is `NOT NULL`, so a row there could not exist without a style.
 `getPregameVoiceEnabled(guildId)` and `setPregameVoiceEnabled(guildId, enabled)` in `src/store/announcerStore.ts` read and write it, and `/announcer pregame_voice` sets it (Administrator only; `style` stays open to everyone).
 `saveAnnouncerSettings` writes the style and the switch in one transaction and updates the in-memory style only after it commits.
-Nothing reads the switch during play yet.
+The game start watcher reads it for every 锦囊 (see [Announcements](announcements.md#text-and-voice)): the text card is always posted, and the voice line is queued only while the switch is on.
 
 ## Durability and shutdown
 

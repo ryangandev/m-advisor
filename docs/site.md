@@ -20,8 +20,15 @@ Node 22.12 or newer is required, the same as the bot.
 `.github/workflows/docs.yml` builds `site/` with Node 22 and publishes `site/dist` to GitHub Pages.
 It runs on a push to `main` that touches `site/**` or the workflow, and on manual dispatch.
 The site is served from the domain root, so `astro.config.mjs` sets `site` and no `base`.
-`site/public/CNAME` documents the custom domain.
-The repository's Pages source must be set to GitHub Actions and the DNS CNAME must point at the Pages host; both are done by hand in the settings, not by the workflow.
+A pull request that touches the same paths only builds the site; the deploy job is skipped.
+
+GitHub Pages ignores `site/public/CNAME` when it is deployed from Actions, so the file is kept only as a record of the domain.
+The domain is set by hand, once:
+
+1. In the repository, open Settings, then Pages, and set Source to GitHub Actions.
+2. In the same page, set the custom domain to `madvisor.rystudio.app` and turn on Enforce HTTPS once the certificate is ready.
+3. At the DNS provider, add a CNAME record from `madvisor` (under `rystudio.app`) to `ryangandev.github.io`.
+4. Optionally verify the domain in the account's Pages settings, so nobody else can claim it.
 
 ## Content rules
 
