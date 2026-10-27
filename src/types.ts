@@ -98,6 +98,8 @@ export interface MatchDetail {
   metadata: { matchId: string; participants: string[] };
   info: {
     queueId: number;
+    /** Riot's game version string such as "16.19.123.4567", when the match data has one. */
+    gameVersion?: string;
     gameDuration: number;
     /** Unix milliseconds when the game ended, or null when the match data omits it. */
     gameEndTimestamp: number | null;

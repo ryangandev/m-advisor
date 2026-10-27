@@ -3,10 +3,15 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
+import { buildMatchAnnouncement, formatScore } from "../src/services/announcementText";
 import { buildHorseRecords } from "../src/services/horseRecords";
+import type { MatchEvent } from "../src/services/matchEvents";
+import { setMemberAccounts } from "../src/store/bindingStore";
 import { DEFAULT_BENCHMARKS, rankTeam } from "../src/services/horseRanking";
 import { closeDatabase } from "../src/store/database";
 import { listHorseRecords, recordHorseRecords } from "../src/store/horseRecordStore";
+import { buildMockMatch, buildMockProfile } from "../src/fixtures/riotFixtures";
+import { parseMatchDetail } from "../src/utils/riotMatchApi";
 import { testMatch } from "./helpers/matches";
 
 let directory: string;
@@ -151,10 +156,89 @@ test("built records are saved once however often the monitor records the match",
     mock: true,
     recordedAt,
   };
+  setMemberAccounts("guild-one", "u-tracked", [{ puuid: "tracked", gameName: "Tracked", tagLine: "NA1" }]);
+  setMemberAccounts("guild-one", "u-friend", [{ puuid: "friend", gameName: "Friend", tagLine: "NA1" }]);
   assert.equal(recordHorseRecords(buildHorseRecords(input)), 2);
   assert.equal(recordHorseRecords(buildHorseRecords({ ...input, recordedAt: recordedAt + 90_000 })), 0);
   const stored = listHorseRecords("guild-one", { mock: true });
   assert.equal(stored.length, 2);
   assert.ok(stored.every((record) => record.recordedAt === recordedAt));
   assert.deepEqual(listHorseRecords("guild-one", { mock: false }), []);
+});
+
+test("a record keeps its team and the game version when the match has one", () => {
+  const detail = testMatch("NA1_VERSION", ["tracked"], "win");
+  detail.info.gameVersion = "16.19.123.4567";
+  const tracked = [{ discordUserId: "u-tracked", puuid: "tracked" }, { discordUserId: "u-foe", puuid: "MOCK-ENEMY-4" }];
+  const records = buildHorseRecords({ guildId: "guild-one", detail, tracked, mock: false, recordedAt });
+  assert.deepEqual(records.map((record) => [record.discordUserId, record.teamId, record.gameVersion]), [
+    ["u-tracked", 100, "16.19.123.4567"], ["u-foe", 200, "16.19.123.4567"],
+  ]);
+  delete detail.info.gameVersion;
+  assert.ok(buildHorseRecords({ guildId: "guild-one", detail, tracked, mock: false, recordedAt }).every((record) => record.gameVersion === null));
+});
+
+test("without an announcement no record carries commentary", () => {
+  const detail = testMatch("NA1_QUIET", ["tracked"], "win");
+  const records = buildHorseRecords({ guildId: "guild-one", detail, tracked: [{ discordUserId: "u-tracked", puuid: "tracked" }], mock: false, recordedAt });
+  assert.deepEqual(records.map((record) => [record.commentary, record.commentaryTone, record.momentKind]), [[null, null, null]]);
+});
+
+test("the praised and roasted members keep the line the 军师 spoke and the moment it cited", () => {
+  const detail = testMatch("NA1_SAID", ["tracked"], "win");
+  const ranking = rankTeam(detail, "tracked");
+  const best = ranking.horses[0].participant.puuid;
+  const worst = ranking.horses[4].participant.puuid;
+  const middle = ranking.horses[2].participant.puuid;
+  const foe = "MOCK-ENEMY-4";
+  const events: MatchEvent[] = [
+    { puuid: best, timestamp: 24 * 60_000, kind: "multiKill", kills: 3 },
+    { puuid: worst, timestamp: 17 * 60_000, kind: "objectiveDeath", monster: "DRAGON" },
+    { puuid: middle, timestamp: 9 * 60_000, kind: "multiKill", kills: 4 },
+  ];
+  const announcement = buildMatchAnnouncement(detail, "tracked", false, { events });
+  const tracked = [best, worst, middle, foe].map((puuid) => ({ discordUserId: `u-${puuid}`, puuid }));
+  const records = buildHorseRecords({
+    guildId: "guild-one", detail, tracked, mock: false, recordedAt,
+    announcement: { announcement, perspectivePuuid: "tracked", events },
+  });
+  const byMember = new Map(records.map((record) => [record.puuid, record]));
+
+  const praised = byMember.get(best)!;
+  assert.deepEqual([praised.commentaryTone, praised.commentary, praised.momentKind], ["praise", announcement.report.praise, "multiKill"]);
+  assert.match(praised.commentary!, /24分钟一波三杀/);
+  const roasted = byMember.get(worst)!;
+  assert.deepEqual([roasted.commentaryTone, roasted.commentary, roasted.momentKind], ["roast", announcement.report.roast, "objectiveDeath"]);
+  assert.match(roasted.commentary!, /17分钟小龙前你先倒下了/);
+  // A 4-kill moment for a middling horse was never cited, and an enemy of the perspective was neither praised nor roasted.
+  assert.deepEqual([byMember.get(middle)!.commentary, byMember.get(middle)!.momentKind], [null, null]);
+  assert.deepEqual([byMember.get(foe)!.commentary, byMember.get(foe)!.commentaryTone, byMember.get(foe)!.momentKind], [null, null, null]);
+});
+
+test("commentary that quoted a statistic keeps no moment kind", () => {
+  const detail = testMatch("NA1_STAT", ["tracked"], "win");
+  const best = rankTeam(detail, "tracked").horses[0].participant.puuid;
+  const announcement = buildMatchAnnouncement(detail, "tracked", false);
+  const [record] = buildHorseRecords({
+    guildId: "guild-one", detail, tracked: [{ discordUserId: "u-best", puuid: best }], mock: false, recordedAt,
+    announcement: { announcement, perspectivePuuid: "tracked", events: null },
+  });
+  assert.equal(record.commentary, announcement.report.praise);
+  assert.equal(record.momentKind, null);
+});
+
+test("scores print with the same rounding in speech and in the 马厩", () => {
+  assert.equal(formatScore(0.15), "0.2");
+  assert.equal(formatScore(9.95), "10.0");
+  assert.equal(formatScore(5), "5.0");
+  const detail = testMatch("NA1_ROUND", ["tracked"], "win");
+  const speech = buildMatchAnnouncement(detail, "tracked", false).speech;
+  for (const horse of rankTeam(detail, "tracked").horses) assert.ok(speech.includes(`${formatScore(horse.score)}分`), horse.participant.puuid);
+});
+
+test("the parsed match keeps Riot's game version when present and omits it otherwise", () => {
+  const raw = buildMockMatch(buildMockProfile("Tracked", "NA1"), "NA1_PARSE", "win");
+  assert.equal(parseMatchDetail(raw, "NA1_PARSE").info.gameVersion, undefined);
+  (raw.info as Record<string, unknown>).gameVersion = " 16.19.123.4567 ";
+  assert.equal(parseMatchDetail(raw, "NA1_PARSE").info.gameVersion, "16.19.123.4567");
 });

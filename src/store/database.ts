@@ -65,6 +65,8 @@ const MIGRATIONS: readonly string[] = [
       match_id TEXT NOT NULL CHECK(length(trim(match_id)) > 0),
       puuid TEXT NOT NULL CHECK(length(trim(puuid)) > 0),
       mock INTEGER NOT NULL CHECK(mock IN (0, 1)),
+      team_id INTEGER NOT NULL,
+      game_version TEXT,
       played_at INTEGER NOT NULL,
       recorded_at INTEGER NOT NULL,
       queue_id INTEGER NOT NULL,
@@ -87,7 +89,12 @@ const MIGRATIONS: readonly string[] = [
       features TEXT NOT NULL CHECK(json_valid(features)),
       benchmark_version INTEGER NOT NULL,
       benchmark_collected_at TEXT NOT NULL,
-      PRIMARY KEY (guild_id, discord_user_id, match_id)
+      commentary_tone TEXT CHECK(commentary_tone IS NULL OR commentary_tone IN ('praise', 'roast')),
+      commentary TEXT CHECK(commentary IS NULL OR length(trim(commentary)) > 0),
+      moment_kind TEXT CHECK(moment_kind IS NULL OR length(trim(moment_kind)) > 0),
+      CHECK((commentary IS NULL) = (commentary_tone IS NULL)),
+      CHECK(moment_kind IS NULL OR commentary IS NOT NULL),
+      PRIMARY KEY (guild_id, discord_user_id, match_id, mock)
     ) STRICT;
     CREATE INDEX horse_records_by_member ON horse_records(guild_id, discord_user_id, mock, played_at);
     CREATE INDEX horse_records_by_time ON horse_records(guild_id, mock, played_at);

@@ -84,13 +84,14 @@ Copying `bot.sqlite3` yourself before the first launch of the new version is opt
 
 ## 马厩 (horse records)
 
-`horse_records` holds one row per tracked member per announced match, keyed by (`guild_id`, `discord_user_id`, `match_id`).
+`horse_records` holds one row per tracked member per announced match, keyed by (`guild_id`, `discord_user_id`, `match_id`, `mock`).
 [马厩](stable.md) describes what each column stores and why.
 It deliberately has no foreign key to `tracked_members`, so removing a member never deletes their history.
 `/unbind` keeps the history; only `eraseMemberHorseRecords(guildId, userId)`, behind the administrator command `/stable-erase`, deletes it.
 Rebinding the same Discord member continues the same history, because the key is the Discord user and not the binding.
 
 `recordHorseRecords(records)` validates every record, saves the batch in one transaction and returns how many were new.
+Inside that transaction it also checks that each (server, member, account) is currently in `member_accounts`, and otherwise throws `UntrackedMemberError` and saves nothing.
 An existing key is left unchanged, so recording a match twice never makes a second row.
 `listHorseRecords(guildId, { mock, discordUserId?, from?, to?, order?, limit? })` returns records whose `played_at` lies in `[from, to)`, and the `mock` flag is required so that mock and real records are never returned together.
 `listMatchHorseRecords`, `countMemberHorseRecords` and `eraseMemberHorseRecords` complete the API.

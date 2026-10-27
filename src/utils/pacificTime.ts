@@ -60,3 +60,11 @@ export function pacificWeek(instant: number): TimeRange {
   const monday = addDays(wall, -((weekday + 6) % 7));
   return { start: pacificMidnight(monday), end: pacificMidnight(addDays(monday, 7)) };
 }
+
+/** The Pacific calendar month containing the instant, from the 1st at 00:00 to the 1st of the next month at 00:00. */
+export function pacificMonth(instant: number): TimeRange {
+  if (!Number.isFinite(instant)) throw new RangeError("The instant must be a finite number of milliseconds.");
+  const { year, month } = wallClock(instant);
+  // Date.UTC rolls month 13 over into January of the next year.
+  return { start: pacificMidnight({ year, month, day: 1 }), end: pacificMidnight({ year, month: month + 1, day: 1 }) };
+}

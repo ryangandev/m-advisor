@@ -3,15 +3,15 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
-import { MessageFlags } from "discord.js";
+import { MessageFlags, PermissionFlagsBits } from "discord.js";
 import stableCommand from "../src/commands/stable";
 import stableEraseCommand from "../src/commands/stableErase";
 import { removeTrackedMember, setMemberAccounts } from "../src/store/bindingStore";
 import { closeDatabase } from "../src/store/database";
-import { countMemberHorseRecords, recordHorseRecords } from "../src/store/horseRecordStore";
+import { countMemberHorseRecords } from "../src/store/horseRecordStore";
 import type { HorseRecord } from "../src/store/horseRecordStore";
 import type { HorseTier } from "../src/services/horseRanking";
-import { makeHorseRecord } from "./helpers/horseRecords";
+import { makeHorseRecord, recordTracked } from "./helpers/horseRecords";
 
 const GUILD = "stable-guild";
 let directory: string;
@@ -68,6 +68,7 @@ function seed(results: Array<[HorseTier, number]>, overrides: Partial<HorseRecor
   return results.map(([tier, score], index) => makeHorseRecord({
     guildId: GUILD,
     discordUserId: "friend",
+    puuid: `puuid-${overrides.discordUserId ?? "friend"}`,
     matchId: `NA1_STABLE_${overrides.mock ? "M" : "R"}${index}`,
     playedAt: 1_800_000_000_000 + index * 3_600_000,
     tier,
@@ -106,7 +107,7 @@ test("/stable explains an empty profile of someone who was never bound", async (
 
 test("/stable shows the full profile of the chosen member from stored records", async () => {
   setMemberAccounts(GUILD, "friend", [{ puuid: "p2", gameName: "Friend", tagLine: "NA1" }]);
-  recordHorseRecords(seed(FULL));
+  recordTracked(seed(FULL));
   const { stub, replies } = interaction({ target: "friend" });
   await stableCommand.execute(stub);
   const embed = embedOf(replies[0]);
@@ -126,14 +127,14 @@ test("/stable shows the full profile of the chosen member from stored records", 
 });
 
 test("/stable defaults to the caller", async () => {
-  recordHorseRecords(seed(FULL.slice(0, 3), { discordUserId: "caller" }));
+  recordTracked(seed(FULL.slice(0, 3), { discordUserId: "caller" }));
   const { stub, replies } = interaction();
   await stableCommand.execute(stub);
   assert.match(embedOf(replies[0]).description!, /^<@caller> · 共鉴定 \*\*3\*\* 局/);
 });
 
 test("a short history says the sample is too small instead of naming a strongest dimension", async () => {
-  recordHorseRecords(seed(FULL.slice(0, 2)));
+  recordTracked(seed(FULL.slice(0, 2)));
   const { stub, replies } = interaction({ target: "friend" });
   await stableCommand.execute(stub);
   assert.match(fieldText(replies[0], "强弱项")!, /每个维度至少要 3 局/);
@@ -143,7 +144,7 @@ test("a short history says the sample is too small instead of naming a strongest
 
 test("history stays visible after /unbind, with a note about erasing it", async () => {
   setMemberAccounts(GUILD, "friend", [{ puuid: "p2", gameName: "Friend", tagLine: "NA1" }]);
-  recordHorseRecords(seed(FULL.slice(0, 4)));
+  recordTracked(seed(FULL.slice(0, 4)));
   removeTrackedMember(GUILD, "friend");
   const { stub, replies } = interaction({ target: "friend" });
   await stableCommand.execute(stub);
@@ -152,7 +153,7 @@ test("history stays visible after /unbind, with a note about erasing it", async 
 });
 
 test("in real mode mock games never count, and the profile says where they went", async () => {
-  recordHorseRecords([...seed(FULL.slice(0, 3)), ...seed([["没有马", 0.1], ["没有马", 0.2]], { mock: true })]);
+  recordTracked([...seed(FULL.slice(0, 3)), ...seed([["没有马", 0.1], ["没有马", 0.2]], { mock: true })]);
   const { stub, replies } = interaction({ target: "friend" });
   await stableCommand.execute(stub);
   const embed = embedOf(replies[0]);
@@ -164,7 +165,7 @@ test("in real mode mock games never count, and the profile says where they went"
 
 test("in mock mode only mock games show, visibly labeled", async () => {
   process.env.RIOT_MODE = "mock";
-  recordHorseRecords([...seed(FULL.slice(0, 3)), ...seed([["没有马", 0.1], ["没有马", 0.2]], { mock: true })]);
+  recordTracked([...seed(FULL.slice(0, 3)), ...seed([["没有马", 0.1], ["没有马", 0.2]], { mock: true })]);
   const { stub, replies } = interaction({ target: "friend" });
   await stableCommand.execute(stub);
   const embed = embedOf(replies[0]);
@@ -178,7 +179,7 @@ test("in mock mode only mock games show, visibly labeled", async () => {
 test("in mock mode with only real games the profile is empty and says so", async () => {
   process.env.RIOT_MODE = "mock";
   setMemberAccounts(GUILD, "friend", [{ puuid: "p2", gameName: "Friend", tagLine: "NA1" }]);
-  recordHorseRecords(seed(FULL.slice(0, 3)));
+  recordTracked(seed(FULL.slice(0, 3)));
   const { stub, replies } = interaction({ target: "friend" });
   await stableCommand.execute(stub);
   assert.match(embedOf(replies[0]).description!, /还是空的/);
@@ -186,12 +187,12 @@ test("in mock mode with only real games the profile is empty and says so", async
 });
 
 test("the 军师 remark reads a hot streak and stays about play", async () => {
-  recordHorseRecords(seed([["没有马", 1], ["特等马", 9], ["特等马", 9], ["特等马", 9]]));
+  recordTracked(seed([["没有马", 1], ["特等马", 9], ["特等马", 9], ["特等马", 9]]));
   const { stub, replies } = interaction({ target: "friend" });
   await stableCommand.execute(stub);
   assert.match(fieldText(replies[0], "军师批注")!, /连着3局特等马/);
   const cold = interaction({ target: "friend" });
-  recordHorseRecords(seed([["没有马", 1], ["没有马", 1], ["没有马", 1]], { matchId: "NA1_COLD" }).map((record, index) => ({ ...record, matchId: `NA1_COLD_${index}`, playedAt: 1_900_000_000_000 + index * 1000 })));
+  recordTracked(seed([["没有马", 1], ["没有马", 1], ["没有马", 1]], { matchId: "NA1_COLD" }).map((record, index) => ({ ...record, matchId: `NA1_COLD_${index}`, playedAt: 1_900_000_000_000 + index * 1000 })));
   await stableCommand.execute(cold.stub);
   assert.match(fieldText(cold.replies[0], "军师批注")!, /连着3局没有马/);
 });
@@ -204,7 +205,7 @@ test("/stable refuses direct messages", async () => {
 });
 
 test("/stable-erase needs an administrator and erases nothing without one", async () => {
-  recordHorseRecords(seed(FULL.slice(0, 3)));
+  recordTracked(seed(FULL.slice(0, 3)));
   const { stub, replies } = interaction({ target: "friend", admin: false, confirm: true });
   await stableEraseCommand.execute(stub);
   assert.equal(replies[0].flags, MessageFlags.Ephemeral);
@@ -213,7 +214,7 @@ test("/stable-erase needs an administrator and erases nothing without one", asyn
 });
 
 test("/stable-erase counts first and erases only on confirmation", async () => {
-  recordHorseRecords([
+  recordTracked([
     ...seed(FULL.slice(0, 3)),
     ...seed(FULL.slice(0, 1), { mock: true }),
     ...seed(FULL.slice(0, 2), { discordUserId: "someone-else" }),
@@ -245,4 +246,64 @@ test("/stable-erase counts first and erases only on confirmation", async () => {
   const profile = interaction({ target: "friend" });
   await stableCommand.execute(profile.stub);
   assert.match(embedOf(profile.replies[0]).description!, /还是空的/);
+});
+
+test("a profile prints scores with the announcement's rounding", async () => {
+  recordTracked(seed([["没有马", 0.15], ["没有马", 0.15], ["没有马", 0.15]]));
+  const { stub, replies } = interaction({ target: "friend" });
+  await stableCommand.execute(stub);
+  assert.match(embedOf(replies[0]).description!, /平均 \*\*0\.2\*\* 分/);
+  assert.match(fieldText(replies[0], "最近 3 局")!, /· 0\.2 分 ·/);
+});
+
+test("the rate remark never says 你 on someone else's profile", async () => {
+  const rows = seed([["没有马", 1], ["没有马", 1], ["没有马", 1], ["上等马", 7], ["上等马", 7]], { discordUserId: "caller" });
+  recordTracked(rows.map((record, index) => ({ ...record, playedAt: 1_800_000_000_000 + index * 1000 })));
+  const mine = interaction({ userId: "caller" });
+  await stableCommand.execute(mine.stub);
+  const others = interaction({ userId: "viewer", target: "caller" });
+  await stableCommand.execute(others.stub);
+  assert.match(fieldText(mine.replies[0], "军师批注")!, /没有马率60%/);
+  assert.match(fieldText(others.replies[0], "军师批注")!, /没有马率60%/);
+  assert.ok(!fieldText(others.replies[0], "军师批注")!.includes("你"));
+});
+
+test("the streak remark names someone else but speaks to the member", async () => {
+  recordTracked(seed([["特等马", 9], ["没有马", 1], ["没有马", 1], ["没有马", 1]], { discordUserId: "caller" }));
+  const mine = interaction({ userId: "caller" });
+  await stableCommand.execute(mine.stub);
+  const others = interaction({ userId: "viewer", target: "caller" });
+  await stableCommand.execute(others.stub);
+  assert.match(fieldText(mine.replies[0], "军师批注")!, /军师替你捏了一把汗/);
+  assert.match(fieldText(others.replies[0], "军师批注")!, /军师替<@caller>捏了一把汗/);
+  assert.ok(!fieldText(others.replies[0], "军师批注")!.includes("你"));
+});
+
+test("常年垫底 needs an average percentile of 0.3 or below, and a milder phrase fits up to 0.4", async () => {
+  const withEconomy = (economy: number) => seed(FULL, { dimensions: { ...DIMENSIONS, economy } });
+  recordTracked(withEconomy(0.3));
+  const bottom = interaction({ target: "friend" });
+  await stableCommand.execute(bottom.stub);
+  assert.match(fieldText(bottom.replies[0], "军师批注")!, /经济常年垫底/);
+  closeDatabase();
+  process.env.DATABASE_PATH = join(directory, "second.sqlite3");
+
+  recordTracked(withEconomy(0.35));
+  const middling = interaction({ target: "friend" });
+  await stableCommand.execute(middling.stub);
+  const remarkText = fieldText(middling.replies[0], "军师批注")!;
+  assert.match(remarkText, /经济是明显的短板/);
+  assert.ok(!remarkText.includes("常年垫底"));
+  closeDatabase();
+  process.env.DATABASE_PATH = join(directory, "third.sqlite3");
+
+  recordTracked(withEconomy(0.45).map((record) => ({ ...record, dimensions: { ...record.dimensions, damage: 0.9 } })));
+  const fine = interaction({ target: "friend" });
+  await stableCommand.execute(fine.stub);
+  const fineText = fieldText(fine.replies[0], "军师批注")!;
+  assert.ok(!fineText.includes("常年垫底") && !fineText.includes("短板"), fineText);
+});
+
+test("/stable-erase is hidden from non-administrators by default", () => {
+  assert.equal(stableEraseCommand.data.toJSON().default_member_permissions, String(PermissionFlagsBits.Administrator));
 });

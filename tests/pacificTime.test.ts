@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { pacificDay, pacificWeek } from "../src/utils/pacificTime";
+import { pacificDay, pacificMonth, pacificWeek } from "../src/utils/pacificTime";
 
 const utc = (iso: string) => Date.parse(iso);
 const hours = (range: { start: number; end: number }) => (range.end - range.start) / 3_600_000;
@@ -74,4 +74,42 @@ test("a week crossing a year boundary and a leap day still starts on a Monday", 
 test("a non-finite instant is rejected", () => {
   assert.throws(() => pacificDay(Number.NaN), RangeError);
   assert.throws(() => pacificWeek(Number.POSITIVE_INFINITY), RangeError);
+});
+
+test("a month runs from the 1st at 00:00 Pacific to the 1st of the next month", () => {
+  assert.deepEqual(pacificMonth(utc("2026-10-27T19:30:00Z")), { start: utc("2026-10-01T07:00:00Z"), end: utc("2026-11-01T07:00:00Z") });
+  assert.equal(hours(pacificMonth(utc("2026-10-27T19:30:00Z"))), 31 * 24);
+});
+
+test("the Pacific date, not the UTC date, picks the month", () => {
+  // 02:00 UTC on 1 November is still 31 October in Pacific time.
+  assert.equal(pacificMonth(utc("2026-11-01T02:00:00Z")).start, utc("2026-10-01T07:00:00Z"));
+  assert.equal(pacificMonth(utc("2026-11-01T07:00:00Z")).start, utc("2026-11-01T07:00:00Z"));
+  assert.equal(pacificMonth(utc("2026-11-01T06:59:59.999Z")).end, utc("2026-11-01T07:00:00Z"));
+});
+
+test("the month daylight saving ends has one extra hour", () => {
+  const month = pacificMonth(utc("2026-11-15T12:00:00Z"));
+  assert.deepEqual(month, { start: utc("2026-11-01T07:00:00Z"), end: utc("2026-12-01T08:00:00Z") });
+  assert.equal(hours(month), 30 * 24 + 1);
+});
+
+test("the month daylight saving starts has one hour fewer", () => {
+  const month = pacificMonth(utc("2026-03-20T12:00:00Z"));
+  assert.deepEqual(month, { start: utc("2026-03-01T08:00:00Z"), end: utc("2026-04-01T07:00:00Z") });
+  assert.equal(hours(month), 31 * 24 - 1);
+});
+
+test("a December month ends at the start of January and February honors leap years", () => {
+  assert.deepEqual(pacificMonth(utc("2026-12-31T20:00:00Z")), { start: utc("2026-12-01T08:00:00Z"), end: utc("2027-01-01T08:00:00Z") });
+  assert.equal(hours(pacificMonth(utc("2028-02-10T20:00:00Z"))), 29 * 24);
+  assert.equal(hours(pacificMonth(utc("2027-02-10T20:00:00Z"))), 28 * 24);
+});
+
+test("a month range is half open and contiguous with the next one", () => {
+  const month = pacificMonth(utc("2026-11-15T12:00:00Z"));
+  assert.deepEqual(pacificMonth(month.start), month);
+  assert.deepEqual(pacificMonth(month.end - 1), month);
+  assert.equal(pacificMonth(month.end).start, month.end);
+  assert.throws(() => pacificMonth(Number.NaN), RangeError);
 });

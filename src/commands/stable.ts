@@ -28,6 +28,7 @@ const stableCommand: BotCommand = {
     const embed = buildStableEmbed({
       mock,
       memberId,
+      self: memberId === interaction.user.id,
       tracked: getTrackedMember(guildId, memberId) !== undefined,
       profile: getMemberHorseProfile(guildId, memberId, mock),
       otherModeGames: mock ? counts.real : counts.mock,

@@ -79,6 +79,7 @@ export function parseMatchDetail(body: unknown, matchId: string): MatchDetail {
     metadata: { matchId, participants: participants.map((player) => player.puuid) },
     info: {
       queueId: riotNumber(info.queueId),
+      ...(typeof info.gameVersion === "string" && info.gameVersion.trim() ? { gameVersion: info.gameVersion.trim() } : {}),
       gameDuration: riotNumber(info.gameDuration),
       gameEndTimestamp: typeof info.gameEndTimestamp === "number" && info.gameEndTimestamp > 0 ? info.gameEndTimestamp : null,
       earlySurrender: info.participants.some((value) => riotObject(value).gameEndedInEarlySurrender === true),

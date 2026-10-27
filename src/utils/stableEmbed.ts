@@ -1,5 +1,6 @@
 import { EmbedBuilder } from "discord.js";
 import championNames from "../data/championNamesZh.json";
+import { formatScore } from "../services/announcementText";
 import { DIMENSION_LABELS, MIN_DIMENSION_GAMES, RECENT_FORM_GAMES } from "../services/horseProfile";
 import type { HorseProfile } from "../services/horseProfile";
 import { HORSE_TIERS } from "../services/horseRanking";
@@ -12,6 +13,8 @@ export interface StableView {
   /** Whether the bot is running on mock data; the profile then holds mock records only. */
   mock: boolean;
   memberId: string;
+  /** Whether the person looking at the profile is the member, so the remark can say 你 instead of naming them. */
+  self: boolean;
   /** Whether the member is still tracked. History outlives /unbind but no new games are added. */
   tracked: boolean;
   profile: HorseProfile;
@@ -19,6 +22,13 @@ export interface StableView {
   otherModeGames: number;
 }
 
+/** A weakest dimension at or below this average percentile is called 常年垫底; up to the soft bar it is only a weak spot. */
+const WEAK_AVERAGE = 0.3;
+const SOFT_WEAK_AVERAGE = 0.4;
+const STRONG_AVERAGE = 0.7;
+const SOFT_STRONG_AVERAGE = 0.6;
+/** Averages are sums of fractions, so 0.3 can arrive as 0.30000000000000004. */
+const EPSILON = 1e-9;
 const percent = (value: number) => `${Math.round(value * 100)}%`;
 const timestamp = (milliseconds: number) => `<t:${Math.floor(milliseconds / 1000)}:R>`;
 
@@ -38,20 +48,30 @@ function pick<T>(options: readonly T[], seed: string): T {
 function remark(view: StableView): string {
   const { profile } = view;
   const seed = `${view.memberId}:${profile.games}`;
+  // Someone else's profile names them, because 你 would point at the viewer.
+  const who = view.self ? "你" : `<@${view.memberId}>`;
   const top = profile.tiers["特等马"];
   const none = profile.tiers["没有马"];
   if (profile.games < 3) return pick(["才鉴定了几局，军师还看不出这匹马的成色，多打几把再来。", "样本太少，军师的羽扇还没摇起来。"], seed);
   if (profile.streaks.none.current >= 3) {
-    return `已经连着${profile.streaks.none.current}局没有马了，军师替你捏了一把汗，下把稳着点。`;
+    return `已经连着${profile.streaks.none.current}局没有马了，军师替${who}捏了一把汗，下把稳着点。`;
   }
   if (profile.streaks.top.current >= 3) return `连着${profile.streaks.top.current}局特等马，军师的缰绳都快牵不住了。`;
   if (none.count >= 2 && none.rate >= 0.3) {
-    const weakest = profile.weakest && profile.weakest.average <= 0.4 ? `${DIMENSION_LABELS[profile.weakest.dimension]}常年垫底，` : "";
-    return `没有马率${percent(none.rate)}，${weakest}${pick(["军师建议先去训练模式，跟木桩谈谈心。", "罚你今晚抄写孙子兵法一遍。"], seed)}`;
+    // 常年垫底 is for a dimension that really is at the bottom of the field; a middling one is only a weak spot.
+    const weakest = profile.weakest && profile.weakest.average <= WEAK_AVERAGE + EPSILON
+      ? `${DIMENSION_LABELS[profile.weakest.dimension]}常年垫底，`
+      : profile.weakest && profile.weakest.average <= SOFT_WEAK_AVERAGE + EPSILON ? `${DIMENSION_LABELS[profile.weakest.dimension]}是明显的短板，` : "";
+    return `没有马率${percent(none.rate)}，${weakest}${pick([
+      "军师建议先去训练模式，跟木桩谈谈心。",
+      `罚${who}今晚抄写孙子兵法一遍。`,
+    ], seed)}`;
   }
   if (top.count >= 2 && top.rate >= 0.3) {
-    const strongest = profile.strongest && profile.strongest.average >= 0.6 ? `${DIMENSION_LABELS[profile.strongest.dimension]}是看家本领，` : "";
-    return `特等马率${percent(top.rate)}，${strongest}${pick(["马厩里的头牌非你莫属。", "别的马见了都得让道。"], seed)}`;
+    const strongest = profile.strongest && profile.strongest.average >= STRONG_AVERAGE - EPSILON
+      ? `${DIMENSION_LABELS[profile.strongest.dimension]}是看家本领，`
+      : profile.strongest && profile.strongest.average >= SOFT_STRONG_AVERAGE - EPSILON ? `${DIMENSION_LABELS[profile.strongest.dimension]}是强项，` : "";
+    return `特等马率${percent(top.rate)}，${strongest}${pick(["马厩里的头牌非此马莫属。", "别的马见了都得让道。"], seed)}`;
   }
   return pick(["不上不下，稳稳当当，是马厩里的中流砥柱。", "有高光也有翻车，军师继续观察。"], seed);
 }
@@ -61,7 +81,7 @@ function gameLine(record: HorseRecord): string {
     `${TIER_ICONS[record.tier]} ${record.tier}`,
     championLabel(record),
     `${record.kills}/${record.deaths}/${record.assists}`,
-    `${record.score.toFixed(1)} 分`,
+    `${formatScore(record.score)} 分`,
     record.won ? "✅ 胜" : "❌ 负",
     timestamp(record.playedAt),
   ].join(" · ");
@@ -99,7 +119,7 @@ export function buildStableEmbed(view: StableView): EmbedBuilder {
 
   const losses = profile.games - profile.wins;
   embed.setDescription([
-    `<@${view.memberId}> · 共鉴定 **${profile.games}** 局 · ${profile.wins} 胜 ${losses} 负 · 平均 **${profile.averageScore!.toFixed(1)}** 分`,
+    `<@${view.memberId}> · 共鉴定 **${profile.games}** 局 · ${profile.wins} 胜 ${losses} 负 · 平均 **${formatScore(profile.averageScore!)}** 分`,
     ...notes,
   ].join("\n"));
   embed.addFields(
