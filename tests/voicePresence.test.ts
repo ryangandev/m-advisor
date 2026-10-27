@@ -5,6 +5,7 @@ import type { TrackedMember } from "../src/types";
 import { GameMonitor } from "../src/services/gameMonitor";
 import { MonitorLifecycle } from "../src/services/monitorLifecycle";
 import { closeDatabase } from "../src/store/database";
+import { testMatch } from "./helpers/matches";
 
 const monitors: GameMonitor[] = [];
 let originalDatabasePath: string | undefined;
@@ -49,7 +50,12 @@ function presence(guildId: string) {
   const client = { guilds: { cache: new Map([[guildId, guild]]) } } as unknown as Client;
   const monitor = new GameMonitor({
     latest: async (puuid) => { lookups.push(puuid); return "historical-match"; },
-    detail: async () => { throw new Error("No match should be announced in presence tests."); },
+    // Every lookup returns the same old match, so joining members only ever take a baseline.
+    detail: async (matchId) => {
+      const detail = testMatch(matchId, ["alice", "bob"]);
+      detail.info.gameEndTimestamp = Date.now() - 3_600_000;
+      return detail;
+    },
     members: () => members,
     resolveChannel: (_client, _guildId, userId) => {
       const channelId = location.get(userId);
