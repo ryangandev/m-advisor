@@ -6,11 +6,10 @@ Move an item out of this list when work on it starts.
 
 ## Parity with other League bots
 
-### Rank and LP changes
+### Weekly LP in the 马报
 
-Show the LP gained or lost and the current tier in each ranked report, and announce promotions and demotions separately.
-Take a league-v4 snapshot of the tracked account before and after each ranked game; match-v5 does not report LP.
-Dorans-bot and LP tracker already offer this, so it is expected by players who use those bots.
+The weekly 马报 could add each member's net LP for the week from the stored `rank_results` rows.
+It needs a few weeks of real rows first, so the line can be checked against what players saw in game.
 
 ### More queues and regions
 
