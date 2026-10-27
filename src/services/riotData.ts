@@ -70,13 +70,19 @@ const mockMatches = new Map<string, RawMatch>();
 const mockTimelineMissing = new Set<string>();
 let mockSequence = 0;
 let mockEpoch = 0;
+/**
+ * How long before its creation a mock account's history match ended. The fixture is created on the first lookup,
+ * which can come after the member joined voice, so ending it "now" would make it look like a game that ended
+ * after the join and announce it.
+ */
+const MOCK_BASELINE_AGE_MS = 24 * 3_600_000;
 
 function rememberProfile(profile: MockProfile): MockProfile {
   const existing = mockProfiles.get(profile.account.puuid);
   if (existing) return existing;
   mockProfiles.set(profile.account.puuid, profile);
   const matchId = `MOCK_${profile.account.puuid}_${mockEpoch}_BASELINE`;
-  mockMatches.set(matchId, buildMockMatch(profile, matchId, profile.outcome));
+  mockMatches.set(matchId, buildMockMatch(profile, matchId, profile.outcome, Date.now() - MOCK_BASELINE_AGE_MS));
   if (profile.timelineMissing) mockTimelineMissing.add(matchId);
   mockHistory.set(profile.account.puuid, [matchId]);
   return profile;
