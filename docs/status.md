@@ -89,8 +89,10 @@ This is the first real-mode end-to-end acceptance; `/recent` has still not been 
 ## Streamed speech delivery
 
 On 2026-10-27 announcements began playing after their first sentence instead of after the whole report.
-On a warm worker the mock win report's first audio arrived after 1.79 seconds instead of 24.53, and the whole announcement took 84.39 seconds instead of 96.30; see [Local voice](local-voice.md#sentence-chunk-latency).
-`npm run verify:local` passed with real Qwen speech in 14 chunks and simulated Discord transport.
+On a warm worker the mock win report's first audio arrived after 2.89 seconds instead of 24.92, and the whole announcement took 85.49 seconds instead of 96.71; see [Local voice](local-voice.md#sentence-chunk-latency).
+Playback starts once two chunks are ready, a failed chunk is retried once, and one 360 second deadline bounds each announcement.
+A later chunk that fails on every attempt is still heard as a partial report on each poll until the monitor caps attempts per match.
+`npm run verify:local` passed with real Qwen speech in 14 chunks and simulated Discord transport, before the two-chunk join and retry were added.
 Live Discord playback and human listening of the chunked delivery are pending.
 
 ## User-only blockers

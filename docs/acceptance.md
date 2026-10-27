@@ -37,6 +37,7 @@ On 2026-10-02 the earlier short KDA commentary passed with a 210,928-byte Opus o
 On 2026-10-03 the 271-character five-horse report passed with 52.6 seconds of audio, a 515,836-byte Opus output, 28.48 seconds of speech generation including worker startup and 29.13 seconds total execution.
 On 2026-10-27 the 271-character loss report passed as 14 sentence chunks with 76.84 seconds of stitched audio and a 747,023-byte Opus output.
 The first chunk was ready 5.19 seconds after the announcement started, including worker startup, and all chunks took 26.25 seconds to generate.
+That run predates the follow-up chunking rules, two-chunk join, inline chunk retry and announcement deadline.
 These timings are observations on this Mac and depend on model startup, available memory and workload.
 This check does not establish a Discord connection or prove that another participant heard the audio.
 

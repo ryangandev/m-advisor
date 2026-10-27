@@ -36,22 +36,30 @@ Each worker request is limited to 1000 characters and 2048 model tokens to bound
 ## Sentence chunks
 
 Announcements are split into sentence chunks so playback can start before the whole report is generated.
-`src/utils/speechChunks.ts` ends a sentence at `。！？；…`, their ASCII forms `!?;` and line breaks, keeping any closing quotes or brackets.
+`src/utils/speechChunks.ts` ends a sentence at `。！？；…` and line breaks, keeping any closing quotes or brackets and the whitespace after them.
+The ASCII marks `!?;` end a sentence only before whitespace or the end of the text, so a name such as `Faker!Fan` stays inside its sentence.
 ASCII full stops are never boundaries, so scores such as `9.9分` stay intact.
 A sentence shorter than 10 characters joins the next one, and a short final sentence joins the chunk before it.
 This keeps fragments such as `模拟战报。` out of their own request, and the first chunk long enough to cover the next chunk's generation.
-A sentence longer than 80 characters is split after clause marks such as `，`, and only then at 80 characters.
-Joining the chunks gives back the original text apart from whitespace at chunk edges.
+A sentence longer than 80 characters is split after clause marks such as `，`, and only then by a hard cut near 80 characters.
+The hard cut moves back to the last position that does not divide a Latin word or a number such as `9.9` or `1,000`.
+A number or word longer than the limit stays whole, and a fragment shorter than the minimum still joins its neighbour, so a chunk can exceed 80 characters in those two cases.
+Separators and whitespace stay with the chunk before them, so joining the chunks gives back the trimmed text exactly.
 
 Every chunk is an ordinary worker request with the announcement's speaker, the same style instruction and the same fixed seed, so the delivery stays consistent from sentence to sentence.
 An announcement requests its chunks strictly in order and one at a time, without waiting for playback.
 It therefore holds a single place in the worker queue, and announcements from different servers interleave chunk by chunk.
+Two servers speaking at once therefore share the worker chunk by chunk, which roughly halves each announcement's generation margin, so pauses between sentences can appear when the worker is slow.
 Each request has its own `LOCAL_TTS_TIMEOUT_MS` deadline from the moment it is queued.
+
+`generateTTS(text, style, signal?)` accepts an abort signal.
+Aborting a queued request removes it before it reaches the worker.
+Aborting the active request rejects its caller at once; the worker finishes that request with its model still loaded, and the late audio is deleted instead of returned.
 See [Announcements](announcements.md#shared-voice-queue) for how chunks are played, cancelled and cleaned up.
 
 ## Lifecycle and playback
 
-`generateTTS(text, style)` returns the absolute path to a unique mono, 24 kHz, 16-bit PCM WAV.
+`generateTTS(text, style, signal?)` returns the absolute path to a unique mono, 24 kHz, 16-bit PCM WAV.
 The playback caller removes that file after playback, including when playback fails.
 `shutdownTTS()` stops the Python worker, rejects pending requests and removes remaining temporary files.
 Shutdown is idempotent.
@@ -75,7 +83,7 @@ Worker diagnostics are not printed to bot logs.
 node --import tsx --test tests/tts-local.test.ts tests/tts.test.ts
 ```
 
-The fake worker tests cover process reuse, serialized requests, both voices, queue limits, generation errors, crash recovery, deadline recovery, immediate startup retries, configuration repair, startup and shutdown, malformed responses, invalid audio, canonical paths, partial-file cleanup and credential isolation.
+The fake worker tests cover process reuse, serialized requests, both voices, queue limits, request cancellation, generation errors, crash recovery, deadline recovery, immediate startup retries, configuration repair, startup and shutdown, malformed responses, invalid audio, canonical paths, partial-file cleanup and credential isolation.
 `tests/lifecycle.test.ts` verifies that speech finishing after shutdown begins is deleted and never played.
 These tests do not load model weights or call any external speech service.
 
@@ -101,20 +109,22 @@ These measurements validate local speech generation; they do not establish inter
 
 ### Sentence-chunk latency
 
-On 2026-10-27 the 284-character Uncle_Fu mock win report was timed on one warm worker, first as one request and then as sentence chunks.
+On 2026-10-27 the 284-character Uncle_Fu mock win report was timed on one warm worker, first as one request and then as 14 sentence chunks.
 Both runs used the real announcement queue, FFmpeg decoding, Opus encoder and `@discordjs/voice` audio player, with a local stand-in for the Discord voice connection.
 Times are measured from the start of the announcement to the first non-silent Opus packet and to the end of playback.
+The chunked run waits for the first two chunks before joining and decodes the first chunk before joining.
 
 | Measurement | One request | Sentence chunks |
 | --- | --- | --- |
 | Requests | 1 | 14 |
-| First audible audio | 24.53 seconds | 1.79 seconds |
-| Total generation | 23.95 seconds | 23.66 seconds |
+| First audible audio | 24.92 seconds | 2.89 seconds |
+| Total generation | 24.36 seconds | 21.45 seconds |
 | Audio played | 72.16 seconds | 82.52 seconds |
-| Announcement total | 96.30 seconds | 84.39 seconds |
+| Announcement total | 96.71 seconds | 85.49 seconds |
 | Player silence while waiting for a chunk | 0 seconds | 0 seconds |
 
-Every chunk was generated before the previous one finished playing; the slowest took 2.46 seconds.
+The first two chunks took 1.59 and 1.26 seconds; every later chunk was generated before the previous one finished playing, and the slowest took 2.24 seconds.
+An earlier run the same day that joined after the first chunk alone heard audio after 1.79 seconds, so the two-chunk gate costs about one chunk's generation time.
 Pauses between sentences measured 450 to 650 milliseconds in both versions.
 The chunked report is longer because sentences generated on their own were spoken at a slightly slower pace.
 The same day the model generated speech about three times faster than real time, faster than the 55.3 seconds for 74.8 seconds of audio measured on 2026-10-03, so generation speed varies with machine load.
