@@ -40,7 +40,8 @@ Remakes, games stopped without a result and games shorter than 10 minutes are no
 
 ## Recording a match
 
-The monitor records a match once its text report has been posted, before the voice plays (see [Announcements](announcements.md#text-first-timeline-and-马厩-records)):
+The monitor records a match once its text report has been posted, before the voice plays.
+When the text cannot be posted, for example without Send Messages, it records the match after the voice plays instead (see [Announcements](announcements.md#text-first-timeline-and-马厩-records)):
 
 ```ts
 import { buildHorseRecords } from "./horseRecords";

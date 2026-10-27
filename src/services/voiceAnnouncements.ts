@@ -20,6 +20,14 @@ export class AnnouncementCancelledError extends Error {
   }
 }
 
+/** The server already has as many announcements waiting as the queue allows; nothing was attempted. */
+export class AnnouncementQueueFullError extends Error {
+  constructor() {
+    super("This server's voice announcement queue is full. Try again shortly.");
+    this.name = "AnnouncementQueueFullError";
+  }
+}
+
 export interface VoiceAnnouncementDependencies {
   /** Generates one chunk of speech and returns its audio file; an aborted signal should cancel the request. */
   generate: (text: string, style: VoiceStyle, signal: AbortSignal) => Promise<string>;
@@ -134,7 +142,7 @@ export class VoiceAnnouncementService {
     signal?: AbortSignal,
   ): Promise<VoiceChannel> {
     if ((this.depths.get(guildId) ?? 0) >= this.queueLimit) {
-      return Promise.reject(new Error("This server's voice announcement queue is full. Try again shortly."));
+      return Promise.reject(new AnnouncementQueueFullError());
     }
     this.depths.set(guildId, (this.depths.get(guildId) ?? 0) + 1);
     const previous = this.queues.get(guildId) ?? Promise.resolve();

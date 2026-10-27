@@ -3,7 +3,7 @@ import { afterEach, beforeEach, test } from "node:test";
 import { VoiceChannel, type Client, type MessageCreateOptions } from "discord.js";
 import type { MatchDetail, TrackedMember } from "../src/types";
 import { GameMonitor, MAX_VOICE_ATTEMPTS, resolveMonitoredVoiceChannel, type MonitorDependencies } from "../src/services/gameMonitor";
-import { VoiceAnnouncementService, type VoiceAnnouncementDependencies } from "../src/services/voiceAnnouncements";
+import { AnnouncementQueueFullError, VoiceAnnouncementService, type VoiceAnnouncementDependencies } from "../src/services/voiceAnnouncements";
 import { resetMockData, RiotApiError, simulateMockMatch } from "../src/services/riotData";
 import { buildMatchAnnouncement } from "../src/services/announcementText";
 import { buildHorseRecords } from "../src/services/horseRecords";
@@ -276,7 +276,7 @@ test("tracked defeat remains defeat even when the enemy has the highest KDA", as
   assert.deepEqual(bot.messages[0].allowedMentions, { parse: [], roles: [], users: ["member-1"], repliedUser: false });
 });
 
-test("a malformed match cannot produce speech or consume the pending match", async () => {
+test(`a malformed match cannot produce speech, and it is consumed after ${MAX_VOICE_ATTEMPTS} failed attempts`, async () => {
   const bot = harness("invalid-match-guild");
   await bot.start();
   bot.latestIds.set("tracked", "invalid-match");
@@ -286,9 +286,18 @@ test("a malformed match cannot produce speech or consume the pending match", asy
     match.info.participants[0].kills = Number.NaN;
     return match;
   };
+  for (let poll = 1; poll < MAX_VOICE_ATTEMPTS; poll++) {
+    assert.deepEqual(await bot.poll(), { announced: 0, errors: 1 });
+    assert.equal(getLastMatchId(bot.guildId, "tracked"), "historical-match", "the match stays pending before the cap");
+  }
   assert.deepEqual(await bot.poll(), { announced: 0, errors: 1 });
+  assert.equal(getLastMatchId(bot.guildId, "tracked"), "invalid-match");
+  assert.deepEqual(bot.infos.filter((message) => message.startsWith("Gave up")), [
+    `Gave up on the voice report of match invalid-match after ${MAX_VOICE_ATTEMPTS} failed attempts; its text report was not posted, and it is not retried.`,
+  ]);
+  assert.deepEqual(await bot.poll(), { announced: 0, errors: 0 });
   assert.deepEqual(bot.generated, []);
-  assert.equal(getLastMatchId(bot.guildId, "tracked"), "historical-match");
+  assert.deepEqual(bot.sent, []);
 });
 
 test("failed TTS leaves a pending match eligible for retry", async () => {
@@ -1312,6 +1321,81 @@ test("cancelled voice attempts do not count toward the cap", async () => {
   bot.generate = async () => "finally.wav";
   assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
   assert.equal(bot.sent.length, 1);
+});
+
+test("a full voice queue does not count toward the cap", async () => {
+  const bot = harness("cap-queue-full-guild");
+  await bot.start();
+  bot.latestIds.set("tracked", "queued-match");
+  const announce = bot.dependencies.announce;
+  bot.dependencies.announce = async () => { throw new AnnouncementQueueFullError(); };
+  for (let poll = 0; poll <= MAX_VOICE_ATTEMPTS; poll++) assert.deepEqual(await bot.poll(), { announced: 0, errors: 1 });
+  assert.equal(getLastMatchId(bot.guildId, "tracked"), "historical-match");
+  assert.ok(!bot.infos.some((message) => message.startsWith("Gave up")));
+  bot.dependencies.announce = announce;
+  assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
+  assert.equal(bot.sent.length, 1);
+});
+
+test("a retry keeps the earlier speaker while they are still in a usable channel", async () => {
+  const bot = harness("sticky-speaker-guild", [
+    { id: "alice-id", puuids: ["alice"], channel: "x" },
+    { id: "bob-id", puuids: ["bob"], channel: "x" },
+  ]);
+  await bot.start();
+  bot.matches.set("duo-match", match("duo-match", ["alice", "bob"]));
+  bot.latestIds.set("alice", "duo-match");
+  bot.latestIds.set("bob", "duo-match");
+  const texts: string[] = [];
+  let attempts = 0;
+  bot.generate = async (text) => {
+    texts.push(text);
+    if (++attempts <= 2) throw new Error("Fake speech failure");
+    return "retry.wav";
+  };
+  assert.deepEqual(await bot.poll(), { announced: 0, errors: 1 });
+  assert.match(texts[0], /alice这局/);
+  assert.match(JSON.stringify(bot.messages[0].embeds), /alice/);
+  // The report stays in x on a one-to-one tie, where only Bob is now; Alice can still hear it from y.
+  bot.move("alice-id", "y");
+  bot.sync();
+  assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
+  assert.deepEqual(bot.played, ["x"]);
+  assert.match(texts.at(-1)!, /alice这局/, "the retry speaks for the same player as the posted text");
+  assert.equal(bot.sent.length, 1);
+});
+
+test("without Send Messages the voice still plays and the 马厩 records are written after it", async () => {
+  const bot = harness("no-send-guild");
+  setMemberAccounts(bot.guildId, "member-1", [{ puuid: "tracked", gameName: "tracked", tagLine: "NA1" }]);
+  bot.dependencies.record = recordHorseRecords;
+  bot.channel("first-channel").send = async () => { throw new Error("Missing Permissions"); };
+  await bot.start();
+  bot.latestIds.set("tracked", "silent-text-match");
+  assert.deepEqual(await bot.poll(), { announced: 1, errors: 1 });
+  assert.deepEqual(bot.played, ["first-channel"]);
+  const stored = listMatchHorseRecords(bot.guildId, "silent-text-match", true);
+  assert.equal(stored.length, 1);
+  assert.equal(stored[0].discordUserId, "member-1");
+  assert.ok(bot.infos.includes("Saved 1 马厩 record for match silent-text-match."));
+});
+
+test("stopping the session ends a stuck timeline wait at once without a fallback report", async () => {
+  const bot = harness("timeline-stop-guild");
+  await bot.start();
+  bot.dependencies.timelineWaitMs = 60_000;
+  const requested = deferred<void>();
+  bot.dependencies.events = () => { requested.resolve(); return new Promise(() => {}); };
+  bot.latestIds.set("tracked", "stuck-timeline");
+  const poll = bot.poll();
+  await requested.promise;
+  const stoppedAt = Date.now();
+  bot.monitor.stop(bot.guildId);
+  assert.deepEqual(await poll, { announced: 0, errors: 0 });
+  assert.ok(Date.now() - stoppedAt < 1_000, "the poll returned without waiting for the timeline");
+  assert.ok(!bot.infos.some((message) => message.startsWith("Timeline for match")));
+  assert.deepEqual(bot.sent, []);
+  assert.deepEqual(bot.generated, []);
 });
 
 test("after a restart, a member with a saved mock binding who joins a running mock session hears nothing", async () => {
