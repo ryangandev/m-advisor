@@ -1,0 +1,63 @@
+---
+title: 策马军师
+description: 策马军师（M-Advisor）是 Discord 里的 LoL 军师：开黑打完一局，用中文语音和文字把队友排成特等马到没有马。
+template: splash
+hero:
+  tagline: 开黑打完一局，军师羽扇一挥，把五位队友排成特等马、上等马、中等马、下等马和没有马，再用中文语音念给全频道听。
+  image:
+    file: ../../assets/logo.svg
+    alt: 策马军师头像
+  actions:
+    - text: 快速开始
+      link: /quick-start/
+      icon: right-arrow
+    - text: 命令一览
+      link: /commands/
+      variant: minimal
+---
+
+import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+## 军师能做什么
+
+<CardGrid stagger>
+  <Card title="终局播报" icon="star">
+    一局打完，先发一张马匹排行的文字卡片，再用语音播报，还会点出一两个关键时刻。
+    [看终局播报](/features/game-end/)
+  </Card>
+  <Card title="军师赛前锦囊" icon="rocket">
+    游戏还在载入界面，军师就根据队友的马厩战绩给出锦囊，打完还会回顾这一卦准不准。
+    [看赛前锦囊](/features/pregame/)
+  </Card>
+  <Card title="车队内战" icon="random">
+    同队开黑的朋友不止一位时，单独给你们几位排个名，选出车队 MVP 和本局背锅。
+    [看车队内战](/features/party/)
+  </Card>
+  <Card title="马厩" icon="open-book">
+    每一局的结果都会记进马厩，用 `/stable` 看特等马率、没有马次数、强弱项和近况。
+    [看马厩](/features/stable/)
+  </Card>
+  <Card title="/why 判决书" icon="document">
+    不服这局的判定？`/why` 会画出雷达图，讲清楚哪里拖了后腿，你也可以上诉。
+    [看判决书](/features/why/)
+  </Card>
+  <Card title="马报" icon="pencil">
+    每天和每周自动发一份榜单，谁是特等马，谁是没有马，一目了然。
+    [看马报](/features/ma-bao/)
+  </Card>
+</CardGrid>
+
+## 从哪里开始
+
+<CardGrid>
+  <LinkCard title="快速开始" description="管理员绑定你的账号，你进语音开黑，剩下的交给军师。" href="/quick-start/" />
+  <LinkCard title="评分规则" description="特等马到没有马是怎么排出来的，为什么辅助也有机会拿特等马。" href="/scoring/" />
+  <LinkCard title="隐私与公平" description="谁会被记录，谁不会被评分，数据存在哪里。" href="/privacy/" />
+  <LinkCard title="常见问题" description="为什么没有播报，战报要等多久，怎么关掉赛前语音。" href="/faq/" />
+</CardGrid>
+
+## 先说清楚三件事
+
+- 目前只有中文输出。
+- 目前只支持北美服（NA）的账号。
+- 机器人跑在管理员自己的电脑上，那台电脑开着、机器人在运行的时候，军师才在岗。
