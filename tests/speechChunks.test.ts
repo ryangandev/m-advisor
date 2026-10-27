@@ -51,8 +51,37 @@ test("long sentences split at clause marks and then at the hard limit", () => {
   assert.deepEqual(splitSpeech(unbroken).map((chunk) => chunk.length), [80, 80, 40]);
 });
 
-test("whitespace and line breaks are trimmed at chunk boundaries", () => {
-  assert.deepEqual(splitSpeech("  第一行的内容都写在这里\n第二行的内容在这里。\n"), ["第一行的内容都写在这里", "第二行的内容在这里。"]);
+test("separators stay with the chunk before them and only the whole text is trimmed", () => {
+  const text = "  第一行的内容都写在这里\n第二行的内容在这里。 第三句话也写得足够长了。\n";
+  const chunks = splitSpeech(text);
+  assert.deepEqual(chunks, ["第一行的内容都写在这里\n", "第二行的内容在这里。 ", "第三句话也写得足够长了。"]);
+  assert.equal(chunks.join(""), text.trim());
+});
+
+test("ASCII end marks end a sentence only before whitespace or the end of the text", () => {
+  // A name containing "!" stays inside its sentence.
+  assert.deepEqual(splitSpeech("特等马，Faker!Fan，9.9分。上等马，李青，模拟队友二，8.5分。"),
+    ["特等马，Faker!Fan，9.9分。", "上等马，李青，模拟队友二，8.5分。"]);
+  // "?" before a space ends a sentence and keeps its space; a short one still joins the next sentence.
+  assert.deepEqual(splitSpeech("Hi? There"), ["Hi? There"]);
+  assert.deepEqual(splitSpeech("第一句话说得够长了吧? 第二句话也说得够长了吧"), ["第一句话说得够长了吧? ", "第二句话也说得够长了吧"]);
+  assert.deepEqual(splitSpeech("参团率百分之94;峡谷110都没你出警快!"), ["参团率百分之94;峡谷110都没你出警快!"]);
+});
+
+test("a hard cut never divides a number or a Latin word", () => {
+  const digits = "1234567890".repeat(3);
+  const sentence = `${"长".repeat(70)}${digits}${"长".repeat(30)}`;
+  const chunks = splitSpeech(sentence);
+  assert.equal(chunks.join(""), sentence);
+  assert.ok(chunks.some((chunk) => chunk.includes(digits)), "the digit run stays in one chunk");
+  assert.equal(chunks[0], "长".repeat(70), "the cut moves back before the number");
+  // A number longer than the limit stays whole rather than being divided.
+  const long = "9".repeat(120);
+  assert.deepEqual(splitSpeech(`得分${long}分`), [`得分${long}分`]);
+  const decimal = `${"长".repeat(78)}9.9分${"长".repeat(20)}`;
+  assert.ok(splitSpeech(decimal).some((chunk) => chunk.includes("9.9分")), "a decimal stays whole");
+  const words = `${"长".repeat(76)}MockWin${"长".repeat(20)}`;
+  assert.ok(splitSpeech(words).some((chunk) => chunk.includes("MockWin")), "a Latin word stays whole");
 });
 
 test("empty and oversized speech is rejected before any request", () => {
