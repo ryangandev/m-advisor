@@ -106,9 +106,48 @@ Days are 23 or 25 hours and weeks 167 or 169 hours when daylight saving changes,
 `pacificMonth(instant)` gives the calendar month the same way.
 `listMatchHorseRecords(guildId, matchId, mock)` returns every tracked member's record for one match, grouped by `team_id` and best first within a team, for ranking the friends against each other.
 
+## 军师赛前锦囊
+
+The 锦囊 turns our own teammates' 马厩 history into a short spoken line and a text card for a game that is about to start.
+`buildPregameBrief` in `src/services/pregameBrief.ts` is pure and `buildPregameEmbed` in `src/utils/pregameEmbed.ts` draws the card.
+Detecting the start of a game and posting the card are a separate step that is not part of this builder.
+
+### What it says
+
+It reads the bound members on the perspective team and nothing else: `{ memberId, name, championId, smite, records }` for each, plus a count of the other players on that team and whether a bound member is playing on the other side.
+For each teammate it uses the latest 10 records of the current data mode and shows:
+
+- the last 5 tiers, newest first, and their average score;
+- the last 5 against the 5 before with an arrow, only when both sides have at least 3 games, where a difference of 1.0 or more counts as up or down;
+- the record on the champion in the game when there are at least 2 games, and the likely position, which is 打野 with Smite and otherwise the most common position on that champion;
+- 🔥 for a run of at least 2 特等马 and 🥶 for a run of at least 2 没有马.
+
+军师之选 is the teammate with the highest last-5 average, plus up to 2 points for the share of 特等马 on this champion once there are at least 3 games on it.
+Ties go to the earlier bound member.
+军师指令 aims at the strongest negative signal in the team, in this order: a champion that ended as 没有马 in at least 2 games and 30% of at least 3, then the longest cold run, then the biggest fall in form.
+Without a negative signal it is a playful order to the pick.
+The wording is fixed phrases about play, chosen with `seededChooser` seeded by `pregame:` and the game ID, so the same game always gets the same brief.
+
+The spoken line is at most two sentences and 75 characters, the mock label included, and starts with `模拟锦囊，` in mock mode.
+When it is too long the form phrase goes first, then the names are shortened step by step.
+Characters that would end a sentence are removed from names, so a name can never add a sentence.
+
+A team where nobody has a record yet is a cold start: the line begins with `马厩里还没有各位的底细，军师掐指一算……`, nobody is picked and the order is generic.
+A teammate without records next to rated ones is `新马` and stays unrated.
+
+### What it never says
+
+Enemies, strangers and a tracked member on the other team are never passed to the builder, so they are never named, rated or counted into a pick.
+Strangers appear only as `还有 N 位路人队友` in the footer, and the footer always says `对面不评`.
+A bound member on the other side is acknowledged by `对面也有自家人，军师两边不站`, without a name, a mention or a rating.
+The card shows bound teammates by `<@id>` mention, never by a Riot name, and the speech sanitizes names like the announcement does.
+Mock and real records are never mixed: the builder refuses a record whose kind differs from the brief, and mock cards carry `模拟数据 · 军师赛前锦囊` and the mock footer.
+`pregameAllowedMentions(userIds)` gives the `allowedMentions` for the message: no parse, no roles and only the members named.
+
 ## Verification
 
 `tests/horseRecordStore.test.ts` upgrades a literal version 2 file written by a separate process, checks the backup, the rollback of a failing step, idempotent writes, history surviving member removal, erasing, mock and real separation and range queries at Pacific day and week boundaries including daylight saving.
 `tests/horseRecordGuards.test.ts` covers the bound-members-only refusal, mock and real keys, team grouping and the commentary columns.
 `tests/pacificTime.test.ts` covers the day, week and month helpers.
 `tests/horseRecords.test.ts` covers record building, `tests/horseProfile.test.ts` the profile math, and `tests/stable.test.ts` the commands for an empty and a full profile.
+`tests/pregameBrief.test.ts` covers the 锦囊: what never leaks, the pick and the instruction, cold and partial cold starts, determinism per game, the mock label, the sentence and length limit with 32-character names, and refusing mixed records.
