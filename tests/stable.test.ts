@@ -320,12 +320,12 @@ test("/stable-erase counts and erases a member who has only LP results or appeal
   const dry = interaction({ target: "friend" });
   await stableEraseCommand.execute(dry.stub);
   assert.doesNotMatch(dry.replies[0].content!, /没有马厩档案/);
-  assert.match(dry.replies[0].content!, /0 局真实记录和 0 局模拟记录，以及1 个上诉案件和2 条段位记录.*confirm/);
+  assert.match(dry.replies[0].content!, /0 局真实记录和 0 局模拟记录，以及 1 个上诉案件和 2 条段位记录.*confirm/);
   assert.equal(listRankResults(GUILD, { mock: false, discordUserId: "friend" }).length, 1, "a dry run erases nothing");
 
   const real = interaction({ target: "friend", confirm: true });
   await stableEraseCommand.execute(real.stub);
-  assert.match(real.replies[0].content!, /已清除 <@friend> 的全部马厩档案（.*1 个上诉案件和2 条段位记录）/);
+  assert.match(real.replies[0].content!, /已清除 <@friend> 的全部马厩档案（.*1 个上诉案件和 2 条段位记录）/);
   assert.deepEqual(listRankResults(GUILD, { mock: false, discordUserId: "friend" }), []);
   assert.deepEqual(listRankResults(GUILD, { mock: true, discordUserId: "friend" }), []);
   assert.equal(isAppealClosed({ guildId: GUILD, discordUserId: "friend", matchId: "NA1_R", mock: false }), false);
@@ -339,7 +339,7 @@ test("/stable-erase counts and erases a member who has only LP results or appeal
   closeAppeal({ guildId: GUILD, discordUserId: "lonely", matchId: "NA1_A", mock: false });
   const lonely = interaction({ target: "lonely" });
   await stableEraseCommand.execute(lonely.stub);
-  assert.match(lonely.replies[0].content!, /以及1 个上诉案件。/);
+  assert.match(lonely.replies[0].content!, /以及 1 个上诉案件。/);
 });
 
 test("/stable-erase is hidden from non-administrators by default", () => {
