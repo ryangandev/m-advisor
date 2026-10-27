@@ -1,5 +1,5 @@
 import { setTimeout as delay } from "node:timers/promises";
-import { buildMockMatch, buildMockProfile } from "../fixtures/riotFixtures";
+import { buildMockMatch, buildMockProfile, buildMockTimeline } from "../fixtures/riotFixtures";
 import type { MockOutcome, MockProfile, RawMatch } from "../fixtures/riotFixtures";
 
 export type RiotMode = "mock" | "real";
@@ -66,6 +66,8 @@ function statusError(status: number, retryAfterMs?: number, simulated = false): 
 const mockProfiles = new Map<string, MockProfile>();
 const mockHistory = new Map<string, string[]>();
 const mockMatches = new Map<string, RawMatch>();
+/** Matches whose account simulates a missing timeline. */
+const mockTimelineMissing = new Set<string>();
 let mockSequence = 0;
 let mockEpoch = 0;
 
@@ -75,6 +77,7 @@ function rememberProfile(profile: MockProfile): MockProfile {
   mockProfiles.set(profile.account.puuid, profile);
   const matchId = `MOCK_${profile.account.puuid}_${mockEpoch}_BASELINE`;
   mockMatches.set(matchId, buildMockMatch(profile, matchId, profile.outcome));
+  if (profile.timelineMissing) mockTimelineMissing.add(matchId);
   mockHistory.set(profile.account.puuid, [matchId]);
   return profile;
 }
@@ -102,8 +105,12 @@ export function simulateMockMatch(puuid: string, outcome: MockOutcome): { matchI
   checkFixtureFailure(profile);
   const matchId = `MOCK_${puuid}_${mockEpoch}_${++mockSequence}`;
   mockMatches.set(matchId, buildMockMatch(profile, matchId, outcome));
+  if (profile.timelineMissing) mockTimelineMissing.add(matchId);
   const history = [matchId, ...(mockHistory.get(puuid) ?? [])];
-  for (const expiredId of history.slice(20)) mockMatches.delete(expiredId);
+  for (const expiredId of history.slice(20)) {
+    mockMatches.delete(expiredId);
+    mockTimelineMissing.delete(expiredId);
+  }
   mockHistory.set(puuid, history.slice(0, 20));
   return { matchId, outcome };
 }
@@ -112,6 +119,7 @@ export function resetMockData(): void {
   mockProfiles.clear();
   mockHistory.clear();
   mockMatches.clear();
+  mockTimelineMissing.clear();
   mockSequence = 0;
   mockEpoch++;
 }
@@ -142,6 +150,11 @@ function mockFetch<T>(url: string): T {
     const match = mockMatches.get(path[4]);
     if (!match) throw statusError(404, undefined, true);
     return structuredClone(match) as T;
+  }
+  if (path.slice(0, 4).join("/") === "lol/match/v5/matches" && path.length === 6 && path[5] === "timeline") {
+    const match = mockMatches.get(path[4]);
+    if (!match || mockTimelineMissing.has(path[4])) throw statusError(404, undefined, true);
+    return buildMockTimeline(match) as T;
   }
   throw new RiotApiError("模拟数据: unsupported Riot endpoint.", "bad_request", 400, undefined, true);
 }

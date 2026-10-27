@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, test } from "node:test";
 import { getAccountByRiotId, getRankedEntries, getSummonerByPuuid } from "../src/utils/riotApi";
-import { getLatestSRMatchId, getMatchDetail, parseMatchDetail, SR_QUEUE_IDS } from "../src/utils/riotMatchApi";
+import { getLatestSRMatchId, getMatchDetail, getMatchTimeline, parseMatchDetail, SR_QUEUE_IDS } from "../src/utils/riotMatchApi";
+import { fetchMatchEvents } from "../src/services/matchEvents";
 import { createRiotRequester, getRiotDataLabel, getRiotMode, isMockData, resetMockData, RiotApiError, simulateMockMatch } from "../src/services/riotData";
 
 const originalMode = process.env.RIOT_MODE;
@@ -79,6 +80,49 @@ test("mock auth, rate-limit, service and missing-account errors are explicitly s
       return true;
     });
   }
+});
+
+test("mock timelines come through the public API, and a simulated missing timeline is an explicit 404", async () => {
+  globalThis.fetch = async () => { throw new Error("mock flows must not call network"); };
+  const account = await getAccountByRiotId("MockWin", "NA1");
+  const { matchId } = simulateMockMatch(account.puuid, "loss");
+  const timeline = await getMatchTimeline(matchId);
+  assert.equal(timeline.matchId, matchId);
+  assert.equal(timeline.participants.get(1), account.puuid);
+  assert.ok(timeline.events.some((event) => event.type === "monster" && event.monster === "BARON"));
+  const events = await fetchMatchEvents(matchId, await getMatchDetail(matchId), { warn: () => assert.fail("no warning expected") });
+  assert.ok(events!.some((event) => event.kind === "lostFightFirstDeath"));
+  await assert.rejects(getMatchTimeline("MOCK_UNKNOWN"), { status: 404, simulated: true });
+
+  const missing = await getAccountByRiotId("MockNoTimeline", "NA1");
+  const baseline = (await getLatestSRMatchId(missing.puuid))!;
+  const simulated = simulateMockMatch(missing.puuid, "win").matchId;
+  for (const id of [baseline, simulated]) {
+    const detail = await getMatchDetail(id);
+    await assert.rejects(getMatchTimeline(id), (error: unknown) => {
+      assert.ok(error instanceof RiotApiError);
+      assert.equal(error.status, 404);
+      assert.equal(error.simulated, true);
+      assert.match(error.message, /模拟数据/);
+      return true;
+    });
+    const warnings: string[] = [];
+    assert.equal(await fetchMatchEvents(id, detail, { warn: (message) => warnings.push(message) }), null);
+    assert.match(warnings[0], /not_found: 模拟数据: Riot API error 404/);
+  }
+});
+
+test("real timelines use the Americas match-v5 timeline endpoint", async () => {
+  process.env.RIOT_MODE = "real";
+  process.env.RIOT_API_KEY = "test-key";
+  const urls: string[] = [];
+  globalThis.fetch = async (input) => {
+    urls.push(input.toString());
+    return Response.json({ metadata: { matchId: "NA1_42" }, info: { frames: [], participants: [{ participantId: 1, puuid: "p1" }] } });
+  };
+  const timeline = await getMatchTimeline("NA1_42");
+  assert.deepEqual(urls, ["https://americas.api.riotgames.com/lol/match/v5/matches/NA1_42/timeline"]);
+  assert.deepEqual(timeline, { matchId: "NA1_42", participants: new Map([[1, "p1"]]), events: [] });
 });
 
 test("real mode and invalid mode never fall back to fixtures", async () => {

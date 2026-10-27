@@ -5,7 +5,7 @@ export type MockOutcome = "win" | "loss";
 
 export const MOCK_RIOT_IDS = [
   "MockWin#NA1", "MockLoss#NA1", "MockUnranked#NA1", "MockAlt#NA1",
-  "MockRateLimit#NA1", "MockService#NA1", "MockAuth#NA1", "MockMissing#NA1",
+  "MockRateLimit#NA1", "MockService#NA1", "MockAuth#NA1", "MockMissing#NA1", "MockNoTimeline#NA1",
 ] as const;
 
 export interface MockProfile {
@@ -14,6 +14,8 @@ export interface MockProfile {
   ranked: RankedEntry[];
   outcome: MockOutcome;
   failureStatus?: number;
+  /** Match timelines for this account fail with a simulated 404, while profiles and matches still work. */
+  timelineMissing?: boolean;
 }
 
 export function buildMockProfile(gameName: string, tagLine: string): MockProfile {
@@ -37,6 +39,7 @@ export function buildMockProfile(gameName: string, tagLine: string): MockProfile
     ],
     outcome: name === "mockloss" ? "loss" : "win",
     failureStatus,
+    timelineMissing: name === "mocknotimeline" || undefined,
   };
 }
 
@@ -119,6 +122,194 @@ export function buildMockMatch(profile: MockProfile, matchId: string, outcome: M
     info: {
       queueId: 420, gameDuration: 1800, gameCreation: endedAt - 1_800_000, gameEndTimestamp: endedAt, endOfGameResult: "GameComplete",
       teams: [team(100, won), team(200, !won)], participants,
+    },
+  };
+}
+
+/** A match-v5 TimelineDto body, so mock timelines exercise the same parser as real ones. */
+export type RawTimeline = { metadata: { dataVersion: string; matchId: string; participants: string[] }; info: Record<string, unknown> };
+
+// Timeline slots: A is the tracked player's team, E the enemy team; T, J, M, B and S are the positions.
+type Slot = `${"A" | "E"}${"T" | "J" | "M" | "B" | "S"}`;
+type ScriptedKill = [seconds: number, killer: Slot, victim: Slot, assists: Slot[], shutdownBounty?: number];
+type ScriptedMonster = [seconds: number, killer: Slot, monster: "DRAGON" | "BARON_NASHOR" | "RIFTHERALD"];
+interface TimelineScript { kills: ScriptedKill[]; monsters: ScriptedMonster[] }
+
+const SLOT_POSITIONS: Record<string, Position> = { T: "TOP", J: "JUNGLE", M: "MIDDLE", B: "BOTTOM", S: "UTILITY" };
+const BARON_PIT = { x: 5007, y: 10471 };
+const DRAGON_PIT = { x: 9866, y: 4414 };
+
+// Hand-written key moments that respect every player's K/D/A in the fixture match; the remaining kills are
+// filled in between them. In both games the support carries a won fight before an objective, and the feeding
+// ADC falls first in a lost objective fight.
+const TIMELINE_SCRIPTS: Record<MockOutcome, TimelineScript> = {
+  win: {
+    kills: [
+      [185, "EJ", "AB", ["ES"]],
+      [390, "AJ", "EM", ["AM", "AS"]],
+      // A lost fight at the enemy's only dragon; the ADC falls first.
+      [850, "EB", "AB", ["ES", "EJ"]], [858, "EM", "AS", ["EJ"]], [862, "AM", "EJ", ["AT", "AJ"]], [867, "ET", "AT", ["EM"]],
+      // The baron fight: a mid triple kill with the support in on every takedown.
+      [1470, "AM", "EB", ["AS", "AJ"]], [1476, "AM", "EM", ["AS"]], [1481, "AM", "ES", ["AS", "AT"]],
+      [1485, "ET", "AB", []], [1490, "AJ", "ET", ["AS", "AT"]],
+    ],
+    monsters: [[480, "AJ", "DRAGON"], [620, "AJ", "RIFTHERALD"], [885, "EM", "DRAGON"], [1140, "AJ", "DRAGON"], [1520, "AJ", "BARON_NASHOR"], [1620, "AJ", "DRAGON"]],
+  },
+  loss: {
+    kills: [
+      [170, "EM", "AM", []],
+      [570, "AJ", "ET", ["AT", "AS"]],
+      // A won dragon fight with the support in on all three kills.
+      [730, "AJ", "EB", ["AS", "AB", "AT"]], [736, "AB", "ES", ["AS", "AJ"]], [742, "EM", "AT", ["EJ"]], [747, "AJ", "EJ", ["AS", "AM"]],
+      // The lost baron fight; the ADC falls first.
+      [1360, "EJ", "AB", ["EM", "ES"]], [1366, "EM", "AS", ["ES"]], [1371, "EM", "AM", ["EJ"]], [1378, "EB", "AJ", ["ES", "ET"]],
+      [1383, "AT", "ES", []],
+      [1570, "AJ", "EM", ["AS"], 700],
+    ],
+    monsters: [[460, "EJ", "DRAGON"], [600, "EJ", "RIFTHERALD"], [770, "AJ", "DRAGON"], [1020, "EJ", "DRAGON"], [1410, "EJ", "BARON_NASHOR"], [1620, "EJ", "DRAGON"]],
+  },
+};
+
+interface TimelineKillDraft { seconds: number; killerId: number; victimId: number; assists: number[]; shutdownBounty: number }
+type Budget = { kills: number; deaths: number; assists: number };
+
+/**
+ * A deterministic timeline for a fixture match: scripted moments plus filler kills spaced far enough apart that
+ * they never form a fight, so every participant's kills, deaths and assists match the match detail.
+ */
+export function buildMockTimeline(match: RawMatch): RawTimeline {
+  const participants = match.info.participants as Array<Record<string, unknown>>;
+  const ids = participants.map((_, index) => index + 1);
+  const teamOf = (id: number) => participants[id - 1].teamId as number;
+  const allyTeam = teamOf(1);
+  const enemyTeam = 300 - allyTeam;
+  const script = TIMELINE_SCRIPTS[participants[0].win === true ? "win" : "loss"];
+  const slotId = (slot: Slot) => {
+    const team = slot[0] === "A" ? allyTeam : enemyTeam;
+    const index = participants.findIndex((player) => player.teamId === team && player.teamPosition === SLOT_POSITIONS[slot[1]]);
+    if (index < 0) throw new Error(`The fixture match has no player for timeline slot ${slot}.`);
+    return index + 1;
+  };
+  const remaining = new Map<number, Budget>(ids.map((id) => {
+    const player = participants[id - 1];
+    return [id, { kills: player.kills as number, deaths: player.deaths as number, assists: player.assists as number }];
+  }));
+  const spend = (kill: TimelineKillDraft) => {
+    remaining.get(kill.killerId)!.kills--;
+    remaining.get(kill.victimId)!.deaths--;
+    for (const id of kill.assists) remaining.get(id)!.assists--;
+  };
+  const kills: TimelineKillDraft[] = script.kills.map(([seconds, killer, victim, assists, shutdownBounty = 0]) => {
+    const kill = { seconds, killerId: slotId(killer), victimId: slotId(victim), assists: assists.map(slotId), shutdownBounty };
+    spend(kill);
+    return kill;
+  });
+  if ([...remaining.values()].some((left) => left.kills < 0 || left.deaths < 0 || left.assists < 0)) {
+    throw new Error("The timeline script exceeds the fixture match statistics.");
+  }
+
+  // Filler kills sit at least 40 seconds from every scripted event and 29 seconds from each other.
+  const scripted = [...script.kills.map(([seconds]) => seconds), ...script.monsters.map(([seconds]) => seconds)];
+  const slots: number[] = [];
+  for (let seconds = 240; seconds < 1780; seconds += 29) {
+    if (scripted.every((time) => Math.abs(time - seconds) >= 40)) slots.push(seconds);
+  }
+  // Round-robin over a team's players, so one player's kills or deaths spread across the game.
+  const queue = (team: number, field: "kills" | "deaths") => {
+    const left = ids.filter((id) => teamOf(id) === team).map((id) => [id, remaining.get(id)![field]]);
+    const order: number[] = [];
+    while (left.some(([, count]) => count > 0)) {
+      for (const entry of left) if (entry[1] > 0) { order.push(entry[0]); entry[1]--; }
+    }
+    return order;
+  };
+  const pairs = (team: number, other: number) => {
+    const victims = queue(other, "deaths");
+    return queue(team, "kills").map((killerId, index) => [killerId, victims[index]] as const);
+  };
+  const allyKills = pairs(allyTeam, enemyTeam);
+  const enemyKills = pairs(enemyTeam, allyTeam);
+  // Interleave both teams' kills in proportion, so neither team's kills bunch at one end of the game.
+  const filler: Array<readonly [number, number]> = [];
+  for (let a = 0, e = 0; a < allyKills.length || e < enemyKills.length;) {
+    const takeAlly = e >= enemyKills.length || (a < allyKills.length && a * enemyKills.length <= e * allyKills.length);
+    filler.push(takeAlly ? allyKills[a++] : enemyKills[e++]);
+  }
+  if (filler.length > slots.length) throw new Error("The mock timeline has too few free slots for its filler kills.");
+  filler.forEach(([killerId, victimId], index) => {
+    const team = teamOf(killerId);
+    const teamKills = filler.slice(index).filter(([id]) => teamOf(id) === team);
+    // Slack is how many of the team's remaining kills a teammate can still skip; zero means they must assist.
+    const slack = (id: number) => teamKills.filter(([killer]) => killer !== id).length - remaining.get(id)!.assists;
+    const mates = ids.filter((id) => teamOf(id) === team && id !== killerId && remaining.get(id)!.assists > 0)
+      .sort((a, b) => slack(a) - slack(b) || a - b);
+    const assistsLeft = mates.reduce((total, id) => total + remaining.get(id)!.assists, 0);
+    const count = Math.max(Math.ceil(assistsLeft / teamKills.length), mates.filter((id) => slack(id) <= 0).length);
+    const assists = mates.slice(0, Math.min(4, count)).sort((a, b) => a - b);
+    const kill = { seconds: slots[index], killerId, victimId, assists, shutdownBounty: 0 };
+    spend(kill);
+    kills.push(kill);
+  });
+  if ([...remaining.values()].some((left) => left.kills !== 0 || left.deaths !== 0 || left.assists !== 0)) {
+    throw new Error("The mock timeline does not account for every kill, death and assist.");
+  }
+  kills.sort((a, b) => a.seconds - b.seconds);
+
+  const events: Array<Record<string, unknown> & { timestamp: number }> = [{ type: "PAUSE_END", timestamp: 0, realTimestamp: 0 }];
+  let streak = { killerId: 0, length: 0, at: -Infinity };
+  kills.forEach((kill, index) => {
+    const timestamp = kill.seconds * 1000;
+    const pit = script.monsters.find(([seconds]) => Math.abs(seconds - kill.seconds) <= 60);
+    const position = pit ? (pit[2] === "DRAGON" ? DRAGON_PIT : BARON_PIT) : { x: 7400 + (index % 5) * 300, y: 7400 - (index % 3) * 400 };
+    events.push({
+      type: "CHAMPION_KILL", timestamp, killerId: kill.killerId, victimId: kill.victimId,
+      ...(kill.assists.length ? { assistingParticipantIds: kill.assists } : {}),
+      bounty: index === 0 ? 400 : 300, shutdownBounty: kill.shutdownBounty, killStreakLength: 0, position,
+    });
+    if (index === 0) events.push({ type: "CHAMPION_SPECIAL_KILL", timestamp, killType: "KILL_FIRST_BLOOD", killerId: kill.killerId, position });
+    // A multi-kill continues while each kill follows the killer's previous one within 10 seconds.
+    const continues = streak.killerId === kill.killerId && kill.seconds - streak.at <= 10;
+    streak = { killerId: kill.killerId, length: continues ? streak.length + 1 : 1, at: kill.seconds };
+    if (streak.length >= 2) {
+      events.push({ type: "CHAMPION_SPECIAL_KILL", timestamp, killType: "KILL_MULTI", killerId: kill.killerId, multiKillLength: streak.length, position });
+    }
+  });
+  for (const [seconds, killer, monster] of script.monsters) {
+    const killerId = slotId(killer);
+    events.push({
+      type: "ELITE_MONSTER_KILL", timestamp: seconds * 1000 + 500, killerId, killerTeamId: teamOf(killerId), bounty: 0,
+      monsterType: monster, ...(monster === "DRAGON" ? { monsterSubType: "FIRE_DRAGON" } : {}),
+      position: monster === "DRAGON" ? DRAGON_PIT : BARON_PIT,
+    });
+  }
+  // Towers follow the match's team objective counts; a tower event's teamId is the team that lost the tower.
+  const winningTeam = participants.find((player) => player.win === true)?.teamId ?? 0;
+  const towerTimes = [610, 790, 960, 1150, 1310, 1530, 1560, 1700, 1760, 1000, 1250, 700];
+  for (const team of match.info.teams as Array<{ teamId: number; objectives: { tower: { kills: number } } }>) {
+    const killers = ids.filter((id) => teamOf(id) === team.teamId);
+    const offset = team.teamId === winningTeam ? 0 : 9;
+    for (let index = 0; index < team.objectives.tower.kills; index++) {
+      events.push({
+        type: "BUILDING_KILL", timestamp: towerTimes[(offset + index) % towerTimes.length] * 1000 + 250, buildingType: "TOWER_BUILDING",
+        killerId: killers[index % killers.length], teamId: 300 - team.teamId, laneType: ["BOT_LANE", "TOP_LANE", "MID_LANE"][index % 3],
+        towerType: index < 3 ? "OUTER_TURRET" : index < 6 ? "INNER_TURRET" : "BASE_TURRET", bounty: 250, position: { x: 10504, y: 1029 },
+      });
+    }
+  }
+  const duration = (match.info.gameDuration as number) * 1000;
+  events.push({ type: "GAME_END", timestamp: duration, realTimestamp: match.info.gameEndTimestamp, gameId: 0, winningTeam });
+  events.sort((a, b) => a.timestamp - b.timestamp);
+
+  // Each frame holds the events since the previous frame; per-participant frame statistics are not used.
+  const frames = [];
+  for (let start = -1, end = 0; start < duration; start = end, end = Math.min(end + 60_000, duration)) {
+    frames.push({ timestamp: end, participantFrames: {}, events: events.filter((event) => event.timestamp > start && event.timestamp <= end) });
+  }
+  return {
+    metadata: { dataVersion: "2", matchId: match.metadata.matchId, participants: [...match.metadata.participants] },
+    info: {
+      endOfGameResult: match.info.endOfGameResult, frameInterval: 60_000, gameId: 0, frames,
+      participants: participants.map((player, index) => ({ participantId: index + 1, puuid: player.puuid })),
     },
   };
 }
