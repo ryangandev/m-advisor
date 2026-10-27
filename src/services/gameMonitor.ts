@@ -24,12 +24,15 @@ import { AnnouncementCancelledError, AnnouncementQueueFullError, announceTextToC
 import { logError, logInfo } from "../utils/log";
 import { boundParticipants, chooseChannel, liveParticipantIds, liveParticipants, perspective } from "./channelChoice";
 import type { BoundParticipant } from "./channelChoice";
-import { GameStartWatcher } from "./gameStartWatcher";
-import type { GameStartDependencies, GameStartOutcome, GameStartTickResult } from "./gameStartWatcher";
+import { createGameStartMemory, GameStartWatcher } from "./gameStartWatcher";
+import type { GameStartDependencies, GameStartMemory, GameStartOutcome, GameStartTickResult } from "./gameStartWatcher";
 import { getActiveGame } from "../utils/riotSpectatorApi";
 
 /** What the game start watcher needs beyond what the match monitor already has. */
-export type GameStartWatcherInputs = Pick<GameStartDependencies, "activeGame" | "records" | "pregameVoice" | "voiceStyle" | "now">;
+export type GameStartWatcherInputs = Pick<GameStartDependencies, "activeGame" | "records" | "pregameVoice" | "voiceStyle" | "now"> & {
+  /** Where the watcher logs its errors; the monitor's own `log` when absent. */
+  log?: (error: unknown) => void;
+};
 
 export const POLL_INTERVAL_MS = 45_000;
 /** After this many failed voice attempts a match is consumed without voice; its text report was already posted. */
@@ -208,6 +211,8 @@ function byGameEnd(a: PendingMatch, b: PendingMatch): number {
 export class GameMonitor {
   private readonly sessions = new Map<string, MonitorSession>();
   private readonly lastErrors = new Map<string, { message: string; at: number }>();
+  /** Each guild's game start memory, kept across sessions so leaving and rejoining voice never repeats a 锦囊. */
+  private readonly gameStartMemory = new Map<string, GameStartMemory>();
 
   constructor(private readonly dependencies: MonitorDependencies) {}
 
@@ -340,6 +345,15 @@ export class GameMonitor {
     return { tick, outcome: matchId ? await watcher.outcome(matchId) : null };
   }
 
+  private gameStartMemoryOf(guildId: string): GameStartMemory {
+    let memory = this.gameStartMemory.get(guildId);
+    if (!memory) {
+      memory = createGameStartMemory();
+      this.gameStartMemory.set(guildId, memory);
+    }
+    return memory;
+  }
+
   /** The session's game start watcher, sharing its members, channel choice, voice queue and abort signal. */
   private createWatcher(client: Client, guildId: string, session: MonitorSession): GameStartWatcher | undefined {
     const inputs = this.dependencies.gameStart;
@@ -355,7 +369,8 @@ export class GameMonitor {
       finished: (matchId) => session.announced.has(matchId) || session.progress.has(matchId) || session.waiting.has(matchId),
       lastChannelId: () => session.lastChannelId,
       rememberChannel: (channelId) => { session.lastChannelId = channelId; },
-    }, { ...inputs, members, resolveChannel, announce, mock, log, info });
+      memory: this.gameStartMemoryOf(guildId),
+    }, { ...inputs, members, resolveChannel, announce, mock, log: inputs.log ?? log, info });
   }
 
   private describe(client: Client, guildId: string, member: TrackedMember): string {
@@ -840,6 +855,11 @@ export function resolveMonitoredVoiceChannel(client: Client, guildId: string, us
   return channel;
 }
 
+/** The game start watcher's errors, with their own prefix so they are never read as a failed match poll. */
+export function logGameStartFailure(error: unknown): void {
+  logError(`Game start check failed: ${errorMessage(error)}`);
+}
+
 const monitor = new GameMonitor({
   latest: getLatestSRMatchId,
   detail: getMatchDetail,
@@ -856,6 +876,7 @@ const monitor = new GameMonitor({
     records: (guildId, discordUserId, mock) => listHorseRecords(guildId, { mock, discordUserId, order: "desc", limit: 200 }),
     pregameVoice: getPregameVoiceEnabled,
     voiceStyle: (guildId) => getAnnouncerState(guildId).voiceStyle,
+    log: logGameStartFailure,
   },
 });
 
