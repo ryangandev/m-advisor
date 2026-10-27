@@ -111,7 +111,7 @@ function joinNames(names: readonly string[]): string {
 }
 
 /** Shortens names to `budget` characters together, trimming the longest first and never below a few characters, from the front or the back. */
-function fit(names: readonly string[], budget: number, fromEnd: boolean): string[] {
+export function fitNames(names: readonly string[], budget: number, fromEnd = false): string[] {
   const parts = names.map((name) => Array.from(name));
   const keep = parts.map((part) => part.length);
   const total = () => keep.reduce((sum, length) => sum + length, 0);
@@ -133,11 +133,11 @@ const distinct = (names: readonly string[]) => new Set(names).size === names.len
  */
 function spokenNames(entries: readonly PartyEntry[], budget: number): string[] {
   const names = entries.map((entry) => entry.name);
-  const fromFront = fit(names, budget, false);
+  const fromFront = fitNames(names, budget, false);
   if (distinct(fromFront)) return fromFront;
-  const fromEnd = fit(names, budget, true);
+  const fromEnd = fitNames(names, budget, true);
   if (distinct(fromEnd)) return fromEnd;
-  const champions = fit(entries.map((entry) => entry.champion), budget, false);
+  const champions = fitNames(entries.map((entry) => entry.champion), budget, false);
   return distinct(champions) ? champions : fromFront;
 }
 
