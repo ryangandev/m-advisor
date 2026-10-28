@@ -121,6 +121,23 @@ A demotion row shows the new LP without a change until real games confirm the LP
 The bot logs how long league-v4 takes to catch up after each game, and about 10 real ranked games are needed to tune the report's later edit.
 [#24](https://github.com/ryangandev/m-advisor/issues/24) waits for a spectator-v5 capture during a real game, and [#20](https://github.com/ryangandev/m-advisor/issues/20) waits for the undici release window after 2026-10-29.
 
+## Audit round
+
+On 2026-10-27 and 2026-10-28 a read-only audit of main filed 32 issues ([#34](https://github.com/ryangandev/m-advisor/issues/34) to [#65](https://github.com/ryangandev/m-advisor/issues/65)), 6 of them p1.
+All 32 are fixed; each fix PR had an independent review before merge, and the final `npm run check` on main passed 896 tests.
+
+- Tooling: a GitHub Actions `check` workflow runs `npm ci` and `npm run check` on every PR, the build clears `dist` first, the Node floor is 24 because better-sqlite3 crashed on 22.12, and `npm run probe:spectator` captures spectator-v5 fields for #24 ([#66](https://github.com/ryangandev/m-advisor/pull/66)).
+- Commands: every interaction reply sets `allowedMentions` explicitly, enforced by a test that scans the sources ([#67](https://github.com/ryangandev/m-advisor/pull/67)).
+- Storage: `/stable-erase` overwrites erased rows and truncates the WAL, and the privacy page discloses the pre-upgrade backups ([#68](https://github.com/ryangandev/m-advisor/pull/68)).
+- 马报 and `/why`: ties, medals and gaps follow the printed numbers ([#69](https://github.com/ryangandev/m-advisor/pull/69)).
+- Riot data: match and queue caches are bounded, `/recent` limits its concurrency, mock match IDs no longer collide across restarts, and a rank result whose pre-game snapshot never loaded is shown as not attributable instead of a wrong LP change ([#70](https://github.com/ryangandev/m-advisor/pull/70)).
+- Monitoring: each server remembers the matches it already handled, so leaving and rejoining voice never repeats an announcement, and a full or AFK voice channel falls back to a text-only report ([#71](https://github.com/ryangandev/m-advisor/pull/71)).
+- Tests: migration backup log lines no longer print among the test results ([#72](https://github.com/ryangandev/m-advisor/pull/72)).
+
+The schema stays at v7.
+This round's evidence is compilation, mock tests and CI only; it adds no live Discord or real Riot acceptance, so B5 to B7 still cover it.
+[#73](https://github.com/ryangandev/m-advisor/issues/73) tracks a lifecycle test that failed once under parallel load.
+
 ## User-only blockers
 
 | ID | Needed | Blocks |
@@ -139,7 +156,7 @@ Discord Portal or server-permission changes become a blocker only if the actual 
 ## Next
 
 The approved engineering delivery, mock-to-real-Discord workflow and real Riot acceptance are complete.
-The feature round is merged and waits on B5 to B7.
+The feature round and its audit fixes are merged and wait on B5 to B7.
 The local bot is configured with `RIOT_MODE=real`, the 13 registered commands, Ryan's real `not ry#tan90` binding and the Old Man voice preference; it is started on demand.
 For later on-demand use, run `npm start` or double-click `scripts/launch.command`; see [Runtime](runtime.md).
 Run `/recent` once in the live channel to close the remaining diagnostics check.
