@@ -4,7 +4,7 @@ import { getMemberHorseProfile } from "../services/horseProfile";
 import { isMockData } from "../services/riotData";
 import { getTrackedMember } from "../store/bindingStore";
 import { countMemberHorseRecords } from "../store/horseRecordStore";
-import { buildErrorEmbed } from "../utils/embeds";
+import { buildErrorEmbed, NO_MENTIONS } from "../utils/embeds";
 import { buildStableEmbed } from "../utils/stableEmbed";
 
 const stableCommand: BotCommand = {
@@ -18,7 +18,7 @@ const stableCommand: BotCommand = {
   async execute(interaction: ChatInputCommandInteraction): Promise<void> {
     const guildId = interaction.guildId;
     if (!guildId) {
-      await interaction.reply({ embeds: [buildErrorEmbed("这个命令只能在服务器里使用。")], flags: MessageFlags.Ephemeral });
+      await interaction.reply({ embeds: [buildErrorEmbed("这个命令只能在服务器里使用。")], flags: MessageFlags.Ephemeral, allowedMentions: NO_MENTIONS });
       return;
     }
     const memberId = (interaction.options.getUser("user") ?? interaction.user).id;
@@ -33,7 +33,7 @@ const stableCommand: BotCommand = {
       profile: getMemberHorseProfile(guildId, memberId, mock),
       otherModeGames: mock ? counts.real : counts.mock,
     });
-    await interaction.reply({ embeds: [embed], allowedMentions: { parse: [], roles: [], users: [], repliedUser: false } });
+    await interaction.reply({ embeds: [embed], allowedMentions: NO_MENTIONS });
   },
 };
 

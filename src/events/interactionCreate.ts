@@ -1,6 +1,6 @@
 import { Events, Interaction, MessageFlags } from "discord.js";
 import type { AutocompleteInteraction, ButtonInteraction, ChatInputCommandInteraction } from "discord.js";
-import { buildErrorEmbed } from "../utils/embeds";
+import { buildErrorEmbed, NO_MENTIONS } from "../utils/embeds";
 import { getCommandUserErrorMessage } from "../utils/userFacingErrors";
 import { logError } from "../utils/log";
 
@@ -11,11 +11,11 @@ const errorName = (error: unknown) => error instanceof Error ? error.name : "unk
 async function replyWithError(interaction: ChatInputCommandInteraction | ButtonInteraction, error: unknown): Promise<void> {
   const errorEmbed = buildErrorEmbed(getCommandUserErrorMessage(error));
   if (interaction.replied) {
-    await interaction.followUp({ embeds: [errorEmbed], flags: MessageFlags.Ephemeral });
+    await interaction.followUp({ embeds: [errorEmbed], flags: MessageFlags.Ephemeral, allowedMentions: NO_MENTIONS });
   } else if (interaction.deferred) {
-    await interaction.editReply({ embeds: [errorEmbed] });
+    await interaction.editReply({ embeds: [errorEmbed], allowedMentions: NO_MENTIONS });
   } else {
-    await interaction.reply({ embeds: [errorEmbed], flags: MessageFlags.Ephemeral });
+    await interaction.reply({ embeds: [errorEmbed], flags: MessageFlags.Ephemeral, allowedMentions: NO_MENTIONS });
   }
 }
 
@@ -34,7 +34,7 @@ async function handleButton(interaction: ButtonInteraction): Promise<void> {
   const prefix = interaction.customId.split(":", 1)[0];
   const command = interaction.client.commands.find((candidate) => candidate.componentPrefix === prefix && candidate.handleButton !== undefined);
   if (!command?.handleButton) {
-    await interaction.reply({ content: "这个按钮已经失效了。", flags: MessageFlags.Ephemeral });
+    await interaction.reply({ content: "这个按钮已经失效了。", flags: MessageFlags.Ephemeral, allowedMentions: NO_MENTIONS });
     return;
   }
   try {
@@ -66,7 +66,7 @@ export default {
       const content = interaction.commandName === "testvc"
         ? "旧的 /testvc 已停用。请让管理员更新此服务器的 Bot 命令，然后使用 /testvoice 测试语音。"
         : "这个命令当前不可用。请让管理员更新此服务器的 Bot 命令后再试。";
-      await interaction.reply({ content, flags: MessageFlags.Ephemeral });
+      await interaction.reply({ content, flags: MessageFlags.Ephemeral, allowedMentions: NO_MENTIONS });
       return;
     }
 

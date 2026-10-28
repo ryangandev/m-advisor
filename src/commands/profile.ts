@@ -4,7 +4,7 @@ import {
   SlashCommandOptionsOnlyBuilder,
 } from "discord.js";
 import { getAccountByRiotId, getRankedEntries, getSummonerByPuuid } from "../utils/riotApi";
-import { buildErrorEmbed, buildProfileEmbed } from "../utils/embeds";
+import { buildErrorEmbed, buildProfileEmbed, NO_MENTIONS } from "../utils/embeds";
 import { BotCommand } from "../types";
 import { INVALID_RIOT_ID_MESSAGE, parseRiotId } from "../utils/riotId";
 import { getRiotUserErrorMessage } from "../utils/userFacingErrors";
@@ -29,6 +29,7 @@ const profileCommand: BotCommand = {
     if (!parsedRiotId) {
       await interaction.editReply({
         embeds: [buildErrorEmbed(INVALID_RIOT_ID_MESSAGE)],
+        allowedMentions: NO_MENTIONS,
       });
       return;
     }
@@ -41,9 +42,9 @@ const profileCommand: BotCommand = {
       const rankedEntries = await getRankedEntries(account.puuid);
       const profileEmbed = buildProfileEmbed(`${account.gameName}#${account.tagLine}`, summoner, rankedEntries);
 
-      await interaction.editReply({ embeds: [profileEmbed] });
+      await interaction.editReply({ embeds: [profileEmbed], allowedMentions: NO_MENTIONS });
     } catch (error) {
-      await interaction.editReply({ embeds: [buildErrorEmbed(getRiotUserErrorMessage(error))] });
+      await interaction.editReply({ embeds: [buildErrorEmbed(getRiotUserErrorMessage(error))], allowedMentions: NO_MENTIONS });
     }
   },
 };

@@ -189,6 +189,7 @@ test("/why refuses direct messages", async () => {
   await whyCommand.execute(stub);
   assert.equal(calls[0].payload!.flags, MessageFlags.Ephemeral);
   assert.match(embedOf(calls[0].payload!).description!, /只能在服务器里使用/);
+  assert.deepEqual(calls[0].payload!.allowedMentions, NO_MENTIONS);
 });
 
 test("the match option suggests the member's recent games of the current kind, newest first", async () => {
