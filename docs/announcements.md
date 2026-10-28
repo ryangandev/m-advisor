@@ -10,6 +10,7 @@ The normal poll interval is 45 seconds, and manual simulation commands can reque
 `src/services/monitorLifecycle.ts` calls it from voice events, startup and binding commands after reading every tracked member's voice state.
 Those reconciliations run one after another per guild, so a slow lookup cannot apply an older view over a newer one.
 Voice updates that do not change the channel, such as mute or deafen, and updates from untracked members are ignored.
+After a gateway re-identify, for example after the Mac slept, discord.js reloads a guild's voice states without any voice event, so `src/events/guildAvailable.ts` reconciles the guild again when it becomes available.
 
 The first tracked member in voice starts the session, which immediately reads each of their accounts' latest match as its baseline.
 The baseline is recorded without speaking, including a valid empty history.

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, test } from "node:test";
-import type { Client, VoiceChannel, VoiceState } from "discord.js";
+import type { Client, Guild, VoiceChannel, VoiceState } from "discord.js";
 import type { TrackedMember } from "../src/types";
 import { GameMonitor } from "../src/services/gameMonitor";
 import { MonitorLifecycle } from "../src/services/monitorLifecycle";
@@ -84,7 +84,8 @@ function presence(guildId: string) {
     location.set(id, channelId);
     return lifecycle.voiceStateChanged(state(id, before), state(id, channelId));
   };
-  return { monitor, lifecycle, client, location, syncs, lookups, slowFetch, state, voice, status: () => monitor.status(guildId) };
+  const available = () => lifecycle.guildAvailable({ id: guildId, client } as unknown as Guild);
+  return { monitor, lifecycle, client, available, location, syncs, lookups, slowFetch, state, voice, status: () => monitor.status(guildId) };
 }
 
 test("an untracked member and a mute toggle do nothing", async () => {
@@ -147,4 +148,26 @@ test("overlapping reconciles apply in the order they were requested", async () =
   await Promise.all([first, second]);
   assert.deepEqual(bot.syncs, [["alice-id"], ["alice-id", "bob-id"]]);
   assert.deepEqual(bot.status().presentMemberIds, ["alice-id", "bob-id"]);
+});
+
+test("a guild available again after a re-identify reads the voice states it reloaded without any voice event", async () => {
+  const bot = presence("reidentify-guild");
+  await bot.voice("alice-id", "x");
+  assert.deepEqual(bot.status().presentMemberIds, ["alice-id"]);
+  // The gateway re-identified: alice left and bob joined while the bot was away, and no VoiceStateUpdate fired.
+  bot.location.set("alice-id", null);
+  bot.location.set("bob-id", "y");
+  await bot.available();
+  assert.deepEqual(bot.syncs.at(-1), ["bob-id"]);
+  assert.deepEqual(bot.status().presentMemberIds, ["bob-id"]);
+  // Nobody is left in voice after the next re-identify: the session stops.
+  bot.location.set("bob-id", null);
+  await bot.available();
+  assert.equal(bot.status().active, false);
+});
+
+test("the guild available event reconciles through the lifecycle", async () => {
+  const { default: event } = await import("../src/events/guildAvailable");
+  assert.equal(event.name, "guildAvailable");
+  assert.equal(typeof event.execute, "function");
 });
