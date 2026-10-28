@@ -7,12 +7,13 @@ import { afterEach, beforeEach, test } from "node:test";
 import Database from "better-sqlite3";
 import { buildRankResult } from "../src/services/rankResults";
 import { closeAppeal, isAppealClosed } from "../src/store/appealStore";
-import { listTrackedMembers } from "../src/store/bindingStore";
+import { listTrackedMembers, removeTrackedMember } from "../src/store/bindingStore";
 import { closeDatabase, getDatabase, SCHEMA_VERSION } from "../src/store/database";
 import { eraseMemberHorseRecords, listHorseRecords } from "../src/store/horseRecordStore";
-import { eraseMemberRankResults, listRankResults, recordRankResults } from "../src/store/rankStore";
+import { eraseMemberRankResults, listRankResults, recordRankResults, UntrackedMemberError } from "../src/store/rankStore";
 import type { RankResult } from "../src/store/rankStore";
 import { makeHorseRecord, recordTracked } from "./helpers/horseRecords";
+import { recordTrackedRanks } from "./helpers/rankResults";
 import { ROWS_V6, SCHEMA_V6 } from "./helpers/schemaV6";
 
 let directory: string;
@@ -181,7 +182,7 @@ test("a database from a newer bot is rejected and left untouched", () => {
 });
 
 test("a stored result survives closing and reopening the database, also across processes", () => {
-  assert.equal(recordRankResults([RESULT]), 1);
+  assert.equal(recordTrackedRanks([RESULT]), 1);
   closeDatabase();
   assert.deepEqual(listRankResults("guild-one", { mock: false }), [RESULT]);
 
@@ -193,41 +194,41 @@ test("a stored result survives closing and reopening the database, also across p
 });
 
 test("a result is stored once per server, member, match and data mode", () => {
-  assert.equal(recordRankResults([RESULT]), 1);
-  assert.equal(recordRankResults([RESULT]), 0, "the same key again adds nothing");
-  assert.equal(recordRankResults([{ ...RESULT, leaguePoints: 1, lpDelta: -63, recordedAt: RESULT.recordedAt + 1 }]), 0);
+  assert.equal(recordTrackedRanks([RESULT]), 1);
+  assert.equal(recordTrackedRanks([RESULT]), 0, "the same key again adds nothing");
+  assert.equal(recordTrackedRanks([{ ...RESULT, leaguePoints: 1, lpDelta: -63, recordedAt: RESULT.recordedAt + 1 }]), 0);
   assert.deepEqual(listRankResults("guild-one", { mock: false }), [RESULT], "and never changes the first one");
 
   // The mock key makes a mock result and a real one of the same match two rows.
-  assert.equal(recordRankResults([{ ...RESULT, mock: true, leaguePoints: 90 }]), 1);
+  assert.equal(recordTrackedRanks([{ ...RESULT, mock: true, leaguePoints: 90 }]), 1);
   assert.equal(listRankResults("guild-one", { mock: false }).length, 1);
   assert.equal(listRankResults("guild-one", { mock: true }).length, 1);
   assert.equal(listRankResults("guild-one", { mock: true })[0].leaguePoints, 90);
   assert.equal(listRankResults("guild-one", { mock: false })[0].leaguePoints, 86);
 
-  assert.equal(recordRankResults([
+  assert.equal(recordTrackedRanks([
     { ...RESULT, guildId: "guild-two" },
-    { ...RESULT, discordUserId: "xiaoli" },
+    { ...RESULT, discordUserId: "xiaoli", puuid: "account-b" },
     { ...RESULT, matchId: "NA1_101" },
   ]), 3);
   assert.equal((getDatabase().prepare("SELECT count(*) AS count FROM rank_results").get() as { count: number }).count, 5);
 });
 
 test("a batch is saved in one transaction, so one bad result saves none", () => {
-  assert.throws(() => recordRankResults([{ ...RESULT, matchId: "NA1_200" }, { ...RESULT, matchId: "NA1_201", leaguePoints: -1 }]), TypeError);
+  assert.throws(() => recordTrackedRanks([{ ...RESULT, matchId: "NA1_200" }, { ...RESULT, matchId: "NA1_201", leaguePoints: -1 }]), TypeError);
   assert.equal(listRankResults("guild-one", { mock: false }).length, 0);
-  assert.throws(() => recordRankResults([{ ...RESULT, matchId: "NA1_200" }, { ...RESULT, matchId: "NA1_201", tier: "" }]), TypeError);
+  assert.throws(() => recordTrackedRanks([{ ...RESULT, matchId: "NA1_200" }, { ...RESULT, matchId: "NA1_201", tier: "" }]), TypeError);
   // A violation of the table's own checks rolls the batch back as well.
-  assert.throws(() => recordRankResults([{ ...RESULT, matchId: "NA1_200" }, { ...RESULT, matchId: "NA1_201", kind: "placed", lpDelta: 5 }]), /CHECK/);
+  assert.throws(() => recordTrackedRanks([{ ...RESULT, matchId: "NA1_200" }, { ...RESULT, matchId: "NA1_201", kind: "placed", lpDelta: 5 }]), /CHECK/);
   assert.equal(listRankResults("guild-one", { mock: false }).length, 0);
 });
 
 test("results are listed per mode and member, oldest first, with an optional newest-first limit", () => {
-  recordRankResults([
+  recordTrackedRanks([
     { ...RESULT, matchId: "NA1_2", playedAt: 2000 },
     { ...RESULT, matchId: "NA1_1", playedAt: 1000 },
     { ...RESULT, matchId: "NA1_3", playedAt: 3000 },
-    { ...RESULT, matchId: "NA1_4", playedAt: 1500, discordUserId: "xiaoli" },
+    { ...RESULT, matchId: "NA1_4", playedAt: 1500, discordUserId: "xiaoli", puuid: "account-b" },
     { ...RESULT, matchId: "NA1_5", playedAt: 1600, mock: true },
   ]);
   assert.deepEqual(listRankResults("guild-one", { mock: false, discordUserId: "laowang" }).map((result) => result.matchId), ["NA1_1", "NA1_2", "NA1_3"]);
@@ -243,12 +244,12 @@ test("erasing a member deletes that member's rank results with the horse records
   const mine = makeHorseRecord({ guildId: "guild-one", discordUserId: "laowang", matchId: "NA1_100" });
   const theirs = makeHorseRecord({ guildId: "guild-one", discordUserId: "xiaoli", puuid: "account-b", matchId: "NA1_100" });
   recordTracked([mine, theirs]);
-  recordRankResults([
+  recordTrackedRanks([
     RESULT,
     { ...RESULT, mock: true },
     { ...RESULT, matchId: "NA1_101", kind: "demoted", lpDelta: null },
     { ...RESULT, guildId: "guild-two" },
-    { ...RESULT, discordUserId: "xiaoli" },
+    { ...RESULT, discordUserId: "xiaoli", puuid: "account-b" },
   ]);
   closeAppeal({ guildId: "guild-one", discordUserId: "laowang", matchId: "NA1_100", mock: false });
 
@@ -266,7 +267,7 @@ test("erasing a member deletes that member's rank results with the horse records
 
 test("erasing removes the rank results in the same transaction, so a failed erase keeps them", () => {
   recordTracked([makeHorseRecord({ guildId: "guild-one", discordUserId: "laowang", matchId: "NA1_100" })]);
-  recordRankResults([RESULT]);
+  recordTrackedRanks([RESULT]);
   getDatabase().exec("CREATE TRIGGER fail_erase BEFORE DELETE ON horse_records BEGIN SELECT RAISE(ABORT, 'erase refused'); END;");
   assert.throws(() => eraseMemberHorseRecords("guild-one", "laowang"), /erase refused/);
   assert.equal(listRankResults("guild-one", { mock: false }).length, 1, "the rank result was rolled back with the failed erase");
@@ -274,7 +275,7 @@ test("erasing removes the rank results in the same transaction, so a failed eras
 
 test("unbinding a member keeps their rank results", () => {
   recordTracked([makeHorseRecord({ guildId: "guild-one", discordUserId: "laowang", matchId: "NA1_100" })]);
-  recordRankResults([RESULT]);
+  recordTrackedRanks([RESULT]);
   getDatabase().prepare("DELETE FROM tracked_members WHERE guild_id = 'guild-one' AND discord_user_id = 'laowang'").run();
   assert.equal(listRankResults("guild-one", { mock: false }).length, 1);
 });
@@ -332,5 +333,23 @@ test("apex tiers store no division, and a missing game end falls back to the rec
   assert.equal(result?.division, null);
   assert.equal(result?.beforeDivision, "I");
   assert.equal(result?.playedAt, 9000);
-  assert.equal(recordRankResults([result!]), 1, "the table accepts it");
+  assert.equal(recordTrackedRanks([result!]), 1, "the table accepts it");
+});
+
+test("a result is refused unless its member owns the account when the write runs, so an unbind or erase is never undone", () => {
+  assert.equal(recordTrackedRanks([RESULT]), 1);
+  assert.equal(eraseMemberRankResults("guild-one", "laowang"), 1);
+  // The member unbinds before a late write arrives with the party captured earlier.
+  removeTrackedMember("guild-one", "laowang");
+  assert.throws(() => recordRankResults([RESULT]), UntrackedMemberError);
+  assert.equal(listRankResults("guild-one", { mock: false }).length, 0, "the erased row did not come back");
+
+  // An account that is not theirs is refused the same way, and nothing in the batch is saved.
+  recordTrackedRanks([{ ...RESULT, matchId: "NA1_300" }]);
+  assert.throws(() => recordRankResults([
+    { ...RESULT, matchId: "NA1_301" },
+    { ...RESULT, matchId: "NA1_301", discordUserId: "xiaoli" },
+  ]), UntrackedMemberError);
+  assert.throws(() => recordRankResults([{ ...RESULT, matchId: "NA1_301", puuid: "someone-elses" }]), UntrackedMemberError);
+  assert.deepEqual(listRankResults("guild-one", { mock: false }).map((result) => result.matchId), ["NA1_300"]);
 });

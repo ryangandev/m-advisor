@@ -917,7 +917,9 @@ export class GameMonitor {
   /**
    * Stores the final rows of the reported team's bound members: a change, promotion, demotion, placement or an
    * unattributable change. Pending, stale and unavailable rows are not stored. Each member is stored once per match, however
-   * often the rows are read, because the key ignores a repeat. A failure is logged and never affects the report.
+   * often the rows are read, because the key ignores a repeat. Only members who still own the account they played on
+   * are stored, read live each time, so /unbind and /stable-erase are never undone by a late write. A failure is logged and
+   * never affects the report.
    */
   private recordRanks(guildId: string, detail: MatchDetail, matchId: string, party: readonly RankMember[]): void {
     const rank = this.dependencies.rank;
@@ -929,6 +931,8 @@ export class GameMonitor {
       const mock = this.dependencies.mock();
       const results: RankResult[] = [];
       for (const { memberId, puuid } of party) {
+        // The late write runs minutes after the report: a member unbound or erased meanwhile gets no row back.
+        if (this.ownerOf(guildId, puuid) !== memberId) continue;
         const row = rank.row(matchId, puuid);
         const result = row && buildRankResult(row, {
           guildId, discordUserId: memberId, matchId, mock, puuid, gameEndTimestamp: detail.info.gameEndTimestamp, recordedAt,
