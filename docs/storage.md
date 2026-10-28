@@ -81,8 +81,9 @@ The 4 to 5 step only creates `pregame_settings`, so every existing row is untouc
 The 5 to 6 step only creates `appeal_cases` and its index, so every existing row is untouched.
 The 6 to 7 step only creates `rank_results` and its index, so every existing row is untouched.
 Migration happens in place, with no downgrade path, the first time any command opens an existing older database file.
-That includes `npm start`, `npm run dev`, `npm run doctor` (which only opens a file that already exists) and the `verify:*` scripts.
+That includes `npm start`, `npm run dev` and `npm run doctor` (which only opens a file that already exists).
 `npm run register` does not open the database.
+The `verify:*` scripts set `DATABASE_PATH` to their own fresh temporary database, so they never open, migrate or back up the bot's real file.
 Each step takes the write lock before it checks the version, so two processes opening the same old file at the same moment apply each step once and both succeed.
 
 Before the first step, a file whose version is between 1 and the current version is copied with `VACUUM INTO` to `<database path>.v<old version>.bak`, for example `.data/bot.sqlite3.v1.bak`.
@@ -90,6 +91,7 @@ The copy is consistent even when the bot left an uncheckpointed `-wal` file, it 
 The bot never overwrites an existing backup: if that name is taken it uses `<database path>.v<old version>.2.bak`, then `.3.bak`, and so on.
 A fresh database and `:memory:` are not backed up, and once the file is current, later opens create no backup.
 The backup is not deleted automatically; remove it once the upgraded bot has run well.
+It is a full copy taken before the upgrade, so it still holds anything `/stable-erase` removes later; see [what an erase does not reach](#what-an-erase-does-not-reach).
 An older bot cannot open the upgraded file, so to go back, stop the bot and restore the `.bak` file as `bot.sqlite3`.
 Copying `bot.sqlite3` yourself before the first launch of the new version is optional extra safety.
 
@@ -115,7 +117,7 @@ Mock and real cases are separate keys.
 It has no foreign key, like `horse_records`, so `/unbind` keeps the cases.
 `src/store/appealStore.ts` owns it: `closeAppeal` inserts the case and returns whether it was new, `isAppealClosed` reads it, and `reopenAppeal` deletes it when the ruling could not be sent.
 The table is bounded by age: every `closeAppeal` deletes the cases closed more than a year ago (`APPEAL_RETENTION_MS`) in the same transaction, and `isAppealClosed` already ignores them.
-`eraseMemberHorseRecords` deletes the member's cases in the same transaction as their records, so `/stable-erase` leaves nothing behind.
+`eraseMemberHorseRecords` deletes the member's cases in the same transaction as their records, so `/stable-erase` leaves nothing behind in the database.
 No Riot name, champion or score is stored in it.
 
 ## LP results
@@ -141,7 +143,7 @@ Table checks pin these rules: a change or promotion needs a delta and a before-v
 
 `src/store/rankStore.ts` owns the table: `recordRankResults(results)` validates the batch and saves it in one transaction, and `listRankResults(guildId, { mock, discordUserId?, order?, limit? })` requires the `mock` flag so mock and real rows are never returned together.
 `recordRankResults` skips only a key that already exists (`ON CONFLICT DO NOTHING`), so a row that settles twice is stored once and the first row is never changed, while a row that breaks the table's checks throws instead of vanishing.
-`eraseMemberHorseRecords` deletes the member's rank results in the same transaction as their records and appeal cases, so `/stable-erase` leaves nothing behind.
+`eraseMemberHorseRecords` deletes the member's rank results in the same transaction as their records and appeal cases, so `/stable-erase` leaves nothing behind in the database.
 The monitor writes the rows, as described under [Stored results](announcements.md#stored-results).
 No Riot name, champion or account name is stored in it, only the member and the account's PUUID.
 
@@ -162,10 +164,31 @@ It is a separate table because `guild_preferences.voice_style` is `NOT NULL`, so
 `saveAnnouncerSettings` writes the style and the switch in one transaction and updates the in-memory style only after it commits.
 The game start watcher reads it for every 锦囊 (see [Announcements](announcements.md#text-and-voice)): the text card is always posted, and the voice line is queued only while the switch is on.
 
+## What an erase does not reach
+
+`/stable-erase` scrubs the live database file and its WAL, and nothing else.
+Two other kinds of copy stay until the host deletes them by hand:
+
+- Backups made before a schema upgrade (`bot.sqlite3.v<N>.bak`) are full copies from that moment.
+  The bot never deletes them, so a member erased later is still readable in any backup made while their rows existed.
+  Delete the backups you no longer need, and all of them when an erase has to be complete.
+- Log files under `BOT_DATA_DIR/logs` can name Riot accounts and Discord members, for example in monitoring and report lines.
+  Files older than 14 days are deleted when the bot starts and when it runs into a new day.
+  Delete newer files by hand if an erase has to reach them.
+
+The `/stable-erase` reply says this in one sentence, and the site's privacy page (`site/src/content/docs/privacy.md`) says it to players.
+
+Removing the bot from a server deletes nothing either.
+Every row for that server stays, and the log records the removal once (`src/events/guildDelete.ts`, ignoring the unavailable-server event of a Discord outage).
+With the bot gone, `/stable-erase` can no longer be run for that server, so the host deletes the rows on request, with the bot stopped and the server's rows removed from the tables above.
+
 ## Durability and shutdown
 
 `src/store/database.ts` owns connection initialization, schema versioning, and `closeDatabase()`.
 The schema uses foreign keys with cascading account deletion from tracked member to accounts, WAL journaling, a five-second busy timeout, and full synchronous writes.
+Every connection also turns on `secure_delete`, so deleted content is overwritten with zeros instead of staying readable in free pages.
+After the erase transaction, `eraseMemberHorseRecords` runs `wal_checkpoint(TRUNCATE)`, so the old page images do not linger in the `-wal` file either.
+The erase is already committed by then, so a checkpoint that cannot finish (for example because another process holds the database) logs a warning and does not fail the command.
 Call `closeDatabase()` during graceful shutdown after stopping monitors.
 It closes only the SQLite connection; callers remain responsible for stopping their timers and voice processes.
 
@@ -188,4 +211,6 @@ They also check the automatic backup (present, mode `0600`, holding the version 
 `tests/rankStore.test.ts` holds the version 6 to 7 migration tests (a literal version 6 file upgraded by a separate process, the `.v6.bak` backup, a failing step that rolls back to version 6, newer-schema rejection), the LP result API, the table checks and the erase scope.
 `tests/monitor.test.ts` pins when the monitor writes the rows.
 `tests/appealStore.test.ts` holds the version 5 to 6 migration tests (a literal version 5 file upgraded by a separate process, the `.v5.bak` backup, a failing step that rolls back to version 5) and the appeal case API, including survival across processes, pruning and erasing.
+`tests/store.test.ts` also stores marker match IDs as horse records, LP results and appeal cases, erases them, and checks that the marker is gone from the database file and the WAL and that the WAL is empty.
+`tests/guildDelete.test.ts` pins the removal log line.
 The tests do not write to the bot's actual data directory.
