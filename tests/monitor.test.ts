@@ -10,9 +10,10 @@ import { buildHorseRecords } from "../src/services/horseRecords";
 import { rankTeam } from "../src/services/horseRanking";
 import type { MatchEvent } from "../src/services/matchEvents";
 import { getAnnouncerState, getLastMatchId } from "../src/store/announcerStore";
-import { setMemberAccounts } from "../src/store/bindingStore";
+import { removeTrackedMember, setMemberAccounts } from "../src/store/bindingStore";
 import { closeDatabase } from "../src/store/database";
 import { listRankResults, recordRankResults, type RankResult } from "../src/store/rankStore";
+import { recordTrackedRanks } from "./helpers/rankResults";
 import { listMatchHorseRecords, recordHorseRecords, type HorseRecord } from "../src/store/horseRecordStore";
 import { getLatestSRMatchId, getMatchDetail } from "../src/utils/riotMatchApi";
 import { RankTracker, type RankTracking } from "../src/services/rankTracker";
@@ -2172,7 +2173,7 @@ test("a real match is titled 段位播报 and its line has no mock prefix", asyn
 /** The monitor's rank-result writer on the real store, recording every batch it was given. */
 function storingRankResults(bot: ReturnType<typeof harness>) {
   const calls: RankResult[][] = [];
-  bot.dependencies.recordRank = (results) => { calls.push([...results]); return recordRankResults(results); };
+  bot.dependencies.recordRank = (results) => { calls.push([...results]); return recordTrackedRanks(results); };
   return calls;
 }
 
@@ -2219,7 +2220,7 @@ test("real mode stores real results, apart from mock ones of the same match", as
   assert.deepEqual(listRankResults("rank-store-real-guild", { mock: false }).map((result) => [result.discordUserId, result.mock]), [["alice-id", false]]);
   assert.deepEqual(listRankResults("rank-store-real-guild", { mock: true }), []);
   // The same match number in mock mode is a second row, not the same one.
-  assert.equal(recordRankResults([{ ...listRankResults("rank-store-real-guild", { mock: false })[0], mock: true }]), 1);
+  assert.equal(recordTrackedRanks([{ ...listRankResults("rank-store-real-guild", { mock: false })[0], mock: true }]), 1);
   assert.equal(listRankResults("rank-store-real-guild", { mock: false }).length, 1);
 });
 
@@ -2303,6 +2304,30 @@ test("a late update stores the rows it settles and never writes a second row for
   assert.deepEqual(all.map((result) => result.discordUserId), ["alice-id", "bob-id"], "one row each");
   assert.deepEqual(all[0], first[0], "Alice's row is the one stored first, untouched by the late update");
   assert.deepEqual(calls.map((results) => results.map((result) => result.discordUserId)), [["alice-id"], ["alice-id", "bob-id"]]);
+  assert.deepEqual(bot.errors, []);
+});
+
+test("a member unbound while their LP is pending gets no row from the late write, and the others keep theirs", async () => {
+  const guildId = "rank-store-unbound-guild";
+  const { bot, rank } = await rankedTrio(guildId, { retryFloorMs: 30 });
+  // The real store checks ownership in the database, so the members are bound there too.
+  setMemberAccounts(guildId, "alice-id", [{ puuid: "alice", gameName: "alice", tagLine: "NA1" }]);
+  setMemberAccounts(guildId, "bob-id", [{ puuid: "bob", gameName: "bob", tagLine: "NA1" }]);
+  const calls: RankResult[][] = [];
+  bot.dependencies.recordRank = (results) => { calls.push([...results]); return recordRankResults(results); };
+  rank.league.set("alice", [ranked("GOLD", "II", 86, 11, 10)]);
+  assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
+  await delay(10);
+  assert.deepEqual(listRankResults(guildId, { mock: true }).map((result) => result.discordUserId), ["alice-id"]);
+
+  // Bob is unbound before his pending LP settles minutes later.
+  removeTrackedMember(guildId, "bob-id");
+  bot.members = bot.members.filter((member) => member.discordUserId !== "bob-id");
+  rank.league.set("bob", [ranked("SILVER", "I", 12, 10, 11)]);
+  await until(() => bot.edits.length === 1, "the late edit");
+  await delay(100);
+  assert.deepEqual(listRankResults(guildId, { mock: true }).map((result) => result.discordUserId), ["alice-id"], "no row comes back for the unbound member");
+  assert.deepEqual([...new Set(calls.flat().map((result) => result.discordUserId))], ["alice-id"], "and the unbound member is not even offered to the store");
   assert.deepEqual(bot.errors, []);
 });
 

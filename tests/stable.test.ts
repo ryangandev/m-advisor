@@ -11,7 +11,8 @@ import { removeTrackedMember, setMemberAccounts } from "../src/store/bindingStor
 import { closeDatabase } from "../src/store/database";
 import { countMemberHorseRecords } from "../src/store/horseRecordStore";
 import type { HorseRecord } from "../src/store/horseRecordStore";
-import { listRankResults, recordRankResults } from "../src/store/rankStore";
+import { listRankResults } from "../src/store/rankStore";
+import { recordTrackedRanks } from "./helpers/rankResults";
 import type { HorseTier } from "../src/services/horseRanking";
 import { makeHorseRecord, recordTracked } from "./helpers/horseRecords";
 
@@ -324,7 +325,7 @@ test("/stable-erase counts and erases a member who has only LP results or appeal
     lpDelta: 22, beforeTier: "GOLD", beforeDivision: "II", beforeLeaguePoints: 64,
   };
   // No horse record at all, for example because that write failed.
-  recordRankResults([rankResult, { ...rankResult, matchId: "NA1_S", mock: true }, { ...rankResult, discordUserId: "someone-else" }]);
+  recordTrackedRanks([rankResult, { ...rankResult, matchId: "NA1_S", mock: true }, { ...rankResult, discordUserId: "someone-else", puuid: "account-b" }]);
   closeAppeal({ guildId: GUILD, discordUserId: "friend", matchId: "NA1_R", mock: false });
   assert.deepEqual(countMemberHorseRecords(GUILD, "friend"), { real: 0, mock: 0 });
 

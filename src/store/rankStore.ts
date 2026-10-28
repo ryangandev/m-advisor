@@ -1,4 +1,7 @@
 import { getDatabase } from "./database";
+import { UntrackedMemberError } from "./storeErrors";
+
+export { UntrackedMemberError };
 
 export const RANK_RESULT_KINDS = ["change", "promoted", "demoted", "placed", "unattributable"] as const;
 export type RankResultKind = (typeof RANK_RESULT_KINDS)[number];
@@ -113,6 +116,8 @@ function fromRow(row: RankResultRow): RankResult {
  * An existing (server, member, match, mock) key is left unchanged, so a result that settles again, for example
  * when the late update edits the report, never makes a second row or changes the first.
  * Only a repeated key is skipped: a row that breaks the table's rules throws, instead of vanishing as INSERT OR IGNORE would.
+ * Every member must own the account of their row when the transaction runs; otherwise UntrackedMemberError is thrown and
+ * nothing in the batch is saved, so a result that settles after /unbind or /stable-erase never brings the erased data back.
  */
 export function recordRankResults(results: readonly RankResult[]): number {
   results.forEach(validate);
@@ -127,7 +132,13 @@ export function recordRankResults(results: readonly RankResult[]): number {
       @tier, @division, @leaguePoints, @lpDelta, @beforeTier, @beforeDivision, @beforeLeaguePoints
     ) ON CONFLICT(guild_id, discord_user_id, match_id, mock) DO NOTHING
   `);
+  const owns = database.prepare("SELECT 1 FROM member_accounts WHERE guild_id = ? AND discord_user_id = ? AND puuid = ?");
   return database.transaction(() => {
+    for (const result of results) {
+      if (!owns.get(result.guildId, result.discordUserId, result.puuid)) {
+        throw new UntrackedMemberError(result.guildId, result.discordUserId, result.puuid);
+      }
+    }
     let inserted = 0;
     for (const result of results) inserted += insert.run({ ...result, mock: result.mock ? 1 : 0 }).changes;
     return inserted;
