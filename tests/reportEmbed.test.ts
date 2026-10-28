@@ -102,3 +102,15 @@ test("busiest and longest-streak lines name everyone who shares the top value, o
   const evenSummary = buildReportEmbed(even, { final: true }).toJSON().fields!.find((field) => field.name === "军师总评")!.value;
   assert.doesNotMatch(evenSummary, /出勤最多/);
 });
+
+test("a single game in the period is listed once, not as both the best and the worst", () => {
+  const lone = buildReportData({ kind: "day", range: DAY, mock: false, memberIds: ["a"], records: [game("a", "上等马", 7.2, DAY.start + HOUR)] });
+  const field = buildReportEmbed(lone, { final: true }).toJSON().fields!.find((entry) => entry.name === "单局之最")!;
+  assert.equal(field.value.split("\n").length, 1);
+  assert.ok(!field.value.includes("最佳") && !field.value.includes("最差"), field.value);
+  assert.match(field.value, /^唯一一局：<@a>/);
+
+  const two = buildReportData({ kind: "day", range: DAY, mock: false, memberIds: ["a"], records: [game("a", "上等马", 7.2, DAY.start + HOUR), game("a", "下等马", 3, DAY.start + 2 * HOUR)] });
+  const both = buildReportEmbed(two, { final: true }).toJSON().fields!.find((entry) => entry.name === "单局之最")!;
+  assert.equal(both.value.split("\n").length, 2);
+});

@@ -31,6 +31,8 @@ A member removed with `/unbind` keeps their history but is left out of reports, 
 | Best and worst single game | Yes, over everyone | Yes, over everyone |
 | 军师总评 | Tier totals and a closing remark | Tier totals, busiest member, longest 特等马 and 没有马 streak inside the week and a closing remark |
 
+When the period holds a single game, the best and the worst single game are the same record, so 单局之最 lists it once as 唯一一局.
+
 The weekly bar is 3 games, the same bar the 马厩 uses before it calls a dimension a strength, so that one lucky or unlucky game cannot decide the week.
 Members below the bar are listed without a rank and are not eligible.
 Nobody is named when fewer than two members are ranked or when everyone averaged the same, and the report then says why.
