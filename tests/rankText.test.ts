@@ -105,6 +105,15 @@ test("several members make at most two sentences, and a name is sanitized", () =
   assert.equal(buildRankVoiceLine({ matchId: "NA1_9", mock: false, moves: [] }), "");
 });
 
+test("two members whose names collide after trimming still sound different", () => {
+  const moves = [voiceMove("p1", "SummonerAlpha", promotion), voiceMove("p2", "SummonerBeta", promotion)];
+  const line = buildRankVoiceLine({ matchId: "NA1_5", mock: false, moves });
+  const [first, second] = line.split("。").filter(Boolean);
+  assert.match(first, /Alpha/, "the front halves would both be Summon");
+  assert.match(second, /Beta/);
+  assert.ok(Array.from(line).length <= 65, "the line stays short");
+});
+
 test("two long Latin names share a speech budget, so a line stays short", () => {
   const flexUp = moveOf(entry("GOLD", "II", 90, 20, "RANKED_FLEX_SR"), entry("GOLD", "I", 12, 21, "RANKED_FLEX_SR"));
   const flexDown = moveOf(entry("PLATINUM", "IV", 5, 20, "RANKED_FLEX_SR"), entry("GOLD", "I", 86, 21, "RANKED_FLEX_SR"));
