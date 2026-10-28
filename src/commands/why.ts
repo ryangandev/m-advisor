@@ -143,15 +143,27 @@ const whyCommand: BotCommand = {
     }
     const verdict = buildVerdict(record);
     const row = buildAppealRow(record, true);
+    let buttonDisabled = false;
     try {
       await interaction.update({ components: row ? [row] : [], allowedMentions: NO_MENTIONS });
+      buttonDisabled = true;
       await interaction.followUp({ embeds: [buildAppealEmbed(verdict)], allowedMentions: NO_MENTIONS });
     } catch (error) {
       // No ruling went out, so the case is reopened and the member can appeal again.
+      let reopened = false;
       try {
-        reopenAppeal(appeal);
+        reopened = reopenAppeal(appeal);
       } catch (reopenError) {
         logError(`The /why case could not be reopened: ${reopenError instanceof Error ? reopenError.name : "unknown error"}`);
+      }
+      // The message already shows the disabled button, so it is swapped back or the member could not retry from it.
+      if (buttonDisabled && reopened) {
+        const open = buildAppealRow(record, false);
+        try {
+          await interaction.editReply({ components: open ? [open] : [], allowedMentions: NO_MENTIONS });
+        } catch (restoreError) {
+          logError(`The /why appeal button could not be restored: ${restoreError instanceof Error ? restoreError.name : "unknown error"}`);
+        }
       }
       throw error;
     }
