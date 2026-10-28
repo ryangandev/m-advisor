@@ -9,6 +9,7 @@ import { BotCommand } from "../types";
 import { buildErrorEmbed, NO_MENTIONS } from "../utils/embeds";
 import { isAdmin } from "../utils/permissions";
 import { reconcileGuildMonitoring } from "../services/monitorLifecycle";
+import { forgetMemberBaselines } from "../services/gameMonitor";
 import { getTrackedMember, removeTrackedMember } from "../store/bindingStore";
 import { logInfo } from "../utils/log";
 
@@ -54,6 +55,7 @@ const unbindCommand: BotCommand = {
 
     // Only this member leaves the session: a report speaking for them is cancelled, everyone else stays monitored.
     removeTrackedMember(guildId, user.id);
+    forgetMemberBaselines(guildId, user.id);
     logInfo(`Removed the binding of ${binding.accounts.map((account) => `${account.gameName}#${account.tagLine}`).join(", ")} `
       + `from Discord member ${user.username}.`);
     await reconcileGuildMonitoring(interaction.client, guildId);

@@ -2229,6 +2229,33 @@ test("a failed 段位播报 voice line is tried once, never retried, and never c
   assert.equal(bot.errors.length, 1, "nothing but the voice failure is an error");
 });
 
+test("a 段位播报 waiting for a report that is carried on after everyone left and returned is still spoken", async () => {
+  const { bot, rank } = await rankedTrio("cast-rejoin-guild");
+  const queued = recordAnnouncements(bot);
+  rank.league.set("alice", [ranked("PLATINUM", "IV", 7, 11, 10)]);
+  rank.league.set("bob", [ranked("SILVER", "I", 12, 10, 11)]);
+  rank.league.set("zed", [ranked("PLATINUM", "III", 71, 11, 10)]);
+  const speech = deferred<string>();
+  const started = deferred<void>();
+  bot.generate = async () => { started.resolve(); return speech.promise; };
+  const polling = bot.poll();
+  await started.promise;
+  await until(() => castsOf(bot).length === 1, "the 段位播报 text");
+  // Everyone leaves during the speech, which stops the session, and comes back within the window.
+  for (const id of ["alice-id", "bob-id", "zed-id"]) bot.move(id, null);
+  bot.sync();
+  bot.generate = async (text) => { bot.generated.push(text); return "again.wav"; };
+  speech.resolve("old.wav");
+  await polling;
+  for (const id of ["alice-id", "bob-id", "zed-id"]) bot.move(id, "x");
+  assert.deepEqual(await bot.start(), { announced: 1, errors: 0 });
+  await until(() => bot.generated.some((text) => text.startsWith("模拟段位播报，")), "the 段位播报 line being spoken");
+  assert.equal(queued.filter((text) => text.startsWith("模拟段位播报，")).length, 1, "queued once, after the report");
+  assert.ok(!queued.at(-2)!.startsWith("模拟段位播报，"), "the report's voice came first");
+  assert.equal(castsOf(bot).length, 1, "the 段位播报 text is not repeated");
+  assert.equal(bot.messages.filter((message) => postedEmbeds(message)[0].title?.includes("本局马匹鉴定")).length, 1, "nor the report");
+});
+
 test("a real match is titled 段位播报 and its line has no mock prefix", async () => {
   const bot = harness("cast-real-guild", [
     { id: "alice-id", puuids: ["alice"], channel: "x" },
@@ -2605,6 +2632,166 @@ test("a kept baseline is dropped when the member is unbound, so a rebind within 
   assert.equal(getLastMatchId(bot.guildId, "tracked"), "finished-meanwhile");
 });
 
+// The guild remembers every match it posted or consumed, whoever leaves, so a return never posts or announces it twice.
+
+/** Alice and Bob in channel x, who played m1 together. */
+async function duoWithMatch(guildId: string) {
+  const bot = harness(guildId, [
+    { id: "alice-id", puuids: ["alice"], channel: "x" },
+    { id: "bob-id", puuids: ["bob"], channel: "x" },
+  ]);
+  await bot.start();
+  bot.matches.set("m1", match("m1", ["alice", "bob"]));
+  return bot;
+}
+
+test("a match Bob's list showed first is not announced again when Alice's lagging list shows it after they both rejoin", async () => {
+  const bot = await duoWithMatch("handled-lag-guild");
+  bot.latestIds.set("bob", "m1");
+  assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
+  bot.move("alice-id", null);
+  bot.move("bob-id", null);
+  bot.sync();
+  // Riot's list for Alice catches up only now, and she returns within the window with her old baseline.
+  bot.latestIds.set("alice", "m1");
+  bot.move("alice-id", "x");
+  assert.deepEqual(await bot.start(), { announced: 0, errors: 0 });
+  await delay(30);
+  assert.equal(bot.sent.length, 1, "the text once");
+  assert.equal(bot.played.length, 1, "the voice once");
+  assert.equal(getLastMatchId(bot.guildId, "alice"), "m1", "she moves past it");
+});
+
+test("a match consumed while Alice's read failed is not announced again when she returns", async () => {
+  const bot = await duoWithMatch("handled-read-failure-guild");
+  bot.latestIds.set("alice", "m1");
+  bot.latestIds.set("bob", "m1");
+  const latest = bot.dependencies.latest;
+  bot.dependencies.latest = async (puuid) => {
+    if (puuid === "alice") throw new RiotApiError("Riot API error 429: rate limit exceeded.", "rate_limited", 429);
+    return latest(puuid);
+  };
+  assert.deepEqual(await bot.poll(), { announced: 1, errors: 1 });
+  bot.dependencies.latest = latest;
+  bot.move("alice-id", null);
+  bot.move("bob-id", null);
+  bot.sync();
+  bot.move("alice-id", "x");
+  assert.deepEqual(await bot.start(), { announced: 0, errors: 0 });
+  await delay(30);
+  assert.equal(bot.sent.length, 1, "the text once");
+  assert.equal(bot.played.length, 1, "the voice once");
+});
+
+test("a match consumed before Alice left is not announced again when her lagging list shows it after Bob left too", async () => {
+  const bot = await duoWithMatch("handled-leave-order-guild");
+  bot.latestIds.set("bob", "m1");
+  assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
+  // Alice leaves first while Bob stays, so her baseline is kept only after m1 was consumed; then Bob leaves.
+  bot.move("alice-id", null);
+  bot.sync();
+  bot.move("bob-id", null);
+  bot.sync();
+  bot.latestIds.set("alice", "m1");
+  bot.move("alice-id", "x");
+  assert.deepEqual(await bot.start(), { announced: 0, errors: 0 });
+  await delay(30);
+  assert.equal(bot.sent.length, 1, "the text once");
+  assert.equal(bot.played.length, 1, "the voice once");
+});
+
+/** Both report m1 and its speech is held: resolves once the text is out, with the release of the speech. */
+async function duoSpeaking(guildId: string) {
+  const bot = await duoWithMatch(guildId);
+  bot.latestIds.set("alice", "m1");
+  bot.latestIds.set("bob", "m1");
+  const speech = deferred<string>();
+  const started = deferred<void>();
+  bot.generate = async () => { started.resolve(); return speech.promise; };
+  const polling = bot.poll();
+  await started.promise;
+  assert.equal(bot.sent.length, 1, "the text went out before the speech");
+  return {
+    bot,
+    /** Lets the cancelled speech finish, with working speech from then on. */
+    finish: async () => {
+      bot.generate = async (text) => { bot.generated.push(text); return "again.wav"; };
+      speech.resolve("old.wav");
+      await polling;
+    },
+  };
+}
+
+test("co-reporters who leave one after the other during the speech: the one who returns gets the voice once and no second text", async () => {
+  const { bot, finish } = await duoSpeaking("handled-one-by-one-guild");
+  bot.move("alice-id", null);
+  bot.sync();
+  bot.move("bob-id", null);
+  bot.sync();
+  await finish();
+  bot.move("alice-id", "x");
+  assert.deepEqual(await bot.start(), { announced: 1, errors: 0 });
+  await delay(30);
+  assert.equal(bot.sent.length, 1, "the report is not posted a second time");
+  assert.equal(bot.played.length, 1, "and is spoken once");
+  assert.equal(getLastMatchId(bot.guildId, "alice"), "m1");
+  assert.deepEqual(await bot.poll(), { announced: 0, errors: 0 });
+});
+
+test("co-reporters who leave together during the speech, then take turns: whoever returns carries the report on, never posting it twice", async () => {
+  const { bot, finish } = await duoSpeaking("handled-together-guild");
+  bot.move("alice-id", null);
+  bot.move("bob-id", null);
+  bot.sync();
+  await finish();
+  // Alice returns and her session carries the report on, but she leaves again during its speech.
+  const speech = deferred<string>();
+  const started = deferred<void>();
+  bot.generate = async () => { started.resolve(); return speech.promise; };
+  bot.move("alice-id", "x");
+  bot.sync();
+  const polling = bot.poll();
+  await started.promise;
+  bot.move("alice-id", null);
+  bot.sync();
+  bot.generate = async (text) => { bot.generated.push(text); return "again.wav"; };
+  speech.resolve("old.wav");
+  await polling;
+  // Then Bob returns, still within the window.
+  bot.move("bob-id", "x");
+  assert.deepEqual(await bot.start(), { announced: 1, errors: 0 });
+  await delay(30);
+  assert.equal(bot.sent.length, 1, "the report is not posted a second time");
+  assert.equal(bot.played.length, 1, "and is spoken once");
+  assert.equal(getLastMatchId(bot.guildId, "bob"), "m1");
+});
+
+test("a /bind or /unbind forgets the member's kept baselines, also when it races a queued reconciliation", async () => {
+  // Unbound and bound again while away, before any reconciliation ran: the store looks unchanged to the monitor.
+  const away = harness("forget-away-guild");
+  await away.start();
+  away.move("member-1", null);
+  away.sync();
+  away.monitor.forgetMember(away.guildId, "member-1");
+  away.latestIds.set("tracked", "finished-meanwhile");
+  away.move("member-1", "first-channel");
+  assert.deepEqual(await away.start(), { announced: 0, errors: 0 });
+  assert.deepEqual(away.generated, []);
+  assert.equal(getLastMatchId(away.guildId, "tracked"), "finished-meanwhile", "a fresh baseline");
+
+  // Unbound and bound again while in voice, and the queued reconciliation only finds them gone afterwards.
+  const present = harness("forget-present-guild");
+  await present.start();
+  present.monitor.forgetMember(present.guildId, "member-1");
+  present.move("member-1", null);
+  present.sync();
+  present.latestIds.set("tracked", "finished-meanwhile");
+  present.move("member-1", "first-channel");
+  assert.deepEqual(await present.start(), { announced: 0, errors: 0 });
+  assert.deepEqual(present.generated, []);
+  assert.equal(getLastMatchId(present.guildId, "tracked"), "finished-meanwhile", "a fresh baseline");
+});
+
 // Text first when the voice cannot be used.
 
 test("with every player in a channel the voice cannot use, the text report is posted there and the match is consumed without a voice failure", async () => {
@@ -2637,6 +2824,25 @@ test("a channel the voice can use is preferred over one it cannot", async () => 
   assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
   assert.deepEqual(bot.sent.map((entry) => entry.channelId), ["x"]);
   assert.equal(bot.played.length, 1);
+});
+
+test("a text-only report whose player reaches a channel the voice can use during the timeline wait is spoken there", async () => {
+  const bot = harness("text-only-recheck-guild", [{ id: "alice-id", puuids: ["alice"], channel: "full" }]);
+  bot.voiceBlocked.add("full");
+  await bot.start();
+  bot.matches.set("m1", match("m1", ["alice"]));
+  bot.latestIds.set("alice", "m1");
+  const timeline = deferred<null>();
+  const waiting = deferred<void>();
+  bot.dependencies.events = async () => { waiting.resolve(); return timeline.promise; };
+  const polling = bot.poll();
+  await waiting.promise;
+  bot.move("alice-id", "x");
+  timeline.resolve(null);
+  assert.deepEqual(await polling, { announced: 1, errors: 0 });
+  assert.deepEqual(bot.sent.map((entry) => entry.channelId), ["x"]);
+  assert.deepEqual(bot.played, ["x"], "spoken, not text only");
+  assert.ok(!bot.infos.some((line) => line.includes("as text only")));
 });
 
 test("no channel at all for the text keeps the match waiting", async () => {

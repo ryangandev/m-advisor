@@ -73,6 +73,7 @@ Module._load = function(request, parent, ...args) {
         mutations++; simulated = provider.simulateMockMatch(...args); return simulated;
       } },
       "../services/gameMonitor": {
+        forgetMemberBaselines: () => {},
         pollGuildNow: async () => {
           polls++;
           if ((scenario === "simulate-baseline" && polls === 1) || (scenario === "simulate-result" && polls === 2)) await pause();
