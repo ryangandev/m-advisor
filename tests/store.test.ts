@@ -27,6 +27,10 @@ import {
   setVoiceStyle,
 } from "../src/store/announcerStore";
 import { SCHEMA_VERSION, closeDatabase, getDatabase, getDatabasePath } from "../src/store/database";
+import { closeAppeal } from "../src/store/appealStore";
+import { eraseMemberHorseRecords } from "../src/store/horseRecordStore";
+import { recordRankResults } from "../src/store/rankStore";
+import { makeHorseRecord, recordTracked } from "./helpers/horseRecords";
 
 let temporaryDirectory: string;
 let savedDatabasePath: string | undefined;
@@ -538,4 +542,26 @@ test("corrupt databases fail visibly and are never silently replaced", () => {
   writeFileSync(process.env.DATABASE_PATH, original);
   assert.throws(() => listTrackedMembers("any-guild"), /Could not open the bot database/);
   assert.deepEqual(readFileSync(process.env.DATABASE_PATH), original);
+});
+
+test("an erase leaves no trace of the erased rows in the database file or its WAL", () => {
+  const marker = "NA1_ERASED_MARKER_8f3a1c";
+  const rankResult = {
+    guildId: "guild-one", discordUserId: "member-one", mock: false, puuid: "account-a", queueType: "solo" as const,
+    recordedAt: 1_800_000_060_000, kind: "change" as const, tier: "GOLD", division: "II", leaguePoints: 86,
+    lpDelta: 22, beforeTier: "GOLD", beforeDivision: "II", beforeLeaguePoints: 64,
+  };
+  recordTracked(Array.from({ length: 20 }, (_, index) => makeHorseRecord({ matchId: `${marker}_H${index}` })));
+  recordRankResults(Array.from({ length: 20 }, (_, index) => ({ ...rankResult, matchId: `${marker}_R${index}`, playedAt: 1_800_000_000_000 + index })));
+  for (let index = 0; index < 20; index += 1) closeAppeal({ guildId: "guild-one", discordUserId: "member-one", matchId: `${marker}_A${index}`, mock: false });
+  const bytes = () => ["", "-wal"].map((suffix) => {
+    const file = `${process.env.DATABASE_PATH}${suffix}`;
+    return existsSync(file) ? readFileSync(file).toString("latin1") : "";
+  }).join("");
+  assert.ok(bytes().includes(marker), "the marker is stored before the erase");
+
+  assert.equal(getDatabase().pragma("secure_delete", { simple: true }), 1);
+  assert.equal(eraseMemberHorseRecords("guild-one", "member-one"), 20);
+  assert.equal(bytes().includes(marker), false, "erased rows must not stay readable in free pages or the WAL");
+  assert.equal(statSync(`${process.env.DATABASE_PATH}-wal`).size, 0, "the WAL is truncated after the erase");
 });
