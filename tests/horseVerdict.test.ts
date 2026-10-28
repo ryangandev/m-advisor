@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
 import { DIMENSIONS, HORSE_TIERS, tierForRank } from "../src/services/horseRanking";
 import {
-  CLOSE_GAP, appealRuling, buildVerdict, dimensionEvidence, findVerdictRecord, formatGap, listVerdictChoices, verdictSummary,
+  CLOSE_GAP, appealRuling, buildVerdict, dimensionEvidence, findVerdictRecord, formatGap, gapText, listVerdictChoices, verdictSummary,
 } from "../src/services/horseVerdict";
 import { closeDatabase } from "../src/store/database";
 import { makeHorseRecord, recordTracked } from "./helpers/horseRecords";
@@ -87,6 +87,27 @@ test("gaps print with the announcement's rounding and never as zero", () => {
   assert.equal(formatGap(0.25), "0.3");
   assert.equal(formatGap(1.04), "1.0");
   assert.equal(formatGap(0.02), "不到 0.1");
+});
+
+test("the gap is the difference of the printed scores, so it matches the report", () => {
+  // 6.34 prints 6.3 and 6.65 prints 6.7: the printed gap is 0.4, not the raw 0.31 that used to read 惜败.
+  const wide = buildVerdict(makeHorseRecord({ score: 6.34, scoreAbove: 6.65, scoreBelow: 6.0 }));
+  assert.equal(formatGap(wide.above!.gap), "0.4");
+  assert.equal(wide.above?.close, false, "a printed 0.4 is not 惜败");
+  assert.equal(formatGap(wide.below!.gap), "0.3");
+  assert.equal(wide.below?.close, true);
+  // The raw gap is 0.22, but the two printed scores 6.3 and 6.6 are 0.3 apart.
+  const narrow = buildVerdict(makeHorseRecord({ score: 6.34, scoreAbove: 6.56 }));
+  assert.equal(formatGap(narrow.above!.gap), "0.3");
+  assert.equal(narrow.above?.close, true);
+});
+
+test("不到 0.1 is only for different scores that print the same, never for identical ones", () => {
+  const close = buildVerdict(makeHorseRecord({ score: 6.34, scoreAbove: 6.26 }));
+  assert.equal(gapText(close.above!), "不到 0.1");
+  assert.equal(close.above?.close, true);
+  const identical = buildVerdict(makeHorseRecord({ score: 6.3, scoreAbove: 6.3 }));
+  assert.equal(gapText(identical.above!), "0.0");
 });
 
 test("evidence quotes the record's own statistics for a dimension", () => {

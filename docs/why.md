@@ -32,7 +32,8 @@ A record found is answered in public: the reply is deferred, then edited with th
 - A gap that prints as at most `CLOSE_GAP` = 0.3 points is 惜败 (just missed the rank above) or 险胜 (just held off the rank below).
   The label is decided on the printed value, so 差 0.3 分 is always 惜败 and 差 0.4 分 never is.
   0.3 points is 3 percentile points of same-position players, well under the usual gap between neighbouring teammates.
-  Gaps print with the announcement's rounding, and a gap that rounds to 0.0 prints as 不到 0.1.
+  The gap is the difference of the two printed scores, not the rounded raw difference, so it always matches what the report shows: 6.34 and 6.65 print 6.3 and 6.7, a gap of 0.4, which is not 惜败.
+  Two different raw scores that print the same have a printed gap of 0 and read 不到 0.1; exactly equal scores read 0.0 (`gapText` in `src/services/horseVerdict.ts`).
 
 The embed shows the member, champion, position, result and time, the tier and score, the 拖后腿的维度 with the 亮点, the gaps, the praise or roast stored from the announcement when there was one, and a one-line 军师判词.
 The 判词 says 你 only when the caller is the member and names the member otherwise.
