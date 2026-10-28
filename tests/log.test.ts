@@ -119,6 +119,27 @@ test("a failing log file warns once per failure streak and the terminal keeps ev
   assert.equal(terminal.filter(({ line }) => line.includes("Log file write failed")).length, 2);
 });
 
+test("starting the file log prunes expired days at once, even if nothing is written", () => {
+  mkdirSync(directory(), { recursive: true });
+  const dayBefore = (days: number) => {
+    const date = new Date(2026, 9, 5 - days);
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+  };
+  const expired = `bot-${dayBefore(LOG_RETENTION_DAYS)}.log`;
+  const oldestKept = `bot-${dayBefore(LOG_RETENTION_DAYS - 1)}.log`;
+  for (const name of [expired, oldestKept, "notes.txt"]) writeFileSync(path.join(directory(), name), "old\n");
+
+  start();
+  assert.deepEqual(readdirSync(directory()).sort(), [oldestKept, "notes.txt"].sort());
+});
+
+test("starting the file log with no log directory yet is harmless", () => {
+  start();
+  assert.equal(existsSync(directory()), false, "starting alone creates nothing");
+  logInfo("first line");
+  assert.match(read("2026-10-05"), / INFO first line\n$/);
+});
+
 test("the default directory follows BOT_DATA_DIR", () => {
   process.env.BOT_DATA_DIR = root;
   assert.equal(getLogDirectory(), path.join(root, "logs"));

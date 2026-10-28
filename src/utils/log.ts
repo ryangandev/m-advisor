@@ -97,11 +97,18 @@ export function logToFileOnly(level: LogLevel, message: string): void { write(le
 
 /**
  * Also appends every message to one file per local day under `directory` and prunes old days.
+ * Old days are pruned here as well as when a new day starts, because an on-demand bot may stay off for weeks.
  * Only the bot entry point enables this, so tests and one-off scripts never write log files.
  */
 export function startFileLog(options: { directory?: string; now?: () => Date } = {}): string {
   const directory = options.directory ?? getLogDirectory();
-  fileLog = { directory, now: options.now ?? (() => new Date()), failing: false };
+  const state: FileLog = { directory, now: options.now ?? (() => new Date()), failing: false };
+  fileLog = state;
+  try {
+    prune(state, state.now());
+  } catch {
+    // No log directory yet, or it cannot be read: the first write creates it or reports the failure once.
+  }
   return directory;
 }
 
