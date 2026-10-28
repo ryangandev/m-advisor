@@ -382,6 +382,7 @@ test("clearing the channel while roles are on takes the roles back and turns the
   const { replies } = await run("channel-clear", {}, { roles });
   assert.deepEqual(roles.changes, ["remove:role-top:alice", "remove:role-none:bob"]);
   assert.match(replies[0].content!, /已清除马报频道/);
+  assert.doesNotMatch(replies[0].content!, /其余设置保留/, "the roles were switched off, so not every other setting is kept");
   assert.match(replies[0].content!, /每周身份组跟着每周马报换人，所以也一并关闭了/);
   assert.match(replies[0].content!, /\/report-settings roles/);
   const settings = getReportSettings(GUILD)!;
@@ -403,8 +404,9 @@ test("clearing the channel or switching weekly off without roles touches no role
   const roles = new FakeRoleGuild();
   setReportChannel(GUILD, "channel-1");
   await run("weekly", { enabled: false }, { roles });
-  await run("channel-clear", {}, { roles });
+  const cleared = await run("channel-clear", {}, { roles });
   assert.deepEqual(roles.changes, []);
+  assert.match(cleared.replies[0].content!, /已清除马报频道，不会再自动发马报。其余设置保留。/, "nothing else was switched off, so the settings are kept");
 });
 
 test("a failed release when clearing the channel is reported and the holders stay recorded", async () => {
@@ -412,6 +414,7 @@ test("a failed release when clearing the channel is reported and the holders sta
   roles.failures.remove = discordError(50013);
   const { replies } = await run("channel-clear", {}, { roles });
   assert.match(replies[0].content!, /没能收回全部身份组/);
+  assert.doesNotMatch(replies[0].content!, /其余设置保留/);
   const settings = getReportSettings(GUILD)!;
   assert.deepEqual([settings.channelId, settings.rolesEnabled, settings.topHolderIds], [null, false, ["alice"]]);
 });

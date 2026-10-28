@@ -148,9 +148,11 @@ import { Aside } from '@astrojs/starlight/components';
 
 - `/report-settings show`：看当前的频道、开关和身份组设置。
 - `/report-settings channel`：设置自动发马报的文字频道，选项 `channel` 必填，会先检查机器人在那里的权限。
-- `/report-settings channel-clear`：清除频道，停止自动发布，其他设置保留。
+- `/report-settings channel-clear`：清除频道，停止自动发布，日报和周报的开关保留。
+  如果每周身份组是开着的，也会一并关闭，并从军师发过身份组的成员身上收回，之后要用请重新运行 `/report-settings roles`。
 - `/report-settings daily`：开关日报，选项 `enabled` 必填。
 - `/report-settings weekly`：开关周报，选项 `enabled` 必填。
+  关闭周报时，如果每周身份组是开着的，也会一并关闭并收回，因为身份组跟着周报换人。
 - `/report-settings roles`：开关每周身份组，选项 `enabled` 必填。
   可以用 `top-role` 和 `none-role` 指定已有的身份组，不指定就自动创建「本周特等马」和「本周没有马」。
 
