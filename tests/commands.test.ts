@@ -76,6 +76,7 @@ stubModule("../src/services/gameMonitor.ts", {
     calls.starts.push({ guildId, channelId: member.voice.channelId! });
   },
   stopPolling: (guildId: string) => calls.stops.push(guildId),
+  forgetMemberBaselines: () => undefined,
   rebaseMockRank: async (puuids: readonly string[]) => {
     const { entries } = await getLeagueEntries(puuids[0]);
     const solo = entries.find((entry) => entry.queueType === "RANKED_SOLO_5x5");

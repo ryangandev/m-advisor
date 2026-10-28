@@ -12,6 +12,7 @@ import { AccountBoundToOtherMemberError, getTrackedMember, setMemberAccounts } f
 import { getAccountByRiotId } from "../utils/riotApi";
 import { INVALID_RIOT_ID_MESSAGE, parseRiotId } from "../utils/riotId";
 import { reconcileGuildMonitoring } from "../services/monitorLifecycle";
+import { forgetMemberBaselines } from "../services/gameMonitor";
 import { getRiotDataLabel, isMockData } from "../services/riotData";
 import { isSyntheticAccount, mergeBoundAccount } from "../utils/bindingAccounts";
 import { getBindingStoreErrorMessage, getRiotUserErrorMessage } from "../utils/userFacingErrors";
@@ -111,6 +112,8 @@ const bindCommand: BotCommand = {
       return;
     }
 
+    // At once, not in the queued reconciliation: a baseline kept from before an unbind must not come back.
+    forgetMemberBaselines(guildId, user.id);
     await reconcileGuildMonitoring(interaction.client, guildId);
     assertRunning();
 

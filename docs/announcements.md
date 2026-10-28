@@ -23,17 +23,23 @@ An account added to a member who is already in voice also gets a fresh baseline 
 Accounts present when the session starts, at the first join or after a bot restart, take their latest match as the baseline without that check, so nothing is replayed.
 A member who leaves voice or is unbound drops out of the session, and their accounts' baselines are cleared with `clearLastMatchIds`.
 A member who leaves voice and still owns their accounts has those baselines kept in memory for 2 minutes (`KEEP_BASELINES_MS`), also when their leaving stops the session.
-If the same member returns within the window, their accounts take the kept baselines back instead of a new one, so a match they finished meanwhile is announced once, and one already announced is not announced again.
-The guild also keeps, for the same window, the matches consumed meanwhile and the reports whose text was already posted together with their voice failures.
-So a report whose text went out before the member left is not posted again, and its voice attempts keep counting toward the cap of three.
+If the same member returns within the window, their accounts take the kept baselines back instead of a new one, so a match they finished meanwhile is announced once.
 A baseline is kept only if its account was read recently (within two poll intervals, or ten minutes while a report is being spoken), so a Mac that slept for hours and then reconciles cannot bring back a stale baseline and replay an old match.
-After the window, for an unbound member or an account that moved to another member or was removed, and when the member is unbound and bound again within the window, the return gets a new baseline, so a match finished while away is never replayed.
+After the window, for an unbound member or an account that moved to another member or was removed, and after any `/bind` or `/unbind` of the member, the return gets a new baseline, so a match finished while away is never replayed.
+`/bind` and `/unbind` drop the member's kept baselines at once, so a reconciliation still queued behind them cannot bring an old one back.
 The session stops when no tracked member is left in voice, and a bot restart creates new baselines because the kept ones live in memory only, so offline matches are not replayed.
 Moving between channels does not touch the session or its baselines.
 
+Separately from the baselines, the guild remembers every match whose text report it posted or that it consumed, whichever session did it and whether or not anyone's baseline was kept.
+Any session of the guild, new or continuing, treats a remembered match that was consumed as already announced for every account that reports it.
+That covers a member who returns after a teammate's session announced the match, and a player whose Riot match list shows the game later than a teammate's.
+A remembered match whose text went out but whose voice did not finish is carried on by whichever session sees it next: the text is never posted again, its voice attempts keep counting toward the cap of three, and its 段位播报 voice line follows the new session.
+A match is remembered for 12 minutes (`HANDLED_MS`) after it was last handled, or after the session holding it let go of it; that is the longest a kept baseline can be restored after its account's last read.
+At most 50 matches are remembered per guild, the oldest forgotten first, and like the kept baselines they live in memory only.
+
 Each poll reads only the accounts of members in the session, and duplicate PUUIDs are queried once.
 An account's new latest match is grouped with every other polled account that reported the same match, so a shared match is announced once per guild.
-A match already announced in this session only advances the reporting account's baseline.
+A match already announced in this session, or remembered as consumed by the guild, only advances the reporting account's baseline.
 Pending matches are announced one at a time, oldest `gameEndTimestamp` first, with unknown end times last and then by match ID.
 After a match plays, the baseline of every polled account that reported it advances; a failure leaves them all untouched for a retry.
 A match whose voice fails three times is consumed the same way without voice, as described in [Text first, timeline and 马厩 records](#text-first-timeline-and-马厩-records).
@@ -71,6 +77,7 @@ Otherwise the join never reaches Ready, which would count as a voice failure.
 The test commands refuse the AFK channel and a full channel the same way.
 
 If none of a match's players is in a channel the voice can use, but some are in a voice channel the bot can see and post in, the text report is still posted there, in the channel the same rules choose among those, and the voice is skipped.
+The choice is made again after the timeline wait, so a player who reached a channel the voice can use meanwhile gets the voice report there instead.
 That covers a full channel, the AFK channel and a channel where the bot lacks Connect or Speak; the bot needs only View Channel and Send Messages in it.
 The match is consumed with one info line, `Announced match <id> as text only`, and nothing counts as a voice failure.
 A text that cannot be posted is retried on the next poll, counted toward the same attempt cap.
