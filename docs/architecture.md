@@ -5,18 +5,31 @@
 | Location | Responsibility |
 | --- | --- |
 | `src/commands/` | Slash commands and permission checks |
-| `src/events/` | Discord lifecycle and voice membership |
+| `src/handlers/commandHandler.ts` | Loads every compiled command file and routes interactions to it |
+| `src/events/ready.ts`, `voiceStateUpdate.ts`, `interactionCreate.ts` | Startup restore, voice membership and interaction dispatch |
+| `src/events/reportScheduler.ts` | Starts the 马报 scheduler once the client is ready |
+| `src/events/guildAvailable.ts`, `guildDelete.ts` | Guild lifecycle: a guild becoming available and the bot being removed from one |
 | `src/services/gameMonitor.ts` | Match monitoring and announcement orchestration |
-| `src/services/horseRanking.ts` | Position-aware teammate scoring from 特等马 to 没有马 |
+| `src/services/monitorLifecycle.ts`, `shutdownState.ts`, `simulationLock.ts` | Monitor start and stop per guild, the shared stopping flag and the per-guild `/simulate` lock |
+| `src/services/gameStartWatcher.ts`, `pregameBrief.ts`, `pregameRecap.ts` | 军师赛前锦囊: detect a game on the loading screen, write the brief and recap it after the game |
+| `src/services/horseRanking.ts`, `partyRanking.ts` | Position-aware teammate scoring from 特等马 to 没有马, and the 车队内战 ranking of tracked friends |
 | `src/services/announcementText.ts` | Chinese speech and channel report for a ranked match |
+| `src/services/voiceAnnouncements.ts`, `channelChoice.ts` | Shared voice queue with retries and timeouts, and the choice of the voice channel to speak in |
+| `src/services/rankTracker.ts`, `rankResults.ts`, `rankMath.ts`, `rankText.ts` | 段位变化: read ranked entries around a game, compare them, compute LP and 晋级/掉段, and word the 段位播报 |
 | `src/services/horseRecords.ts`, `horseProfile.ts` | 马厩: turn an announced match into per-member records, and summarize a member's records into a profile |
 | `src/services/horseVerdict.ts`, `src/utils/whyRadar.ts`, `whyEmbed.ts` | `/why`: explain one stored verdict, draw its radar PNG and word the 上诉 ruling |
 | `src/services/reports.ts`, `reportScheduler.ts`, `reportRoles.ts` | 马报: build the daily and weekly reports, post them on schedule with restart catch-up, and rotate the weekly roles |
 | `src/services/matchEvents.ts` | Timeline moments, such as a won baron fight, cited by the praise and roast |
+| `src/services/riotData.ts` | The explicit mock/real provider behind every Riot call |
+| `src/services/localTts.ts` | Persistent Python speech worker client |
+| `src/services/commandMigration.ts` | Retires legacy global commands at registration |
 | `src/data/` | Generated reference quantiles and Chinese champion names |
-| `src/utils/riotApi.ts`, `riotMatchApi.ts` | Public Riot account and match operations |
+| `src/fixtures/riotFixtures.ts` | Labeled mock Riot data |
+| `src/utils/riotApi.ts`, `riotMatchApi.ts`, `riotLeagueApi.ts`, `riotSpectatorApi.ts`, `riotId.ts` | Public Riot account, match, league-v4 and spectator-v5 operations and Riot ID parsing |
 | `src/utils/matchTimeline.ts` | match-v5 timeline parsing, isolated so an upstream shape change stays in one file |
-| `src/store/` | Guild bindings, preferences and monitor state |
+| `src/utils/embeds.ts`, `pregameEmbed.ts`, `stableEmbed.ts`, `reportEmbed.ts` | Discord embeds for profiles, the 锦囊, 马厩 and 马报 |
+| `src/utils/bindingAccounts.ts`, `permissions.ts`, `testChannel.ts`, `userFacingErrors.ts`, `pacificTime.ts`, `log.ts` | Account list helpers, permission checks, test channel, user-facing error text, Pacific day boundaries and the timestamped log |
+| `src/store/` | SQLite stores: bindings and preferences, announcer, 马厩 records, 马报, appeals, ranked results and the schema in `database.ts` |
 | `src/utils/tts.ts` | Speech generation provider boundary |
 | `src/utils/speechChunks.ts` | Splitting speech into sentence chunks |
 | `src/utils/voicePlayback.ts` | Discord connection and audio playback |
@@ -33,7 +46,7 @@ The local speech model replaces the cloud synthesis step; the Node bot still own
 
 ## Storage
 
-Bindings and voice styles are persisted locally in SQLite.
+Bindings, voice styles, 马厩 history, 马报 settings, pre-game settings, appeal cases and ranked results are persisted locally in SQLite.
 Timers, voice channels and match baselines are session state and never survive restart.
 See [Storage](storage.md) for database ownership, durability, shutdown and test evidence.
 
