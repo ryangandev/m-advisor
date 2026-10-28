@@ -87,6 +87,7 @@ The button's custom ID is `why-appeal:<r|m>:<member>:<match>`, so the handler kn
 - It admits 惜败 or 险胜 under the same `CLOSE_GAP`.
 - After the ruling the button turns into a disabled 本案已结 · 维持原判.
 - The case is closed in the database before the reply is sent, so a double click is heard once; if disabling the button or sending the ruling fails, the case is reopened and the member can appeal again.
+  When the ruling fails after the button was disabled, the enabled 上诉 button is put back with `editReply` (a failure of that is only logged), so the member can retry from the same message.
 - An appeal whose record was erased with `/stable-erase` gets a private 无案可审 and closes nothing.
 - One member appeals one match once: a repeat appeal, even from another `/why` message, gets a private 本案已结，维持原判。
   Closed cases are stored in the `appeal_cases` table (see [Local storage](storage.md#appeal-cases)), so a restart does not reopen them.

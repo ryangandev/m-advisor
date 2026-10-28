@@ -78,7 +78,7 @@ function command(options: { userId?: string; target?: string; match?: string | n
   return { stub: stub as unknown as Parameters<typeof whyCommand.execute>[0], calls };
 }
 
-function button(customId: string, userId: string, options: { failUpdate?: boolean } = {}) {
+function button(customId: string, userId: string, options: { failUpdate?: boolean; failEdit?: boolean } = {}) {
   const calls: Array<{ kind: string; payload: Payload }> = [];
   const stub = {
     customId,
@@ -90,6 +90,10 @@ function button(customId: string, userId: string, options: { failUpdate?: boolea
       calls.push({ kind: "update", payload });
     },
     followUp: async (payload: Payload) => { calls.push({ kind: "followUp", payload }); },
+    editReply: async (payload: Payload) => {
+      if (options.failEdit) throw new Error("Unknown Message");
+      calls.push({ kind: "edit", payload });
+    },
   };
   return { stub: stub as unknown as Parameters<NonNullable<typeof whyCommand.handleButton>>[0], calls };
 }
@@ -362,6 +366,20 @@ test("a case is reopened when the ruling could not be sent", async () => {
 test("a case is reopened when the ruling follow-up fails after the button was disabled", async () => {
   seed([seededSupport()]);
   const stub = button("why-appeal:r:support-friend:NA1_5100000001", "support-friend");
+  (stub.stub as unknown as { followUp: () => Promise<void> }).followUp = async () => { throw new Error("Missing Permissions"); };
+  await assert.rejects(whyCommand.handleButton!(stub.stub), /Missing Permissions/);
+  assert.equal(isAppealClosed({ guildId: GUILD, discordUserId: "support-friend", matchId: "NA1_5100000001", mock: false }), false);
+  assert.deepEqual(stub.calls.map((call) => call.kind), ["update", "edit"], "the disabled button is swapped back");
+  const restored = buttonOf(stub.calls[1].payload);
+  assert.equal(restored.disabled, false, "the member can press the button again");
+  assert.equal(restored.custom_id, "why-appeal:r:support-friend:NA1_5100000001");
+  assert.notEqual(restored.label, buttonOf(stub.calls[0].payload).label);
+  assert.deepEqual(stub.calls[1].payload.allowedMentions, NO_MENTIONS);
+});
+
+test("the original follow-up error is thrown even when the button cannot be restored", async () => {
+  seed([seededSupport()]);
+  const stub = button("why-appeal:r:support-friend:NA1_5100000001", "support-friend", { failEdit: true });
   (stub.stub as unknown as { followUp: () => Promise<void> }).followUp = async () => { throw new Error("Missing Permissions"); };
   await assert.rejects(whyCommand.handleButton!(stub.stub), /Missing Permissions/);
   assert.equal(isAppealClosed({ guildId: GUILD, discordUserId: "support-friend", matchId: "NA1_5100000001", mock: false }), false);
