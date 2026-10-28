@@ -49,7 +49,7 @@ const whyCommand: BotCommand = {
   async execute(interaction: ChatInputCommandInteraction): Promise<void> {
     const guildId = interaction.guildId;
     if (!guildId) {
-      await interaction.reply({ embeds: [buildErrorEmbed("这个命令只能在服务器里使用。")], flags: MessageFlags.Ephemeral });
+      await interaction.reply({ embeds: [buildErrorEmbed("这个命令只能在服务器里使用。")], flags: MessageFlags.Ephemeral, allowedMentions: NO_MENTIONS });
       return;
     }
     const memberId = (interaction.options.getUser("user") ?? interaction.user).id;
@@ -114,7 +114,7 @@ const whyCommand: BotCommand = {
     const target = parseAppealCustomId(interaction.customId);
     const guildId = interaction.guildId;
     if (!target || !guildId) {
-      await interaction.reply({ content: "这个按钮已经失效了。", flags: MessageFlags.Ephemeral });
+      await interaction.reply({ content: "这个按钮已经失效了。", flags: MessageFlags.Ephemeral, allowedMentions: NO_MENTIONS });
       return;
     }
     if (interaction.user.id !== target.memberId) {
@@ -128,23 +128,23 @@ const whyCommand: BotCommand = {
     }
     const appeal = { guildId, discordUserId: target.memberId, matchId: target.matchId, mock: target.mock };
     if (isAppealClosed(appeal)) {
-      await interaction.reply({ content: "本案已结，维持原判。", flags: MessageFlags.Ephemeral });
+      await interaction.reply({ content: "本案已结，维持原判。", flags: MessageFlags.Ephemeral, allowedMentions: NO_MENTIONS });
       return;
     }
     const record = findVerdictRecord(guildId, target.memberId, target.mock, target.matchId);
     if (!record) {
-      await interaction.reply({ content: "这一局的档案已经不在马厩里了，无案可审。", flags: MessageFlags.Ephemeral });
+      await interaction.reply({ content: "这一局的档案已经不在马厩里了，无案可审。", flags: MessageFlags.Ephemeral, allowedMentions: NO_MENTIONS });
       return;
     }
     // Closed before any await, so a double click cannot be heard twice. The record itself is only read.
     if (!closeAppeal(appeal)) {
-      await interaction.reply({ content: "本案已结，维持原判。", flags: MessageFlags.Ephemeral });
+      await interaction.reply({ content: "本案已结，维持原判。", flags: MessageFlags.Ephemeral, allowedMentions: NO_MENTIONS });
       return;
     }
     const verdict = buildVerdict(record);
     const row = buildAppealRow(record, true);
     try {
-      await interaction.update({ components: row ? [row] : [] });
+      await interaction.update({ components: row ? [row] : [], allowedMentions: NO_MENTIONS });
       await interaction.followUp({ embeds: [buildAppealEmbed(verdict)], allowedMentions: NO_MENTIONS });
     } catch (error) {
       // No ruling went out, so the case is reopened and the member can appeal again.

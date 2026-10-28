@@ -5,6 +5,7 @@ import type { Client, Interaction } from "discord.js";
 import type { BotCommand } from "../src/types";
 import handler from "../src/events/interactionCreate";
 import { loadCommands } from "../src/handlers/commandHandler";
+import { NO_MENTIONS } from "../src/utils/embeds";
 
 let originalMode: string | undefined;
 let originalLog: typeof console.error;
@@ -61,7 +62,7 @@ test("registered legacy /testvc is acknowledged with a private migration reply u
 test("other unknown registered slash commands receive a private administrator update message", async () => {
   const f = interactionFixture("removed-command");
   await handler.execute(f.interaction as unknown as Interaction);
-  assert.deepEqual(f.replies, [{ content: "这个命令当前不可用。请让管理员更新此服务器的 Bot 命令后再试。", flags: MessageFlags.Ephemeral }]);
+  assert.deepEqual(f.replies, [{ content: "这个命令当前不可用。请让管理员更新此服务器的 Bot 命令后再试。", flags: MessageFlags.Ephemeral, allowedMentions: NO_MENTIONS }]);
   assert.equal(logs.length, 0);
 });
 
@@ -99,6 +100,7 @@ for (const state of ["fresh", "deferred", "replied"] as const) {
     await handler.execute(f.interaction as unknown as Interaction);
     const output = state === "fresh" ? f.replies : state === "deferred" ? f.edits : f.followUps;
     assert.equal(output.length, 1);
+    assert.deepEqual((output[0] as { allowedMentions: unknown }).allowedMentions, NO_MENTIONS);
     if (state !== "deferred") assert.equal((output[0] as { flags: MessageFlags }).flags, MessageFlags.Ephemeral);
     const payload = output[0] as { embeds: Array<{ toJSON: () => unknown }> };
     assert.doesNotMatch(JSON.stringify(payload.embeds.map(embed => embed.toJSON())), /private-interaction-token|private-request-body/);
@@ -128,7 +130,7 @@ test("buttons are routed by custom ID prefix to the command that owns them", asy
 test("a button nobody owns gets a private expiry note", async () => {
   const f = buttonFixture("retired:1", new Collection());
   await handler.execute(f.interaction as unknown as Interaction);
-  assert.deepEqual(f.replies, [{ content: "这个按钮已经失效了。", flags: MessageFlags.Ephemeral }]);
+  assert.deepEqual(f.replies, [{ content: "这个按钮已经失效了。", flags: MessageFlags.Ephemeral, allowedMentions: NO_MENTIONS }]);
 });
 
 test("a failing button replies privately and logs only the prefix", async () => {

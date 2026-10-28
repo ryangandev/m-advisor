@@ -28,6 +28,8 @@ const client = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildVoiceStates,
   ],
+  // A message that sets no allowedMentions of its own still pings nobody.
+  allowedMentions: { parse: [], repliedUser: false },
 });
 
 client.commands = new Collection<string, BotCommand>();
