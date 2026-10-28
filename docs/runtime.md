@@ -1,7 +1,8 @@
 # Runtime
 
 Use Node.js 22.12 or newer.
-The current host uses Node 24.13.0.
+This checkout is verified with Node 24.
+The user site in `site/` needs Node 22.23.4 or newer; see [User site](site.md).
 Install the locked dependency graph with `npm ci`.
 
 `npm run build` emits `dist/index.js`.

@@ -9,6 +9,10 @@
 | What does the bot remember about each friend's horse tiers, and how does `/stable` read it? | [马厩](stable.md) | Update with the horse record table, profile math and commands that read it |
 | How does `/why` explain a verdict with a radar image, and how does 上诉 work? | [/why 判决书](why.md) | Update with the verdict math, the radar image and the appeal flow |
 | How are the daily and weekly 马报 scheduled, built and posted, and how do the weekly roles work? | [马报](ma-bao.md) | Update with report math, scheduling, catch-up, commands and role behavior |
+| How are 段位变化, LP and 晋级/掉段 read, stored and announced? | [Announcements](announcements.md#段位变化), [Storage](storage.md), [Riot data](riot-data.md) | Update with rank reading, the result table and the 段位播报 wording |
+| What does the 段位播报 say and when is it skipped? | [Announcements](announcements.md#段位播报) | Update with rank wording and skip rules |
+| How does the 赛前锦囊 start, speak and get recapped? | [Announcements](announcements.md#game-start), [马厩](stable.md#军师赛前锦囊) | Update with the start watcher, the brief and the recap |
+| How does the 车队内战 ranking of tracked friends work? | [Horse ranking](scoring.md), [Announcements](announcements.md) | Update with party ranking rules and wording |
 | How do mock fixtures and real Riot requests work? | [Riot data](riot-data.md) | Update with provider, fixtures and request policy |
 | How does local Qwen speech run? | [Local voice](local-voice.md) | Update with worker, providers and speech evidence |
 | How are monitoring, retries and voice playback coordinated? | [Announcements](announcements.md) | Update with monitoring sessions and transport behavior |
