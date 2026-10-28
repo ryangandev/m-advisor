@@ -11,6 +11,7 @@ The normal poll interval is 45 seconds, and manual simulation commands can reque
 Those reconciliations run one after another per guild, so a slow lookup cannot apply an older view over a newer one.
 Voice updates that do not change the channel, such as mute or deafen, and updates from untracked members are ignored.
 After a gateway re-identify, for example after the Mac slept, discord.js reloads a guild's voice states without any voice event, so `src/events/guildAvailable.ts` reconciles the guild again when it becomes available.
+It does nothing before the client is ready, because at startup every guild becomes available first and `restoreMonitoring` on ClientReady is the startup path.
 
 The first tracked member in voice starts the session, which immediately reads each of their accounts' latest match as its baseline.
 The baseline is recorded without speaking, including a valid empty history.
@@ -23,7 +24,10 @@ Accounts present when the session starts, at the first join or after a bot resta
 A member who leaves voice or is unbound drops out of the session, and their accounts' baselines are cleared with `clearLastMatchIds`.
 A member who leaves voice and still owns their accounts has those baselines kept in memory for 2 minutes (`KEEP_BASELINES_MS`), also when their leaving stops the session.
 If the same member returns within the window, their accounts take the kept baselines back instead of a new one, so a match they finished meanwhile is announced once, and one already announced is not announced again.
-After the window, or for an unbound member or an account that moved to another member or was removed, the return gets a new baseline, so a match finished while away is never replayed.
+The guild also keeps, for the same window, the matches consumed meanwhile and the reports whose text was already posted together with their voice failures.
+So a report whose text went out before the member left is not posted again, and its voice attempts keep counting toward the cap of three.
+A baseline is kept only if its account was read recently (within two poll intervals, or ten minutes while a report is being spoken), so a Mac that slept for hours and then reconciles cannot bring back a stale baseline and replay an old match.
+After the window, for an unbound member or an account that moved to another member or was removed, and when the member is unbound and bound again within the window, the return gets a new baseline, so a match finished while away is never replayed.
 The session stops when no tracked member is left in voice, and a bot restart creates new baselines because the kept ones live in memory only, so offline matches are not replayed.
 Moving between channels does not touch the session or its baselines.
 
@@ -66,7 +70,14 @@ A channel also counts only if the bot can join it (it can see and connect to it,
 Otherwise the join never reaches Ready, which would count as a voice failure.
 The test commands refuse the AFK channel and a full channel the same way.
 
-If none of a match's players is in a usable channel, the match is neither announced nor consumed in that poll and adds no error.
+If none of a match's players is in a channel the voice can use, but some are in a voice channel the bot can see and post in, the text report is still posted there, in the channel the same rules choose among those, and the voice is skipped.
+That covers a full channel, the AFK channel and a channel where the bot lacks Connect or Speak; the bot needs only View Channel and Send Messages in it.
+The match is consumed with one info line, `Announced match <id> as text only`, and nothing counts as a voice failure.
+A text that cannot be posted is retried on the next poll, counted toward the same attempt cap.
+The 锦囊 and the 段位播报 text follow the same rule, and the 锦囊 has no voice line then.
+A channel the voice can use is always preferred when any player is in one, and the `TEST_*` restrictions still apply to both.
+
+If none of a match's players is in a channel the text can go to either, the match is neither announced nor consumed in that poll and adds no error.
 It is logged once and waits until a player is in a usable channel; if its players leave voice instead, their baselines are dropped with them.
 A waiting match keeps its fetched detail for the session, so later polls neither fetch it again nor log it as newly detected.
 It is forgotten once none of the accounts that reported it is tracked any more, and at most 20 matches wait per session, the oldest forgotten first.
@@ -280,6 +291,10 @@ It reads an account's rank at three points:
 - When the game start watcher first decides about a ranked game, announced or skipped, for every bound player in it on both teams, because LP does not move during a game. This read absorbs a dodge, decay or a remake penalty since the last read. A game whose finished match the session already knows is over and reads nothing.
 - When Phase B detects the finished match, for every bound player of it on both teams. A read that caught up is the before-value of that account's next game, although only the reported team gets a row.
 
+The read at the game's start is retried on later in-game rechecks, up to 3 more times per player, for the players who still have no successful read since the first sighting; see [Riot data](riot-data.md#rank-tracking).
+A game the watcher saw at its start whose before-value is still older than that sighting shows as unattributable, because the older read may hold a dodge or decay.
+A game the watcher never saw, such as one that began before monitoring, and mock data keep using the newest read from before the game ended.
+
 A match's before-value is the newest of the account's recent reads that was sent at or before the game's end, or the newest read when the end time is unknown.
 So when a player requeues and the next game's start is read before the poll detects the last game, that read, which already holds the last game's result, is not compared with it.
 A read sent after the game ended is never its before-value; with nothing older the row is left out.
@@ -312,7 +327,7 @@ Members appear as mentions inside the embed, which notifies nobody, so `allowedM
 | One game, same division | `<@id> 单双排 黄金 II · 86 LP · 本局 +22` |
 | Promotion | `<@id> 单双排 铂金 IV · 7 LP · 本局 +24 · 晋级！` |
 | Demotion | `<@id> 单双排 白银 I · 75 LP · 本局掉段` |
-| Several games since the before-value | `<@id> 单双排 黄金 II · 64 LP · 中间隔了几局，本局变化算不出来` |
+| No start read, or several games since the before-value | `<@id> 单双排 黄金 II · 64 LP · 赛前段位没读到或中间隔了几局，本局变化算不出来` |
 | Placements finished | `<@id> 单双排 · 定级完成：黄金 IV` |
 | League-v4 not updated yet | `<@id> 单双排 · 段位还没更新，稍后补上` |
 | Still not updated after the last read | `<@id> 单双排 · 段位一直没更新，本局变化算不出来` |
@@ -378,6 +393,7 @@ Each message has one short plain voice job in the shared voice queue, with one a
 - It speaks tiers as `黄金二`, for example `军师贺喜！小明单双排升到铂金四了。` or `小明单双排掉回黄金一，别急，军师陪你重新上马。`
 - Each sentence is chosen from a small pool, seeded by `rank:<matchId>:<puuid>`, so the same match always says the same thing.
 - A line has at most two sentences. Further members of the same message are in the text only. The names of one line share a budget of 12 characters, so a line stays at about 15 seconds or less.
+- Two names that would sound the same after trimming to the budget keep their distinct ends instead, so two members are never spoken as one.
 - Mock lines start with `模拟段位播报，`.
 - A voice failure, or any failure on this path, is logged and never counts toward the report's voice attempts or replays the report: the line is handled after the match was consumed.
 

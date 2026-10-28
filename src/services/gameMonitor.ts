@@ -1,5 +1,5 @@
 import { Client, VoiceChannel } from "discord.js";
-import { RESTJSONErrorCodes } from "discord.js";
+import { PermissionFlagsBits, RESTJSONErrorCodes } from "discord.js";
 import type { Message, MessageCreateOptions } from "discord.js";
 import type { MatchDetail, RiotAccount, TrackedMember } from "../types";
 import { listTrackedMembers } from "../store/bindingStore";
@@ -51,6 +51,13 @@ export const POLL_INTERVAL_MS = 45_000;
 export const MAX_VOICE_ATTEMPTS = 3;
 /** How long the baselines of accounts whose member left voice are kept, so a quick return does not lose the match just finished. */
 export const KEEP_BASELINES_MS = 120_000;
+/**
+ * A baseline is kept only if its account was read this recently when the member left, so a Mac that slept for hours
+ * and then reconciles cannot bring back a stale baseline and replay an old match. A poll in flight, whose report may take
+ * minutes to speak, allows the longer age.
+ */
+export const KEEP_FRESH_MS = 2 * POLL_INTERVAL_MS;
+const KEEP_FRESH_BUSY_MS = 10 * 60_000;
 /** The monitor's own limit on the timeline, above its request timeout, so a stuck timeline never holds a report. */
 const TIMELINE_WAIT_MS = 8_000;
 export interface PollResult { announced: number; errors: number }
@@ -73,6 +80,11 @@ export interface MonitorDependencies {
   members: (guildId: string) => TrackedMember[];
   /** A member's current voice channel if announcements may play there, otherwise null. */
   resolveChannel: (client: Client, guildId: string, userId: string) => VoiceChannel | null;
+  /**
+   * A member's current voice channel if text may be posted there, even when the bot cannot join or speak in it (full, AFK, no
+   * Connect or Speak). Without it a match waits for a channel the voice can use.
+   */
+  resolveTextChannel?: (client: Client, guildId: string, userId: string) => VoiceChannel | null;
   announce: typeof announceTextToCurrentChannel;
   /** Timeline moments for the praise and roast; null when the timeline is unavailable. */
   events: (matchId: string, detail: MatchDetail) => Promise<readonly MatchEvent[] | null>;
@@ -175,6 +187,8 @@ interface AccountState {
   since?: number;
   /** The first lookup has run: the baseline is recorded, or the latest match was kept as pending. */
   baselined: boolean;
+  /** When the account's latest match was last read successfully. */
+  readAt?: number;
 }
 
 /** The baseline of an account whose member left voice: the latest match it had consumed, or none for a valid empty history. */
@@ -182,6 +196,26 @@ interface KeptBaseline {
   owner: string;
   matchId: string | undefined;
   keptAt: number;
+  /** When the account was last really read, carried over so leaving and returning again never extends its freshness. */
+  readAt: number;
+}
+
+/** A match whose text report was posted before its reporters left voice: kept so their return does not post it again. */
+interface KeptProgress {
+  progress: MatchProgress;
+  /** The kept accounts that reported it. */
+  reporters: Set<string>;
+  keptAt: number;
+}
+
+/**
+ * Everything a guild remembers for KEEP_BASELINES_MS about members who left voice: their baselines, the matches already
+ * announced, and the reports already posted with their voice attempts, so a return neither loses nor repeats a match.
+ */
+interface KeptGuild {
+  baselines: Map<string, KeptBaseline>;
+  announced: Map<string, number>;
+  progress: Map<string, KeptProgress>;
 }
 
 /** A match none of whose players is in a usable voice channel; kept so later polls neither refetch nor relog it. */
@@ -283,8 +317,8 @@ export class GameMonitor {
   private readonly gameStartMemory = new Map<string, GameStartMemory>();
   /** stopAll ran: the bot is shutting down. */
   private closed = false;
-  /** Baselines of accounts whose member left voice, per guild, kept for KEEP_BASELINES_MS; see keepBaselines. */
-  private readonly keptBaselines = new Map<string, Map<string, KeptBaseline>>();
+  /** What each guild remembers about members who left voice, for KEEP_BASELINES_MS; see keepLeaving. */
+  private readonly kept = new Map<string, KeptGuild>();
 
   constructor(private readonly dependencies: MonitorDependencies) {}
 
@@ -295,6 +329,7 @@ export class GameMonitor {
    */
   sync(client: Client, guildId: string, presentMemberIds: Iterable<string>): void {
     const wanted = new Set(presentMemberIds);
+    this.purgeKept(guildId);
     const members = this.dependencies.members(guildId).filter((member) => wanted.has(member.discordUserId));
     if (members.length === 0) {
       this.stop(guildId, "no tracked member is in voice");
@@ -358,7 +393,8 @@ export class GameMonitor {
         if (kept) {
           // The same member is back within the window: the match they finished meanwhile is detected like any later one.
           if (kept.matchId) setLastMatchId(guildId, account.puuid, kept.matchId);
-          session.accounts.set(account.puuid, { owner: member.discordUserId, since, baselined: true });
+          session.accounts.set(account.puuid, { owner: member.discordUserId, since, baselined: true, readAt: kept.readAt });
+          this.restoreKeptHistory(guildId, session, account.puuid);
           this.dependencies.info(`Baseline for ${account.gameName}#${account.tagLine} kept from before they left voice: `
             + `${kept.matchId ?? "no Summoner's Rift history"}.`);
           continue;
@@ -368,38 +404,92 @@ export class GameMonitor {
     }
   }
 
-  /**
-   * Remember the baselines of accounts whose member left voice but still owns them, for KEEP_BASELINES_MS.
-   * An unbound member, a moved account and the shutdown keep nothing.
-   */
-  private keepBaselines(guildId: string, accounts: Iterable<[string, AccountState]>): void {
-    if (this.closed) return;
+  private keptOf(guildId: string): KeptGuild | undefined {
+    return this.kept.get(guildId);
+  }
+
+  /** Forgets expired entries, and the baselines of accounts that no longer belong to the member who left with them. */
+  private purgeKept(guildId: string): void {
+    const kept = this.kept.get(guildId);
+    if (!kept) return;
     const now = Date.now();
-    const kept = this.keptBaselines.get(guildId) ?? new Map<string, KeptBaseline>();
-    for (const [puuid, keptAt] of kept) if (now - keptAt.keptAt > KEEP_BASELINES_MS) kept.delete(puuid);
+    for (const [puuid, entry] of kept.baselines) {
+      if (now - entry.keptAt > KEEP_BASELINES_MS || this.ownerOf(guildId, puuid) !== entry.owner) kept.baselines.delete(puuid);
+    }
+    for (const [matchId, at] of kept.announced) if (now - at > KEEP_BASELINES_MS) kept.announced.delete(matchId);
+    for (const [matchId, entry] of kept.progress) {
+      for (const puuid of entry.reporters) if (!kept.baselines.has(puuid)) entry.reporters.delete(puuid);
+      if (entry.reporters.size === 0 || now - entry.keptAt > KEEP_BASELINES_MS) kept.progress.delete(matchId);
+    }
+    if (kept.baselines.size === 0) this.kept.delete(guildId);
+  }
+
+  /**
+   * Remember the baselines of accounts whose member left voice but still owns them, for KEEP_BASELINES_MS, and returns
+   * their PUUIDs. An unbound member, a moved account, an account not read recently and the shutdown keep nothing.
+   * From then on every match the session consumes is noted too (see `consume`), so a returning member does not announce it again.
+   */
+  private keepBaselines(guildId: string, session: MonitorSession, accounts: Iterable<[string, AccountState]>): Set<string> {
+    const keptPuuids = new Set<string>();
+    if (this.closed) return keptPuuids;
+    this.purgeKept(guildId);
+    const now = Date.now();
+    const maxAge = session.inFlight ? KEEP_FRESH_BUSY_MS : KEEP_FRESH_MS;
+    const kept = this.kept.get(guildId) ?? { baselines: new Map(), announced: new Map(), progress: new Map() };
     for (const [puuid, state] of accounts) {
       if (!state.baselined || this.ownerOf(guildId, puuid) !== state.owner) continue;
-      kept.set(puuid, { owner: state.owner, matchId: getLastMatchId(guildId, puuid), keptAt: now });
+      if (state.readAt === undefined || now - state.readAt > maxAge) continue;
+      kept.baselines.set(puuid, { owner: state.owner, matchId: getLastMatchId(guildId, puuid), keptAt: now, readAt: state.readAt });
+      keptPuuids.add(puuid);
     }
-    if (kept.size > 0) this.keptBaselines.set(guildId, kept);
-    else this.keptBaselines.delete(guildId);
+    if (keptPuuids.size > 0) this.kept.set(guildId, kept);
+    return keptPuuids;
+  }
+
+  /** Moves a report whose text was posted, with its voice failures, out of the session so the returning reporters find it. */
+  private keepProgress(guildId: string, matchId: string, progress: MatchProgress, reporters: Iterable<string>): void {
+    const kept = this.kept.get(guildId);
+    const mine = new Set(reporters);
+    if (!kept || !progress.textPosted || mine.size === 0) return;
+    kept.progress.set(matchId, { progress, reporters: mine, keptAt: Date.now() });
   }
 
   /** The kept baseline of an account, if its same member returned within the window; it is used up either way. */
   private takeKeptBaseline(guildId: string, puuid: string, owner: string): KeptBaseline | undefined {
-    const kept = this.keptBaselines.get(guildId);
-    const entry = kept?.get(puuid);
+    this.purgeKept(guildId);
+    const kept = this.kept.get(guildId);
+    const entry = kept?.baselines.get(puuid);
     if (!kept || !entry) return undefined;
-    kept.delete(puuid);
-    if (kept.size === 0) this.keptBaselines.delete(guildId);
-    return entry.owner === owner && Date.now() - entry.keptAt <= KEEP_BASELINES_MS ? entry : undefined;
+    kept.baselines.delete(puuid);
+    return entry.owner === owner ? entry : undefined;
+  }
+
+  /** A returning account brings back the matches announced meanwhile and the reports it had already posted. */
+  private restoreKeptHistory(guildId: string, session: MonitorSession, puuid: string): void {
+    const kept = this.kept.get(guildId);
+    if (!kept) return;
+    for (const matchId of kept.announced.keys()) session.announced.add(matchId);
+    for (const [matchId, entry] of kept.progress) {
+      if (!entry.reporters.has(puuid)) continue;
+      entry.reporters.delete(puuid);
+      if (entry.reporters.size === 0) kept.progress.delete(matchId);
+      if (session.announced.has(matchId) || session.progress.has(matchId)) continue;
+      entry.progress.reporters.add(puuid);
+      session.progress.set(matchId, entry.progress);
+    }
   }
 
   stop(guildId: string, reason = "monitoring was stopped"): void {
     const session = this.sessions.get(guildId);
+    this.purgeKept(guildId);
     session?.controller.abort(new AnnouncementCancelledError());
     session?.watcher?.stop();
-    if (session) this.keepBaselines(guildId, session.accounts);
+    if (session) {
+      const keptPuuids = this.keepBaselines(guildId, session, session.accounts);
+      for (const [matchId, progress] of session.progress) {
+        this.keepProgress(guildId, matchId, progress, [...progress.reporters].filter((puuid) => keptPuuids.has(puuid)));
+      }
+    }
     this.sessions.delete(guildId);
     resetAnnouncerRuntime(guildId);
     if (session) this.dependencies.info(`Monitoring stopped: ${reason}.`);
@@ -469,7 +559,7 @@ export class GameMonitor {
   private createWatcher(client: Client, guildId: string, session: MonitorSession): GameStartWatcher | undefined {
     const inputs = this.dependencies.gameStart;
     if (!inputs) return undefined;
-    const { members, resolveChannel, announce, mock, log, info } = this.dependencies;
+    const { members, resolveChannel, resolveTextChannel, announce, mock, log, info } = this.dependencies;
     return new GameStartWatcher({
       client,
       guildId,
@@ -481,7 +571,7 @@ export class GameMonitor {
       lastChannelId: () => session.lastChannelId,
       rememberChannel: (channelId) => { session.lastChannelId = channelId; },
       memory: this.gameStartMemoryOf(guildId),
-    }, { ...inputs, members, resolveChannel, announce, mock, log: inputs.log ?? log, info, rank: this.dependencies.rank });
+    }, { ...inputs, members, resolveChannel, resolveTextChannel, announce, mock, log: inputs.log ?? log, info, rank: this.dependencies.rank });
   }
 
   private describe(client: Client, guildId: string, member: TrackedMember): string {
@@ -508,14 +598,19 @@ export class GameMonitor {
     }
     session.watcher?.prune(members);
     const dropped = [...session.accounts].filter(([puuid, state]) => owners.get(puuid) !== state.owner).map(([puuid]) => puuid);
-    this.keepBaselines(guildId, dropped.map((puuid) => [puuid, session.accounts.get(puuid)!] as [string, AccountState]));
+    const keptPuuids = this.keepBaselines(guildId, session, dropped.map((puuid) => [puuid, session.accounts.get(puuid)!] as [string, AccountState]));
     for (const puuid of dropped) session.accounts.delete(puuid);
     clearLastMatchIds(guildId, dropped);
-    for (const cache of [session.waiting, session.progress]) {
-      for (const [matchId, entry] of cache) {
-        for (const puuid of dropped) entry.reporters.delete(puuid);
-        if (entry.reporters.size === 0) cache.delete(matchId);
-      }
+    for (const [matchId, entry] of session.waiting) {
+      for (const puuid of dropped) entry.reporters.delete(puuid);
+      if (entry.reporters.size === 0) session.waiting.delete(matchId);
+    }
+    for (const [matchId, entry] of session.progress) {
+      const leaving = dropped.filter((puuid) => entry.reporters.delete(puuid));
+      if (entry.reporters.size > 0) continue;
+      session.progress.delete(matchId);
+      // A posted report is not forgotten with its last reporter: if they return in time it must not be posted again.
+      this.keepProgress(guildId, matchId, entry, leaving.filter((puuid) => keptPuuids.has(puuid)));
     }
   }
 
@@ -553,9 +648,16 @@ export class GameMonitor {
     return liveParticipants(this.dependencies.members(guildId), participants);
   }
 
+  /** The channel text may go to when no player is in a channel the voice can use; see `resolveTextChannel`. */
+  private chooseTextChannel(client: Client, guildId: string, participatingMemberIds: string[], previousId?: string): VoiceChannel | null {
+    const resolve = this.dependencies.resolveTextChannel;
+    return resolve ? chooseChannel(resolve, client, guildId, participatingMemberIds, previousId) : null;
+  }
+
   /** See `perspective` in channelChoice: members the session covers are preferred. */
-  private perspective(client: Client, guildId: string, session: MonitorSession, participants: BoundParticipant[], channel: VoiceChannel): BoundParticipant | undefined {
-    return perspective(this.dependencies.resolveChannel, client, guildId, (memberId) => session.present.has(memberId), participants, channel);
+  private perspective(client: Client, guildId: string, session: MonitorSession, participants: BoundParticipant[], channel: VoiceChannel, textOnly = false): BoundParticipant | undefined {
+    const resolve = (textOnly && this.dependencies.resolveTextChannel) || this.dependencies.resolveChannel;
+    return perspective(resolve, client, guildId, (memberId) => session.present.has(memberId), participants, channel);
   }
 
   /** Whether an account is still the one this lookup started for, after an await: same session, same owner, owner still present. */
@@ -576,6 +678,7 @@ export class GameMonitor {
     try {
       if (!this.current(guildId, session)) return result;
       const members = this.dependencies.members(guildId);
+      this.purgeKept(guildId);
       this.prune(guildId, session, members);
       // Accounts changed without a sync (for example a rebind) still count from now.
       this.track(guildId, session, members, Date.now());
@@ -622,6 +725,7 @@ export class GameMonitor {
         if (!this.current(guildId, session)) return result;
         // The member may have left, rejoined or been unbound while Riot answered.
         if (!this.stillTracked(guildId, session, account.puuid, state) || this.ownerOf(guildId, account.puuid) !== state.owner) continue;
+        state.readAt = Date.now();
         if (!state.baselined) {
           if (matchId && state.since !== undefined && !session.announced.has(matchId)) {
             // This lookup may have waited behind a long poll; a match that ended after the account joined is new, not history.
@@ -728,7 +832,14 @@ export class GameMonitor {
     const detail = match.detail!;
     const boundParticipants = this.boundParticipants(guildId, detail);
     const participantIds = () => this.liveParticipantIds(guildId, boundParticipants);
-    if (!this.chooseChannel(client, guildId, participantIds(), session.lastChannelId)) {
+    let textOnly = false;
+    const voiceChannel = this.chooseChannel(client, guildId, participantIds(), session.lastChannelId);
+    if (!voiceChannel) {
+      // Nobody is in a channel the voice can use: the text report still goes to the best channel the players are in.
+      const text = this.chooseTextChannel(client, guildId, participantIds(), session.lastChannelId);
+      textOnly = Boolean(text) && [...requiredTargets].every((id) => text!.id === id);
+    }
+    if (!voiceChannel && !textOnly) {
       // Not an error: the match waits, unconsumed, until a participant is in an allowed channel or its accounts stop being tracked.
       if (!session.waiting.has(match.matchId)) {
         session.waiting.set(match.matchId, {
@@ -742,7 +853,7 @@ export class GameMonitor {
     session.waiting.delete(match.matchId);
     const progress = this.progressOf(session, match);
     try {
-      return await this.attempt(client, guildId, session, match, progress, boundParticipants, requiredTargets, result);
+      return await this.attempt(client, guildId, session, match, progress, boundParticipants, requiredTargets, result, textOnly);
     } catch (error) {
       // A full queue tried nothing, so like a cancellation it leaves the match for the next poll without counting.
       if (error instanceof AnnouncementCancelledError || error instanceof AnnouncementQueueFullError
@@ -769,6 +880,7 @@ export class GameMonitor {
     boundParticipants: BoundParticipant[],
     requiredTargets: Set<string>,
     result: PollResult,
+    textOnly = false,
   ): Promise<boolean> {
     const detail = match.detail!;
     const participantIds = () => this.liveParticipantIds(guildId, boundParticipants);
@@ -782,13 +894,15 @@ export class GameMonitor {
       if (!this.current(guildId, session)) throw new AnnouncementCancelledError();
     }
     // Chosen after the timeline request, which can take a few seconds.
-    const initial = this.chooseChannel(client, guildId, participantIds(), session.lastChannelId);
+    const initial = textOnly
+      ? this.chooseTextChannel(client, guildId, participantIds(), session.lastChannelId)
+      : this.chooseChannel(client, guildId, participantIds(), session.lastChannelId);
     if (!initial) throw new AnnouncementCancelledError();
     const detected: DetectedMatch = { matchId: match.matchId, detail, boundParticipants, channelId: initial.id };
     // The speaker is fixed with the text; a later majority move changes only where it plays,
     // and a retry keeps the same speaker while they still own the account and can hear it.
-    const speaker = this.previousSpeaker(client, guildId, session, progress, boundParticipants)
-      ?? this.perspective(client, guildId, session, detected.boundParticipants, initial)!;
+    const speaker = (textOnly ? undefined : this.previousSpeaker(client, guildId, session, progress, boundParticipants))
+      ?? this.perspective(client, guildId, session, detected.boundParticipants, initial, textOnly)!;
     progress.speakerPuuid = speaker.puuid;
     // The party is every tracked player on the speaker's team, in voice or not; a friend on the other team is an enemy here.
     const party = this.liveParticipants(guildId, boundParticipants)
@@ -825,7 +939,8 @@ export class GameMonitor {
       && (playing || session.present.has(speaker.memberId))
       && Boolean(resolveTarget());
     // The text goes out only when the voice is about to be queued, so a report that cannot play yet posts nothing.
-    if (!canPlay()) throw new AnnouncementCancelledError();
+    // A text-only report has no voice to wait for.
+    if (!textOnly && !canPlay()) throw new AnnouncementCancelledError();
     if (!progress.rankCast && this.dependencies.rank) {
       progress.rankCast = {
         matchId: match.matchId, client, guildId, session, channel: initial, detail, party,
@@ -837,6 +952,7 @@ export class GameMonitor {
         this.pregameRecap(guildId, match.matchId, announcement), { matchId: match.matchId, party, cast: progress.rankCast });
       if (!this.current(guildId, session)) throw new AnnouncementCancelledError();
     }
+    if (textOnly) return this.finishTextOnly(guildId, session, match, progress, initial);
     await this.dependencies.announce(
       guildId,
       announcement.speech,
@@ -853,6 +969,26 @@ export class GameMonitor {
     // consume and cannot throw, so a rank failure can never replay the report or count as a voice failure.
     if (progress.rankCast) this.finishRankVoice(progress.rankCast, progress.textPosted ? "done" : "dropped");
     this.dependencies.info(`Announced match ${match.matchId} in voice ${secondsSince(match.detectedAt!)} s after detection.`);
+    return true;
+  }
+
+  /**
+   * The end of a text-only attempt: no player is in a channel the voice can use, so the posted text is the whole report.
+   * Nothing here is a voice failure; a text that could not be posted is retried on the next poll, up to the same cap.
+   */
+  private finishTextOnly(guildId: string, session: MonitorSession, match: PendingMatch, progress: MatchProgress, channel: VoiceChannel): boolean {
+    const name = (channel as { name?: string }).name ?? channel.id;
+    if (!progress.textPosted) {
+      if (++progress.voiceFailures >= MAX_VOICE_ATTEMPTS) {
+        this.consume(guildId, session, match);
+        if (progress.rankCast) this.finishRankVoice(progress.rankCast, "dropped");
+        this.dependencies.info(`Gave up on the text report of match ${match.matchId} after ${progress.voiceFailures} failed posts.`);
+      }
+      return false;
+    }
+    this.consume(guildId, session, match);
+    if (progress.rankCast) this.finishRankVoice(progress.rankCast, "given_up");
+    this.dependencies.info(`Announced match ${match.matchId} as text only in ${name}: no player is in a voice channel the bot can join and speak in.`);
     return true;
   }
 
@@ -1290,18 +1426,38 @@ export class GameMonitor {
     for (const account of match.reporters) {
       if (session.accounts.get(account.puuid)?.baselined) setLastMatchId(guildId, account.puuid, match.matchId);
     }
+    // Members who left voice meanwhile come back to a match that is already done.
+    const kept = this.keptOf(guildId);
+    if (kept) {
+      kept.announced.set(match.matchId, Date.now());
+      kept.progress.delete(match.matchId);
+    }
   }
 }
 
-export function resolveMonitoredVoiceChannel(client: Client, guildId: string, userId: string): VoiceChannel | null {
+/** The member's voice channel when it passes the mock-mode TEST_* restrictions, whatever the bot can do in it. */
+function allowedMemberChannel(client: Client, guildId: string, userId: string): VoiceChannel | null {
   const channel = client.guilds.cache.get(guildId)?.members.cache.get(userId)?.voice.channel;
-  if (!(channel instanceof VoiceChannel) || !isUsableVoiceChannel(channel)) return null;
+  if (!(channel instanceof VoiceChannel)) return null;
   if (getRiotMode() === "mock") {
     const testGuildId = process.env.TEST_GUILD_ID?.trim();
     const testChannelId = process.env.TEST_VOICE_CHANNEL_ID?.trim();
     if ((testGuildId && guildId !== testGuildId) || (testChannelId && channel.id !== testChannelId)) return null;
   }
   return channel;
+}
+
+export function resolveMonitoredVoiceChannel(client: Client, guildId: string, userId: string): VoiceChannel | null {
+  const channel = allowedMemberChannel(client, guildId, userId);
+  return channel && isUsableVoiceChannel(channel) ? channel : null;
+}
+
+/** The member's channel for the text report when the voice cannot use it: the bot only needs View Channel and Send Messages there. */
+export function resolveMonitoredTextChannel(client: Client, guildId: string, userId: string): VoiceChannel | null {
+  const channel = allowedMemberChannel(client, guildId, userId);
+  if (!channel) return null;
+  const permissions = channel.permissionsFor(client.user!);
+  return permissions?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages]) ? channel : null;
 }
 
 /** The game start watcher's errors, with their own prefix so they are never read as a failed match poll. */
@@ -1326,6 +1482,7 @@ const monitor = new GameMonitor({
   detail: getMatchDetail,
   members: listTrackedMembers,
   resolveChannel: resolveMonitoredVoiceChannel,
+  resolveTextChannel: resolveMonitoredTextChannel,
   announce: announceTextToCurrentChannel,
   events: (matchId, detail) => fetchMatchEvents(matchId, detail),
   record: recordHorseRecords,

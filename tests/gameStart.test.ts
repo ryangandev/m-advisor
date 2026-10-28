@@ -144,6 +144,8 @@ function harness(specs: MemberSpec[], options: { mock?: boolean; realSpectator?:
   };
   const location = new Map<string, string | null>();
   const blocked = new Set<string>();
+  /** Channels the text may go to but the voice cannot use: full, AFK, or without Connect or Speak. */
+  const voiceBlocked = new Set<string>();
   const move = (memberId: string, channelId: string | null) => {
     const previous = location.get(memberId);
     if (previous) channel(previous).members.delete(memberId);
@@ -181,6 +183,10 @@ function harness(specs: MemberSpec[], options: { mock?: boolean; realSpectator?:
     members: () => { if (settings.failMembers) throw new Error("SQLITE_BUSY: database is locked"); return members; },
     resolveChannel: (_client, _guildId, userId) => {
       const channelId = location.get(userId);
+      return channelId && !blocked.has(channelId) && !voiceBlocked.has(channelId) ? channel(channelId) as unknown as VoiceChannel : null;
+    },
+    resolveTextChannel: (_client, _guildId, userId) => {
+      const channelId = location.get(userId);
       return channelId && !blocked.has(channelId) ? channel(channelId) as unknown as VoiceChannel : null;
     },
     announce: (...args) => service.announce(...args),
@@ -216,7 +222,7 @@ function harness(specs: MemberSpec[], options: { mock?: boolean; realSpectator?:
     for (const player of game.participants) if (player.puuid) games.delete(player.puuid);
   };
   return {
-    monitor, client, channel, move, blocked, games, requests, records, latest, matches, generated, played, errors, infos, settings, sent, order, enter, leaveGame,
+    monitor, client, channel, move, blocked, voiceBlocked, games, requests, records, latest, matches, generated, played, errors, infos, settings, sent, order, enter, leaveGame,
     dependencies,
     /** The fake clock the watcher reads. */
     now: () => clock,
@@ -355,6 +361,23 @@ test("with the server's pregame voice off, only the text is posted", async () =>
   await delay(20);
   assert.deepEqual(bot.generated, []);
   assert.deepEqual(bot.played, []);
+});
+
+test("a 锦囊 whose players are all in a channel the voice cannot use is posted there as text only, without a voice failure", async () => {
+  const bot = harness([{ id: A, puuids: ["acct-a"], channel: "voice-1" }]);
+  bot.voiceBlocked.add("voice-1");
+  bot.enter(spectatorGame(5014, [{ puuid: "acct-a", teamId: 100, championId: AHRI }]));
+  await bot.start();
+  assert.equal(bot.sent.length, 1);
+  assert.equal(bot.sent[0].channelId, "voice-1");
+  const outcome = await bot.monitor.pollGameStart(GUILD, "NA1_5014");
+  assert.deepEqual(outcome.outcome, { textPosted: true, voice: "dropped" });
+  await delay(20);
+  assert.deepEqual(bot.generated, []);
+  assert.deepEqual(bot.errors, []);
+  assert.ok(bot.infos.some((line) => line.includes("NA1_5014 is text only")));
+  await bot.tick();
+  assert.equal(bot.sent.length, 1, "posted once");
 });
 
 test("the 90 second window: a 锦囊 with no usable channel waits, posts at 60 s, and is dropped after 90 s", async () => {
@@ -1372,7 +1395,7 @@ test("a game whose start read never succeeds is asked at most four times and its
   bot.advance(25 * 60_000);
   await finishGame(bot, "NA1_7102", ["acct-a"], (detail) => { detail.info.gameEndTimestamp = bot.now(); });
   const row = rankFieldOfReport(bot);
-  assert.match(row!, /黄金 II · 81 LP · 中间隔了几局，本局变化算不出来/);
+  assert.match(row!, /黄金 II · 81 LP · 赛前段位没读到或中间隔了几局，本局变化算不出来/);
   assert.doesNotMatch(row!, /本局 [+-]\d/, "no LP change from the older read is reported");
 });
 

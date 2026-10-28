@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, mock, test } from "node:test";
-import { VoiceChannel, type Client, type MessageCreateOptions, type MessageEditOptions } from "discord.js";
+import { PermissionFlagsBits, VoiceChannel, type Client, type MessageCreateOptions, type MessageEditOptions } from "discord.js";
 import type { MatchDetail, RankedEntry, TrackedMember } from "../src/types";
-import { GameMonitor, KEEP_BASELINES_MS, MAX_VOICE_ATTEMPTS, resolveMonitoredVoiceChannel, type MonitorDependencies } from "../src/services/gameMonitor";
+import { GameMonitor, KEEP_BASELINES_MS, MAX_VOICE_ATTEMPTS, resolveMonitoredTextChannel, resolveMonitoredVoiceChannel, type MonitorDependencies } from "../src/services/gameMonitor";
 import { AnnouncementQueueFullError, VoiceAnnouncementService, type VoiceAnnouncementDependencies } from "../src/services/voiceAnnouncements";
 import { resetMockData, RiotApiError, simulateMockMatch } from "../src/services/riotData";
 import { buildMatchAnnouncement } from "../src/services/announcementText";
@@ -94,6 +94,8 @@ function harness(guildId: string, specs: string[] | MemberSpec[] = ["tracked"]) 
   const location = new Map<string, string | null>();
   /** Channels announcements may not use, like the TEST_VOICE_CHANNEL_ID restriction in mock mode. */
   const blocked = new Set<string>();
+  /** Channels the text may go to but the voice cannot use: full, AFK, or without Connect or Speak. */
+  const voiceBlocked = new Set<string>();
   const move = (memberId: string, channelId: string | null) => {
     const previous = location.get(memberId);
     if (previous) channel(previous).members.delete(memberId);
@@ -128,6 +130,10 @@ function harness(guildId: string, specs: string[] | MemberSpec[] = ["tracked"]) 
     members: () => members,
     resolveChannel: (_client, _guildId, userId) => {
       const channelId = location.get(userId);
+      return channelId && !blocked.has(channelId) && !voiceBlocked.has(channelId) ? channel(channelId) as unknown as VoiceChannel : null;
+    },
+    resolveTextChannel: (_client, _guildId, userId) => {
+      const channelId = location.get(userId);
       return channelId && !blocked.has(channelId) ? channel(channelId) as unknown as VoiceChannel : null;
     },
     announce: (...args) => service.announce(...args),
@@ -143,7 +149,7 @@ function harness(guildId: string, specs: string[] | MemberSpec[] = ["tracked"]) 
   const client = {} as Client;
   const inVoice = () => members.filter((member) => location.get(member.discordUserId)).map((member) => member.discordUserId);
   return {
-    guildId, monitor, client, dependencies, latestIds, matches, lookups, generated, played, cleaned, errors, infos, sent, channel, move, blocked,
+    guildId, monitor, client, dependencies, latestIds, matches, lookups, generated, played, cleaned, errors, infos, sent, channel, move, blocked, voiceBlocked,
     records, timelines, edits,
     get messages() { return sent.map((entry) => entry.message); },
     get members() { return members; },
@@ -397,15 +403,16 @@ test("a bot restart creates a new baseline instead of replaying an offline match
 });
 
 /** Runs the steps with Date.now moved forward, for Date.now only; timers keep real time. */
-async function afterKeepWindow<T>(steps: () => Promise<T> | T): Promise<T> {
+async function clockAhead<T>(ms: number, steps: () => Promise<T> | T): Promise<T> {
   const real = Date.now.bind(Date);
-  const clock = mock.method(Date, "now", () => real() + KEEP_BASELINES_MS + 1_000);
+  const clock = mock.method(Date, "now", () => real() + ms);
   try {
     return await steps();
   } finally {
     clock.mock.restore();
   }
 }
+const afterKeepWindow = <T>(steps: () => Promise<T> | T): Promise<T> => clockAhead(KEEP_BASELINES_MS + 1_000, steps);
 
 test("a member who briefly leaves and rejoins gets the match they just finished announced once", async () => {
   const bot = harness("keep-baseline-guild");
@@ -1382,7 +1389,7 @@ test("records go through the real store once per match, and a refused write neve
   assert.deepEqual(await refused.poll(), { announced: 1, errors: 0 });
   assert.equal(refused.played.length, 1);
   assert.equal(refused.errors.length, 1);
-  assert.match(String(refused.errors[0]), /马厩 records of match refused-match were not saved: A horse record can only be saved/);
+  assert.match(String(refused.errors[0]), /马厩 records of match refused-match were not saved: A record can only be saved for a member who is still tracked/);
   assert.deepEqual(listMatchHorseRecords(refused.guildId, "refused-match", true), []);
 });
 
@@ -2461,4 +2468,217 @@ test("nothing is stored after the monitor shut down", async () => {
   await delay(100);
   assert.deepEqual(calls, []);
   assert.deepEqual(listRankResults("rank-store-shutdown-guild", { mock: true }), []);
+});
+
+// Leaving and returning within the keep window: nothing is announced twice, and nothing stale comes back.
+
+test("a solo member who leaves during the speech and rejoins in time gets the voice once and the text never again", async () => {
+  const bot = harness("keep-solo-tts-guild");
+  await bot.start();
+  bot.latestIds.set("tracked", "m1");
+  const speech = deferred<string>();
+  const started = deferred<void>();
+  bot.generate = async () => { started.resolve(); return speech.promise; };
+  const oldPoll = bot.poll();
+  await started.promise;
+  assert.equal(bot.sent.length, 1, "the text went out before the speech");
+  bot.move("member-1", null);
+  bot.sync();
+  bot.generate = async (text) => { bot.generated.push(text); return "again.wav"; };
+  speech.resolve("old.wav");
+  await oldPoll;
+  bot.move("member-1", "first-channel");
+  bot.sync();
+  await bot.poll();
+  await delay(30);
+  assert.equal(bot.sent.length, 1, "the report is not posted a second time");
+  assert.equal(bot.played.length, 1, "and is spoken once");
+  assert.equal(getLastMatchId(bot.guildId, "tracked"), "m1");
+  assert.deepEqual(await bot.poll(), { announced: 0, errors: 0 });
+  assert.deepEqual(bot.errors, []);
+});
+
+test("in a session that goes on, a member who leaves during the speech and returns does not get the text again", async () => {
+  const bot = harness("keep-continuing-guild", [
+    { id: "alice-id", puuids: ["alice"], channel: "x" },
+    { id: "bob-id", puuids: ["bob"], channel: "x" },
+  ]);
+  await bot.start();
+  bot.matches.set("m1", match("m1", ["alice"]));
+  bot.latestIds.set("alice", "m1");
+  const speech = deferred<string>();
+  const started = deferred<void>();
+  bot.generate = async () => { started.resolve(); return speech.promise; };
+  const oldPoll = bot.poll();
+  await started.promise;
+  assert.equal(bot.sent.length, 1);
+  // Alice, the only reporter, leaves while Bob stays: the posted report must survive her absence.
+  bot.move("alice-id", null);
+  bot.sync();
+  bot.generate = async (text) => { bot.generated.push(text); return "again.wav"; };
+  speech.resolve("old.wav");
+  await oldPoll;
+  bot.move("alice-id", "x");
+  bot.sync();
+  await bot.poll();
+  await delay(30);
+  assert.equal(bot.sent.length, 1, "the report is not posted a second time");
+  assert.equal(bot.played.length, 1);
+  assert.equal(getLastMatchId(bot.guildId, "alice"), "m1");
+});
+
+test("a match Bob finished while Alice was away is not announced again when Alice returns to a new session", async () => {
+  const bot = harness("keep-duo-guild", [
+    { id: "alice-id", puuids: ["alice"], channel: "x" },
+    { id: "bob-id", puuids: ["bob"], channel: "x" },
+  ]);
+  await bot.start();
+  bot.matches.set("m1", match("m1", ["alice", "bob"]));
+  bot.move("alice-id", null);
+  bot.sync();
+  bot.latestIds.set("alice", "m1");
+  bot.latestIds.set("bob", "m1");
+  assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
+  assert.equal(bot.sent.length, 1);
+  // Bob leaves too, so the session stops, and Alice returns.
+  bot.move("bob-id", null);
+  bot.sync();
+  bot.move("alice-id", "x");
+  assert.deepEqual(await bot.start(), { announced: 0, errors: 0 });
+  assert.equal(bot.sent.length, 1, "no second text");
+  assert.equal(bot.generated.length, 1, "and no second voice");
+  assert.equal(getLastMatchId(bot.guildId, "alice"), "m1");
+});
+
+test("the voice attempt cap survives a leave and a rejoin", async () => {
+  const bot = harness("keep-cap-guild");
+  await bot.start();
+  bot.latestIds.set("tracked", "m1");
+  bot.generate = async () => { throw new Error("Fake speech failure"); };
+  await bot.poll();
+  await bot.poll();
+  assert.equal(bot.sent.length, 1);
+  bot.move("member-1", null);
+  bot.sync();
+  bot.move("member-1", "first-channel");
+  bot.sync();
+  await bot.poll();
+  assert.ok(bot.infos.some((line) => line.startsWith("Gave up on the voice report of match m1 after 3 failed attempts")),
+    "the failures before the leave still count");
+  assert.equal(bot.sent.length, 1, "and the text is still posted once");
+  const calls = bot.generated.length;
+  await bot.poll();
+  assert.equal(bot.sent.length, 1);
+  assert.equal(bot.generated.length, calls, "the match was consumed, so nothing is tried again");
+});
+
+test("baselines of an account not read recently are not kept, so a long sleep cannot replay an old match", async () => {
+  const bot = harness("keep-stale-guild");
+  await bot.start();
+  bot.latestIds.set("tracked", "finished-long-ago");
+  // The Mac slept for hours: the gateway re-identifies and the member is found gone, then back, long after the last read.
+  const result = await clockAhead(3 * 3_600_000, async () => {
+    bot.move("member-1", null);
+    bot.sync();
+    bot.move("member-1", "first-channel");
+    return bot.start();
+  });
+  assert.deepEqual(result, { announced: 0, errors: 0 });
+  assert.deepEqual(bot.generated, []);
+  assert.equal(getLastMatchId(bot.guildId, "tracked"), "finished-long-ago", "a fresh baseline");
+});
+
+test("a kept baseline is dropped when the member is unbound, so a rebind within the window starts fresh", async () => {
+  const bot = harness("keep-unbind-guild");
+  await bot.start();
+  const members = bot.members;
+  bot.move("member-1", null);
+  bot.sync();
+  // Unbound while away, then bound again with the same account before the window ends.
+  bot.members = [];
+  bot.sync();
+  bot.members = members;
+  bot.latestIds.set("tracked", "finished-meanwhile");
+  bot.move("member-1", "first-channel");
+  assert.deepEqual(await bot.start(), { announced: 0, errors: 0 });
+  assert.deepEqual(bot.generated, []);
+  assert.equal(getLastMatchId(bot.guildId, "tracked"), "finished-meanwhile");
+});
+
+// Text first when the voice cannot be used.
+
+test("with every player in a channel the voice cannot use, the text report is posted there and the match is consumed without a voice failure", async () => {
+  const bot = harness("text-only-guild", [{ id: "alice-id", puuids: ["alice"], channel: "full" }]);
+  bot.voiceBlocked.add("full");
+  await bot.start();
+  bot.matches.set("m1", match("m1", ["alice"]));
+  bot.latestIds.set("alice", "m1");
+  assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
+  assert.deepEqual(bot.sent.map((entry) => entry.channelId), ["full"]);
+  assert.deepEqual(bot.generated, [], "no speech was generated");
+  assert.deepEqual(bot.played, []);
+  assert.equal(getLastMatchId(bot.guildId, "alice"), "m1", "consumed");
+  assert.ok(bot.infos.some((line) => line.includes("Announced match m1 as text only in full")));
+  assert.deepEqual(bot.errors, []);
+  assert.deepEqual(await bot.poll(), { announced: 0, errors: 0 });
+  assert.equal(bot.sent.length, 1);
+});
+
+test("a channel the voice can use is preferred over one it cannot", async () => {
+  const bot = harness("text-prefers-voice-guild", [
+    { id: "alice-id", puuids: ["alice"], channel: "afk" },
+    { id: "bob-id", puuids: ["bob"], channel: "x" },
+  ]);
+  bot.voiceBlocked.add("afk");
+  await bot.start();
+  bot.matches.set("m1", match("m1", ["alice", "bob"]));
+  bot.latestIds.set("alice", "m1");
+  bot.latestIds.set("bob", "m1");
+  assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
+  assert.deepEqual(bot.sent.map((entry) => entry.channelId), ["x"]);
+  assert.equal(bot.played.length, 1);
+});
+
+test("no channel at all for the text keeps the match waiting", async () => {
+  const bot = harness("text-none-guild", [{ id: "alice-id", puuids: ["alice"], channel: "stage" }]);
+  bot.blocked.add("stage");
+  await bot.start();
+  bot.matches.set("m1", match("m1", ["alice"]));
+  bot.latestIds.set("alice", "m1");
+  assert.deepEqual(await bot.poll(), { announced: 0, errors: 0 });
+  assert.equal(bot.sent.length, 0);
+});
+
+test("the production resolvers: a full channel and the AFK channel take the text but not the voice, and the text needs View and Send", () => {
+  const resolve = (traits: { joinable?: boolean; afk?: boolean; send?: boolean }) => {
+    const voiceChannel = Object.create(VoiceChannel.prototype) as VoiceChannel;
+    Object.defineProperties(voiceChannel, {
+      id: { value: "voice" },
+      guild: { value: { id: "guild", afkChannelId: traits.afk ? "voice" : "other" } },
+      client: { value: { user: { id: "bot" } } },
+      members: { value: new Map() },
+      joinable: { value: traits.joinable ?? true },
+      speakable: { value: true },
+      viewable: { value: true },
+      permissionsFor: { value: () => ({ has: (flags: unknown) => {
+        assert.deepEqual(flags, [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages]);
+        return traits.send !== false;
+      } }) },
+    });
+    const client = {
+      user: { id: "bot" },
+      guilds: { cache: new Map([["guild", { members: { cache: new Map([["member", { voice: { channel: voiceChannel } }]]) } }]]) },
+    } as unknown as Client;
+    return { voice: resolveMonitoredVoiceChannel(client, "guild", "member"), text: resolveMonitoredTextChannel(client, "guild", "member") };
+  };
+  process.env.RIOT_MODE = "real";
+  assert.equal(resolve({}).voice?.id, "voice");
+  assert.equal(resolve({}).text?.id, "voice");
+  const full = resolve({ joinable: false });
+  assert.equal(full.voice, null);
+  assert.equal(full.text?.id, "voice");
+  const afk = resolve({ afk: true });
+  assert.equal(afk.voice, null);
+  assert.equal(afk.text?.id, "voice");
+  assert.equal(resolve({ send: false }).text, null, "without Send Messages there is nowhere to post");
 });

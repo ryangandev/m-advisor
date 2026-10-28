@@ -78,7 +78,7 @@ export function rankRowText(memberId: string, row: RankRow): string | null {
     }
     case "unattributable": {
       const name = rankName(state.after);
-      return name ? `${head} ${name} · ${state.after.leaguePoints} LP · 中间隔了几局，本局变化算不出来` : null;
+      return name ? `${head} ${name} · ${state.after.leaguePoints} LP · 赛前段位没读到或中间隔了几局，本局变化算不出来` : null;
     }
     case "demoted": {
       const name = rankName(state.after);
