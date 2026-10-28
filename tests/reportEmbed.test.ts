@@ -120,7 +120,7 @@ test("a bottom member who still averaged well is 相对垫底, not roasted as �
   assert.match(field.name, /垫底/);
   assert.match(field.value, /^<@bob>：当日 1 局均分 7\.8，在车队里排最后/);
   assert.doesNotMatch(field.value, /只有|只拿|脸红|知耻|训练模式|罚抄|木桩|败军/, "no harsh roast words");
-  assert.ok(!field.value.includes("—"));
+  assert.ok(!field.value.includes("\u2014"));
   // Deterministic: the same report always reads the same.
   assert.equal(bottomField(data).value, field.value);
 });
