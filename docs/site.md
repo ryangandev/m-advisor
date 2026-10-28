@@ -12,12 +12,13 @@ npm --prefix site run dev     # http://localhost:4321
 npm --prefix site run build   # writes site/dist, must finish without warnings
 ```
 
-Node 22.12 or newer is required, the same as the bot.
+Node 22.23.4 or newer is required, because the locked `@astrojs/mdx` and `@astrojs/prism` need it.
+The bot itself only needs Node 22.12.
 `astro` and `@astrojs/starlight` are pinned to exact versions that were at least two weeks old when chosen.
 
 ## Deploy
 
-`.github/workflows/docs.yml` builds `site/` with Node 22 and publishes `site/dist` to GitHub Pages.
+`.github/workflows/docs.yml` builds `site/` with Node 24 and publishes `site/dist` to GitHub Pages.
 It runs on a push to `main` that touches `site/**` or the workflow, and on manual dispatch.
 The site is served from the domain root, so `astro.config.mjs` sets `site` and no `base`.
 A pull request that touches the same paths only builds the site; the deploy job is skipped.
@@ -46,6 +47,9 @@ When a feature changes, update its page in the same change:
 | 马报 | [马报](ma-bao.md) |
 | 评分规则 | [Horse ranking](scoring.md) |
 | 命令一览 | `src/commands` |
+| 隐私 | [Storage](storage.md) |
+| 常见问题 | the owning feature documents, plus [Runtime](runtime.md) for setup questions |
+| 快速开始 | [Runtime](runtime.md), `src/commands/bind.ts` |
 
 Write Markdown with one full sentence per line and no em dash.
 The footer carries Riot's legal notice; the site uses no Riot logos or game art.
