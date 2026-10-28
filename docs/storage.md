@@ -167,6 +167,7 @@ The game start watcher reads it for every 锦囊 (see [Announcements](announceme
 ## What an erase does not reach
 
 `/stable-erase` scrubs the live database file and its WAL, and nothing else.
+The WAL step never waits for another process: if another process is reading the database at that moment, the WAL is left alone with a warning in the log, and `closeDatabase()` truncates it once more when the bot shuts down.
 Two other kinds of copy stay until the host deletes them by hand:
 
 - Backups made before a schema upgrade (`bot.sqlite3.v<N>.bak`) are full copies from that moment.
@@ -179,8 +180,18 @@ Two other kinds of copy stay until the host deletes them by hand:
 The `/stable-erase` reply says this in one sentence, and the site's privacy page (`site/src/content/docs/privacy.md`) says it to players.
 
 Removing the bot from a server deletes nothing either.
-Every row for that server stays, and the log records the removal once (`src/events/guildDelete.ts`, ignoring the unavailable-server event of a Discord outage).
-With the bot gone, `/stable-erase` can no longer be run for that server, so the host deletes the rows on request, with the bot stopped and the server's rows removed from the tables above.
+Every row for that server stays, and the log records the removal once (`src/events/guildDelete.ts`).
+With the bot gone, `/stable-erase` can no longer be run for that server, so the host deletes the rows on request.
+To do it by hand, stop the bot and open the database with the `sqlite3` shell.
+Run `PRAGMA secure_delete = ON;` first so the deleted content is overwritten (or run `VACUUM;` afterwards), then delete the server's rows from every table that holds its `guild_id`:
+
+- `tracked_members` and `member_accounts`
+- `guild_preferences` and `pregame_settings`
+- `horse_records`, `appeal_cases` and `rank_results`
+- `report_settings` and `report_marks`
+
+Finish with `PRAGMA wal_checkpoint(TRUNCATE);`.
+Then delete the `bot.sqlite3.v<N>.bak` backups too, because they still hold the server's rows, and delete any log files that mention the server.
 
 ## Durability and shutdown
 
@@ -188,7 +199,9 @@ With the bot gone, `/stable-erase` can no longer be run for that server, so the 
 The schema uses foreign keys with cascading account deletion from tracked member to accounts, WAL journaling, a five-second busy timeout, and full synchronous writes.
 Every connection also turns on `secure_delete`, so deleted content is overwritten with zeros instead of staying readable in free pages.
 After the erase transaction, `eraseMemberHorseRecords` runs `wal_checkpoint(TRUNCATE)`, so the old page images do not linger in the `-wal` file either.
-The erase is already committed by then, so a checkpoint that cannot finish (for example because another process holds the database) logs a warning and does not fail the command.
+The checkpoint runs with `busy_timeout = 0` (restored afterwards), because the store is synchronous and waiting on another process would stall the event loop past Discord's three second reply window.
+The erase is already committed by then, so a checkpoint that cannot finish (another process has the database open for reading) logs a warning and does not fail the command.
+`closeDatabase()` runs the same truncating checkpoint once more before closing.
 Call `closeDatabase()` during graceful shutdown after stopping monitors.
 It closes only the SQLite connection; callers remain responsible for stopping their timers and voice processes.
 
@@ -212,5 +225,6 @@ They also check the automatic backup (present, mode `0600`, holding the version 
 `tests/monitor.test.ts` pins when the monitor writes the rows.
 `tests/appealStore.test.ts` holds the version 5 to 6 migration tests (a literal version 5 file upgraded by a separate process, the `.v5.bak` backup, a failing step that rolls back to version 5) and the appeal case API, including survival across processes, pruning and erasing.
 `tests/store.test.ts` also stores marker match IDs as horse records, LP results and appeal cases, erases them, and checks that the marker is gone from the database file and the WAL and that the WAL is empty.
+Further tests cover rows already checkpointed into the main file, and with a second connection holding a read transaction, where the erase must return in well under a second and still commit.
 `tests/guildDelete.test.ts` pins the removal log line.
 The tests do not write to the bot's actual data directory.

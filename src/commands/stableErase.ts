@@ -54,7 +54,7 @@ const stableEraseCommand: BotCommand = {
     const erased = eraseMemberHorseRecords(guildId, user.id);
     logInfo(`Erased ${erased} horse records, ${appeals} appeal cases and ${ranks} LP results of one member on request.`);
     // The database file itself is scrubbed, but backups made before upgrades and the log files keep their own copies.
-    await interaction.reply({ content: `已清除 <@${user.id}> 的全部马厩档案（${detail}）。升级前的备份和日志里可能仍有副本，需由机器人主人另行删除。`, flags: MessageFlags.Ephemeral, allowedMentions: noMentions });
+    await interaction.reply({ content: `已清除 <@${user.id}> 的全部马厩档案（${detail}）。升级前的备份和日志里可能仍有副本，需由运行机器人的人另行删除。`, flags: MessageFlags.Ephemeral, allowedMentions: noMentions });
   },
 };
 

@@ -28,7 +28,7 @@ import {
 } from "../src/store/announcerStore";
 import { SCHEMA_VERSION, closeDatabase, getDatabase, getDatabasePath } from "../src/store/database";
 import { closeAppeal } from "../src/store/appealStore";
-import { eraseMemberHorseRecords } from "../src/store/horseRecordStore";
+import { countMemberHorseRecords, eraseMemberHorseRecords } from "../src/store/horseRecordStore";
 import { recordRankResults } from "../src/store/rankStore";
 import { makeHorseRecord, recordTracked } from "./helpers/horseRecords";
 
@@ -544,24 +544,64 @@ test("corrupt databases fail visibly and are never silently replaced", () => {
   assert.deepEqual(readFileSync(process.env.DATABASE_PATH), original);
 });
 
-test("an erase leaves no trace of the erased rows in the database file or its WAL", () => {
-  const marker = "NA1_ERASED_MARKER_8f3a1c";
+const MARKER = "NA1_ERASED_MARKER_8f3a1c";
+
+/** 20 horse records, LP results and appeal cases for one member, all carrying the marker in their match IDs. */
+function storeMarkedRows(): void {
   const rankResult = {
     guildId: "guild-one", discordUserId: "member-one", mock: false, puuid: "account-a", queueType: "solo" as const,
     recordedAt: 1_800_000_060_000, kind: "change" as const, tier: "GOLD", division: "II", leaguePoints: 86,
     lpDelta: 22, beforeTier: "GOLD", beforeDivision: "II", beforeLeaguePoints: 64,
   };
-  recordTracked(Array.from({ length: 20 }, (_, index) => makeHorseRecord({ matchId: `${marker}_H${index}` })));
-  recordRankResults(Array.from({ length: 20 }, (_, index) => ({ ...rankResult, matchId: `${marker}_R${index}`, playedAt: 1_800_000_000_000 + index })));
-  for (let index = 0; index < 20; index += 1) closeAppeal({ guildId: "guild-one", discordUserId: "member-one", matchId: `${marker}_A${index}`, mock: false });
-  const bytes = () => ["", "-wal"].map((suffix) => {
-    const file = `${process.env.DATABASE_PATH}${suffix}`;
-    return existsSync(file) ? readFileSync(file).toString("latin1") : "";
-  }).join("");
-  assert.ok(bytes().includes(marker), "the marker is stored before the erase");
+  recordTracked(Array.from({ length: 20 }, (_, index) => makeHorseRecord({ matchId: `${MARKER}_H${index}` })));
+  recordRankResults(Array.from({ length: 20 }, (_, index) => ({ ...rankResult, matchId: `${MARKER}_R${index}`, playedAt: 1_800_000_000_000 + index })));
+  for (let index = 0; index < 20; index += 1) closeAppeal({ guildId: "guild-one", discordUserId: "member-one", matchId: `${MARKER}_A${index}`, mock: false });
+}
+
+const fileText = (suffix: string): string => {
+  const file = `${process.env.DATABASE_PATH}${suffix}`;
+  return existsSync(file) ? readFileSync(file).toString("latin1") : "";
+};
+
+test("an erase leaves no trace of freshly stored rows in the database file or its WAL", () => {
+  storeMarkedRows();
+  assert.ok((fileText("") + fileText("-wal")).includes(MARKER), "the marker is stored before the erase");
 
   assert.equal(getDatabase().pragma("secure_delete", { simple: true }), 1);
   assert.equal(eraseMemberHorseRecords("guild-one", "member-one"), 20);
-  assert.equal(bytes().includes(marker), false, "erased rows must not stay readable in free pages or the WAL");
+  assert.equal((fileText("") + fileText("-wal")).includes(MARKER), false, "erased rows must not stay readable in free pages or the WAL");
   assert.equal(statSync(`${process.env.DATABASE_PATH}-wal`).size, 0, "the WAL is truncated after the erase");
+});
+
+test("an erase also scrubs rows that were already checkpointed into the main file", () => {
+  storeMarkedRows();
+  closeDatabase();
+  assert.ok(fileText("").includes(MARKER), "after the checkpoint at close, the marker is in the main file");
+
+  assert.equal(eraseMemberHorseRecords("guild-one", "member-one"), 20);
+  assert.equal(fileText("").includes(MARKER), false, "the main file no longer holds the erased rows");
+  assert.equal(fileText("-wal").includes(MARKER), false, "neither does the WAL");
+});
+
+test("an erase does not wait for another connection that is reading, and still commits", () => {
+  storeMarkedRows();
+  const reader = new Database(process.env.DATABASE_PATH!);
+  try {
+    reader.exec("BEGIN");
+    reader.prepare("SELECT count(*) FROM horse_records").get();
+
+    const started = performance.now();
+    assert.equal(eraseMemberHorseRecords("guild-one", "member-one"), 20);
+    const elapsed = performance.now() - started;
+    assert.ok(elapsed < 1000, `the erase took ${Math.round(elapsed)} ms with a reader open`);
+    assert.deepEqual(countMemberHorseRecords("guild-one", "member-one"), { real: 0, mock: 0 });
+    assert.equal(getDatabase().pragma("busy_timeout", { simple: true }), 5000, "the normal timeout is restored");
+    reader.exec("COMMIT");
+  } finally {
+    reader.close();
+  }
+  // Once the reader is gone, the shutdown checkpoint clears what the busy one could not.
+  closeDatabase();
+  assert.equal(fileText("-wal").includes(MARKER), false);
+  assert.equal(fileText("").includes(MARKER), false);
 });
