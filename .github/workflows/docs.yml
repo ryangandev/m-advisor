@@ -42,7 +42,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     concurrency:
-      group: pages
+      group: ${{ github.event_name == 'pull_request' && format('pages-pr-{0}', github.run_id) || 'pages' }}
       cancel-in-progress: false
     permissions:
       pages: write

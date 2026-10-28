@@ -10,6 +10,7 @@ Install the locked dependency graph with `npm ci`.
 `npm run dev` runs TypeScript through tsx.
 `npm test` runs deterministic node:test suites through tsx.
 `npm run typecheck` also type-checks the scripts and tests, which the build does not compile.
+`.github/workflows/check.yml` runs `npm ci` and `npm run check` on every pull request and push to `main`, on Node 22.12 (the engines floor) and Node 24.
 `npm run check` builds the bot, runs that type check and runs those suites.
 `npm run doctor` checks the executable codec, SQLite, encryption and configuration without contacting Discord or loading the model.
 It also counts the saved bindings and, in real mode, warns about each saved mock account that monitoring would skip; it never creates a missing database, but opening an older existing one upgrades it like starting the bot does (see [storage](storage.md#schema-versions-and-migration)).

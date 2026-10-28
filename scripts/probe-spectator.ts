@@ -9,16 +9,25 @@ dotenv.config({ quiet: true });
 
 const RATE_HEADERS = ["x-app-rate-limit", "x-app-rate-limit-count", "x-method-rate-limit", "x-method-rate-limit-count"] as const;
 
-/** The explicit PUUID argument, or the first real (non-mock) bound account, read from the database without writing to it. */
+/** The account named by a `name#tag` argument, or the first account of the first tracked member; read from the database without writing to it. */
 function choosePuuid(): string {
   const argument = process.argv[2]?.trim();
-  if (argument) return argument;
   const path = getDatabasePath();
-  if (path === ":memory:" || !existsSync(path)) throw new Error(`No database at ${path}. Pass a PUUID as the first argument.`);
+  if (path === ":memory:" || !existsSync(path)) throw new Error(`No database at ${path}.`);
   const db = new Database(path, { readonly: true, fileMustExist: true });
   try {
-    const row = db.prepare("SELECT puuid FROM member_accounts WHERE puuid NOT LIKE 'MOCK%' ORDER BY guild_id, position LIMIT 1").get() as { puuid: string } | undefined;
-    if (!row) throw new Error("No real bound account found. Bind one in RIOT_MODE=real or pass a PUUID as the first argument.");
+    let row: { puuid: string } | undefined;
+    if (argument) {
+      const hash = argument.lastIndexOf("#");
+      if (hash <= 0 || hash === argument.length - 1) throw new Error('Pass the Riot ID as "name#tag".');
+      row = db.prepare("SELECT puuid FROM member_accounts WHERE puuid NOT LIKE 'MOCK%' AND lower(game_name) = lower(?) AND lower(tag_line) = lower(?) LIMIT 1")
+        .get(argument.slice(0, hash).trim(), argument.slice(hash + 1).trim()) as { puuid: string } | undefined;
+      if (!row) throw new Error(`No real bound account matches ${argument}.`);
+    } else {
+      row = db.prepare(`SELECT a.puuid FROM member_accounts a JOIN tracked_members m ON m.guild_id = a.guild_id AND m.discord_user_id = a.discord_user_id
+        WHERE a.puuid NOT LIKE 'MOCK%' ORDER BY m.guild_id, m.position, a.position LIMIT 1`).get() as { puuid: string } | undefined;
+      if (!row) throw new Error('No real bound account found. Bind one in RIOT_MODE=real.');
+    }
     return row.puuid;
   } finally { db.close(); }
 }
