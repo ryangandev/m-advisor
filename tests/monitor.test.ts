@@ -511,7 +511,7 @@ test("a manual poll adds its channel guard to an already running automatic poll"
 test("the production mock resolver enforces configured test guild and channel on retries", () => {
   const makeClient = (guildId: string, channelId: string): Client => {
     const voiceChannel = Object.create(VoiceChannel.prototype) as VoiceChannel;
-    Object.defineProperties(voiceChannel, { id: { value: channelId }, guild: { value: { id: guildId } } });
+    Object.defineProperties(voiceChannel, { id: { value: channelId }, guild: { value: { id: guildId } }, joinable: { value: true }, speakable: { value: true } });
     return { guilds: { cache: new Map([[guildId, { members: { cache: new Map([["member", { voice: { channel: voiceChannel } }]]) } }]]) } } as unknown as Client;
   };
   process.env.RIOT_MODE = "mock";
@@ -522,6 +522,30 @@ test("the production mock resolver enforces configured test guild and channel on
   assert.equal(resolveMonitoredVoiceChannel(makeClient("authorized-guild", "authorized-channel"), "authorized-guild", "member")?.id, "authorized-channel");
   process.env.RIOT_MODE = "real";
   assert.equal(resolveMonitoredVoiceChannel(makeClient("another-guild", "another-channel"), "another-guild", "member")?.id, "another-channel");
+});
+
+test("the production resolver counts only channels the bot can join and speak in, and never the AFK channel", () => {
+  const resolve = (traits: { joinable?: boolean; speakable?: boolean; afk?: boolean; botIn?: boolean; viewable?: boolean }) => {
+    const voiceChannel = Object.create(VoiceChannel.prototype) as VoiceChannel;
+    Object.defineProperties(voiceChannel, {
+      id: { value: "voice" },
+      guild: { value: { id: "guild", afkChannelId: traits.afk ? "voice" : "other" } },
+      client: { value: { user: { id: "bot" } } },
+      members: { value: new Map(traits.botIn ? [["bot", {}]] : []) },
+      joinable: { value: traits.joinable ?? true },
+      speakable: { value: traits.speakable ?? true },
+      viewable: { value: traits.viewable ?? true },
+    });
+    const client = { guilds: { cache: new Map([["guild", { members: { cache: new Map([["member", { voice: { channel: voiceChannel } }]]) } }]]) } } as unknown as Client;
+    return resolveMonitoredVoiceChannel(client, "guild", "member");
+  };
+  process.env.RIOT_MODE = "real";
+  assert.equal(resolve({})?.id, "voice");
+  assert.equal(resolve({ joinable: false }), null, "full or without Connect");
+  assert.equal(resolve({ speakable: false }), null, "without Speak");
+  assert.equal(resolve({ afk: true }), null, "the AFK channel");
+  assert.equal(resolve({ joinable: false, botIn: true })?.id, "voice", "a user limit filled by the bot's own seat does not exclude the channel it is already in");
+  assert.equal(resolve({ joinable: false, botIn: true, viewable: false }), null);
 });
 
 test("a member leaving during TTS cancels playback without consuming the match", async () => {

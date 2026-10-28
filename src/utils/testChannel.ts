@@ -1,4 +1,5 @@
 import { ChatInputCommandInteraction, PermissionFlagsBits, VoiceChannel } from "discord.js";
+import { isAfkChannel } from "../services/channelChoice";
 
 export async function getAuthorizedTestChannel(interaction: ChatInputCommandInteraction): Promise<VoiceChannel> {
   if (!interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
@@ -17,9 +18,15 @@ export async function getAuthorizedTestChannel(interaction: ChatInputCommandInte
   if (configuredChannel && channel.id !== configuredChannel) {
     throw new Error("请进入配置的测试语音频道后再试。");
   }
+  if (isAfkChannel(channel)) {
+    throw new Error("请先进入 AFK 频道以外的语音频道，再运行测试命令。");
+  }
   const permissions = channel.permissionsFor(interaction.client.user!);
   if (!permissions?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect, PermissionFlagsBits.Speak])) {
     throw new Error("Bot 在这个频道需要 View Channel、Connect 和 Speak 权限。");
+  }
+  if (channel.full && !channel.members.has(interaction.client.user!.id) && !permissions.has(PermissionFlagsBits.MoveMembers)) {
+    throw new Error("Bot 在这个频道无法加入：频道已满。");
   }
   return channel;
 }

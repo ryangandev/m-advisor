@@ -61,6 +61,9 @@ When they are spread over several channels, it goes to the channel with the most
 A tie keeps the channel the bot used last, then goes to the channel with more people who are not bots, then to the channel of the earliest-bound member, then to the lower channel ID.
 With one tracked member this is simply that member's channel.
 Only channels a member may be announced in count, so the `TEST_*` restrictions apply per member.
+A channel also counts only if the bot can join it (it can see and connect to it, and it is not full unless the bot is in it already) and speak in it, and it is not the server's AFK channel.
+Otherwise the join never reaches Ready, which would count as a voice failure.
+The test commands refuse the AFK channel and a full channel the same way.
 
 If none of a match's players is in a usable channel, the match is neither announced nor consumed in that poll and adds no error.
 It is logged once and waits until a player is in a usable channel; if its players leave voice instead, their baselines are dropped with them.

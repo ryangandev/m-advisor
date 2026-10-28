@@ -98,6 +98,8 @@ function fixture() {
   Object.defineProperties(channel, {
     id: { value: CHANNEL },
     guild: { value: guild },
+    joinable: { value: true },
+    speakable: { value: true },
     members: { value: new Map([["tracked-user", { user: { bot: false } }]]) },
     permissionsFor: { value: () => ({ has: () => true }) },
     send: { value: async (message: MessageCreateOptions) => { sent.push(message); return { edit: async () => ({}) }; } },

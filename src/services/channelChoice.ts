@@ -11,6 +11,26 @@ export interface BoundParticipant {
   teamId: number;
 }
 
+/** Whether the bot is connected to the channel already, so a user limit that its own seat fills is no obstacle. */
+function botIsIn(channel: VoiceChannel): boolean {
+  const botId = channel.client?.user?.id;
+  return Boolean(botId) && channel.members.has(botId!);
+}
+
+/** The server's AFK channel, where nobody listens. */
+export function isAfkChannel(channel: VoiceChannel): boolean {
+  return channel.id === channel.guild.afkChannelId;
+}
+
+/**
+ * Whether the bot can join and speak in the channel, and the channel is not the AFK channel.
+ * A full channel or one without Connect or Speak never reaches Ready, which would count as a voice failure.
+ */
+export function isUsableVoiceChannel(channel: VoiceChannel): boolean {
+  if (isAfkChannel(channel) || !channel.speakable) return false;
+  return channel.joinable || (botIsIn(channel) && channel.viewable);
+}
+
 /** People in a channel other than bots; used only to break a tie between channels. */
 function humanCount(channel: VoiceChannel): number {
   let count = 0;
