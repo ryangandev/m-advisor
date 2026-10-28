@@ -200,7 +200,17 @@ It depends on an injected `readEntries(puuid)`, which is `getLeagueEntries` in p
 - While league-v4 has not caught up (`wins + losses` unchanged), the account is read again on that floor, at most 4 reads per account per match.
 - Only one snapshot read per account waits in the queue.
 - The worst case is therefore 3 reads per account in any 2 minutes (two reads a floor apart plus one first after-read), 30 for 10 accounts, and in practice about 2 per account. That leaves room under the na1 app limit of 100 per 2 minutes next to spectator's 60 for `/profile` and `/bind`.
-- `hasReadSince(puuid, since)` says whether a successful read was sent at or after `since`. A ranked game's start uses it to retry: the watcher remembers the first sighting and, on each later in-game recheck, asks again for the players who still have no read from that time on, so a timeout or 429 at the start does not leave an older read as the before-value (which would count a dodge or decay as part of the game). It is true when nothing more will be read for the account, such as LP off or a saved mock account in real mode.
+- `hasReadSince(puuid, since)` says whether a successful read was sent at or after `since`.
+  It is true when nothing more will be read for the account, such as LP off or a saved mock account in real mode.
+- A ranked game's start is retried through it.
+  The game start watcher remembers the first sighting and passes it with `snapshot(puuids, { matchId, since })`.
+  On each later in-game recheck it asks again for the players who still have no successful read from that time on.
+  A timeout or a 429 at the start therefore does not leave an older read as the before-value, which would count a dodge or decay as part of the game.
+  A player is asked at most 1 + 3 times per game, and the tracker's 60 second floor still spaces the reads.
+  The watcher forgets a game's start bookkeeping when its accounts leave the game or voice, when the game finishes, and when it stops.
+- A game the watcher saw at its start whose before-value is older than that sighting is not given a normal LP change.
+  Its `change`, `promoted` and `demoted` result becomes `unattributable`, because the older read may hold a dodge or decay.
+  A game the watcher never saw, such as one that began before monitoring, and mock data keep using the newest read from before the game ended.
 - `rebase(puuids)` exists for `/simulate` only and does nothing in real mode: in mock mode it forgets the accounts' earlier reads and reads them again at once, past the floor, so a mock entry that was just placed is the before-value of the next simulated game. Mock reads never reach Riot.
 - At shutdown `stop()` turns every queued read into a no-op, clears the retry timers and settles every pending row with no row; a read already sent is ignored when it answers.
 

@@ -1339,3 +1339,74 @@ test("a game-start LP read that fails is retried on the next in-game recheck, so
   // Once the start read exists, later rechecks read nothing more.
   assert.equal(reads.length, 4, "one baseline, two start reads and one after-read");
 });
+
+/** The session's watcher with its private start-read bookkeeping, for the cleanup tests. */
+const startWatcher = (bot: Harness) => (bot.monitor as unknown as {
+  sessions: Map<string, { watcher: { rankStarts: Map<string, unknown>; stop(): void } }>;
+}).sessions.get(GUILD)!.watcher;
+
+test("a game whose start read never succeeds is asked at most four times and its LP change is unattributable", async () => {
+  const bot = harness([{ id: A, puuids: ["acct-a"], channel: "voice-1" }]);
+  const { league, reads, failing } = rankOn(bot);
+  league.set("acct-a", [solo("GOLD", "II", 64)]);
+  bot.sync();
+  await bot.monitor.poll(bot.client, GUILD);
+  await until(() => reads.length === 1, "the monitoring baseline");
+
+  // A dodge costs 5 LP, and then every read of the game times out.
+  league.set("acct-a", [solo("GOLD", "II", 59)]);
+  failing.add("acct-a");
+  bot.advance(5 * 60_000);
+  bot.enter(spectatorGame(7102, [{ puuid: "acct-a", teamId: 100, championId: AHRI }]));
+  await bot.tick();
+  await until(() => reads.length === 2, "the first start read");
+  for (let tick = 0; tick < 18; tick++) await bot.tick();
+  await until(() => reads.length === 5, "the three retries");
+  for (let tick = 0; tick < 12; tick++) await bot.tick();
+  await delay(30);
+  assert.equal(reads.length, 5, "one baseline, the first start read and three retries, and no more");
+
+  // Riot recovers for the after-read, which holds the game's +22 on top of the dodge.
+  failing.delete("acct-a");
+  league.set("acct-a", [solo("GOLD", "II", 81, 11, 10)]);
+  bot.advance(25 * 60_000);
+  await finishGame(bot, "NA1_7102", ["acct-a"], (detail) => { detail.info.gameEndTimestamp = bot.now(); });
+  const row = rankFieldOfReport(bot);
+  assert.match(row!, /黄金 II · 81 LP · 中间隔了几局，本局变化算不出来/);
+  assert.doesNotMatch(row!, /本局 [+-]\d/, "no LP change from the older read is reported");
+});
+
+test("a game's start-read bookkeeping goes when its accounts leave the game, leave voice, or the watcher stops", async () => {
+  const startGame = async (gameId: number) => {
+    // A second member stays in voice, so the session itself outlives the first member leaving.
+    const bot = harness([{ id: A, puuids: ["acct-a"], channel: "voice-1" }, { id: B, puuids: ["acct-b"], channel: "voice-1" }]);
+    const { league, reads, failing } = rankOn(bot);
+    league.set("acct-a", [solo("GOLD", "II", 64)]);
+    bot.sync();
+    await bot.monitor.poll(bot.client, GUILD);
+    await until(() => reads.length === 2, "the monitoring baselines");
+    failing.add("acct-a");
+    bot.advance(5 * 60_000);
+    const game = spectatorGame(gameId, [{ puuid: "acct-a", teamId: 100, championId: AHRI }]);
+    bot.enter(game);
+    await bot.tick();
+    assert.equal(startWatcher(bot).rankStarts.size, 1, "the failed start read is still being waited for");
+    return { bot, game };
+  };
+
+  // The account leaves its game: the next in-game recheck finds it out of any game.
+  const over = await startGame(7103);
+  over.bot.leaveGame(over.game);
+  for (let tick = 0; tick < 6; tick++) await over.bot.tick();
+  assert.equal(startWatcher(over.bot).rankStarts.size, 0);
+
+  // The member leaves voice and the watcher forgets the account.
+  const left = await startGame(7104);
+  left.bot.move(A, null);
+  left.bot.sync();
+  assert.equal(startWatcher(left.bot).rankStarts.size, 0);
+
+  const stopped = await startGame(7105);
+  startWatcher(stopped.bot).stop();
+  assert.equal(startWatcher(stopped.bot).rankStarts.size, 0);
+});

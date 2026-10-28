@@ -573,3 +573,63 @@ test("hasReadSince is true only for a successful read sent at or after the time 
   tracker.stop();
   assert.equal(tracker.hasReadSince("never", clock + 1), true);
 });
+
+test("a game seen at its start with no read since is unattributable; a read since, or a game never seen, gives the change", async () => {
+  let clock = 1_900_000_000_000;
+  const { tracker, league, state } = setup({ now: () => clock });
+  const finish = async (matchId: string, puuid: string) => {
+    tracker.matchFinished({ matchId, queueId: 420, gameEndTimestamp: clock, accounts: [{ puuid, label: `${puuid}#NA1` }] });
+    await tracker.firstReads(matchId);
+    return tracker.row(matchId, puuid)?.state;
+  };
+  const dodge = async (puuid: string) => {
+    league.set(puuid, [entry("GOLD", "II", 64)]);
+    tracker.snapshot([puuid]);
+    await flush();
+    // A dodge costs 5 LP, and then the game is first seen.
+    league.set(puuid, [entry("GOLD", "II", 59)]);
+    clock += 5 * 60_000;
+    return { matchId: `NA1_${puuid}`, since: clock };
+  };
+
+  // The start read times out and is never retried: the only before-value predates the sighting.
+  const lost = await dodge("lost");
+  league.set("lost", new RiotApiError("Riot API request timed out.", "timeout"));
+  tracker.snapshot(["lost"], lost);
+  await flush();
+  clock += 25 * 60_000;
+  league.set("lost", [entry("GOLD", "II", 81, 11, 10)]);
+  const unattributable = await finish(lost.matchId, "lost");
+  assert.equal(unattributable?.kind, "unattributable");
+  assert.equal(text(tracker.row(lost.matchId, "lost")), `<@${MEMBER}> 单双排 黄金 II · 81 LP · 中间隔了几局，本局变化算不出来`);
+
+  // The same game with a retry that works: the dodge is before the start read, so the game is +22.
+  clock += 5 * 60_000;
+  const retried = await dodge("retried");
+  league.set("retried", new RiotApiError("Riot API request timed out.", "timeout"));
+  tracker.snapshot(["retried"], retried);
+  await flush();
+  clock += RANK_RETRY_FLOOR_MS * 2;
+  league.set("retried", [entry("GOLD", "II", 59)]);
+  tracker.snapshot(["retried"], retried);
+  await flush();
+  clock += 25 * 60_000;
+  league.set("retried", [entry("GOLD", "II", 81, 11, 10)]);
+  assert.equal((await finish(retried.matchId, "retried"))?.kind, "change");
+
+  // A game the watcher never saw keeps the older read, as before.
+  clock += 5 * 60_000;
+  await dodge("unseen");
+  clock += 25 * 60_000;
+  league.set("unseen", [entry("GOLD", "II", 81, 11, 10)]);
+  assert.equal((await finish("NA1_unseen", "unseen"))?.kind, "change");
+
+  // Mock entries only move when a test moves them, so a mock game is never held to a start read.
+  state.mock = true;
+  const mocked = await dodge("mocked");
+  clock += RANK_RETRY_FLOOR_MS;
+  tracker.snapshot([], mocked);
+  clock += 25 * 60_000;
+  league.set("mocked", [entry("GOLD", "II", 81, 11, 10)]);
+  assert.equal((await finish(mocked.matchId, "mocked"))?.kind, "change");
+});
