@@ -98,7 +98,7 @@ test("apex tiers show no division, and a cutoff move between them is a plain cha
 test("several games, placements, no entry, a lost entry and a missing before-read", async () => {
   const { play, tracker, league, infos } = setup();
   const several = await play("NA1_7", "a", [entry("GOLD", "II", 64)], [entry("GOLD", "II", 30, 12, 11)]);
-  assert.equal(text(several), `<@${MEMBER}> 单双排 黄金 II · 30 LP · 中间隔了几局，本局变化算不出来`);
+  assert.equal(text(several), `<@${MEMBER}> 单双排 黄金 II · 30 LP · 赛前段位没读到或中间隔了几局，本局变化算不出来`);
   const placed = await play("NA1_8", "b", [], [entry("GOLD", "IV", 0, 6, 4)]);
   assert.equal(text(placed), `<@${MEMBER}> 单双排 · 定级完成：黄金 IV`);
   assert.equal(await play("NA1_9", "c", [], []), undefined, "unranked before and after: no row");
@@ -601,7 +601,7 @@ test("a game seen at its start with no read since is unattributable; a read sinc
   league.set("lost", [entry("GOLD", "II", 81, 11, 10)]);
   const unattributable = await finish(lost.matchId, "lost");
   assert.equal(unattributable?.kind, "unattributable");
-  assert.equal(text(tracker.row(lost.matchId, "lost")), `<@${MEMBER}> 单双排 黄金 II · 81 LP · 中间隔了几局，本局变化算不出来`);
+  assert.equal(text(tracker.row(lost.matchId, "lost")), `<@${MEMBER}> 单双排 黄金 II · 81 LP · 赛前段位没读到或中间隔了几局，本局变化算不出来`);
 
   // The same game with a retry that works: the dodge is before the start read, so the game is +22.
   clock += 5 * 60_000;

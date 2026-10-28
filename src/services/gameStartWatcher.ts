@@ -44,6 +44,8 @@ export interface GameStartDependencies {
   /** Tracked members of a guild in bind order, read live. */
   members: (guildId: string) => TrackedMember[];
   resolveChannel: ResolveChannel;
+  /** The channel for the text when no player is in one the voice can use (full, AFK, no Connect or Speak); without it nothing is posted then. */
+  resolveTextChannel?: ResolveChannel;
   announce: typeof announceTextToCurrentChannel;
   /** A member's horse records of the given data mode, newest first. */
   records: (guildId: string, memberId: string, mock: boolean) => readonly HorseRecord[];
@@ -538,10 +540,15 @@ export class GameStartWatcher {
     const ids = () => liveParticipantIds(this.dependencies.members(guildId), this.participants(entry));
     if (!entry.brief) {
       const participants = this.participants(entry);
-      const channel = chooseChannel(this.dependencies.resolveChannel, client, guildId, ids(), this.host.lastChannelId());
+      const voiceChannel = chooseChannel(this.dependencies.resolveChannel, client, guildId, ids(), this.host.lastChannelId());
+      // With no channel the voice can use, the text still goes to the best channel the players are in, and there is no voice.
+      const textResolver = this.dependencies.resolveTextChannel;
+      const channel = voiceChannel
+        ?? (textResolver ? chooseChannel(textResolver, client, guildId, ids(), this.host.lastChannelId()) : null);
+      const textOnly = !voiceChannel;
       // No participant in a usable channel yet: nothing is posted, and the next tick tries again within the window.
       if (!channel || (entry.requiredChannelId !== undefined && channel.id !== entry.requiredChannelId)) return;
-      const speaker = perspective(this.dependencies.resolveChannel, client, guildId, this.host.isPresent, participants, channel);
+      const speaker = perspective(textOnly ? textResolver! : this.dependencies.resolveChannel, client, guildId, this.host.isPresent, participants, channel);
       if (!speaker) return;
       entry.teamId = speaker.teamId;
       entry.brief = this.buildBrief(entry, members, participants, speaker.teamId);
@@ -574,6 +581,12 @@ export class GameStartWatcher {
       }
       if (!this.live()) return;
       this.host.rememberChannel(channel.id);
+      if (textOnly) {
+        // Not a failure: nobody could have heard it.
+        entry.voice = "dropped";
+        this.dependencies.info(`The 军师赛前锦囊 of game ${entry.matchId} is text only: no player is in a voice channel the bot can join and speak in.`);
+        return;
+      }
     }
     if (!this.dependencies.pregameVoice(guildId)) {
       entry.voice = "off";

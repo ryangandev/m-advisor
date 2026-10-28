@@ -166,6 +166,17 @@ test("a guild available again after a re-identify reads the voice states it relo
   assert.equal(bot.status().active, false);
 });
 
+test("the guild available event does nothing before the client is ready, so startup ordering is unchanged", async () => {
+  const { default: event } = await import("../src/events/guildAvailable");
+  let touched = false;
+  const guild = {
+    client: { isReady: () => false },
+    get id() { touched = true; return "starting-guild"; },
+  } as unknown as Guild;
+  await event.execute(guild);
+  assert.equal(touched, false, "the guild was not even read");
+});
+
 test("the guild available event reconciles through the lifecycle", async () => {
   const { default: event } = await import("../src/events/guildAvailable");
   assert.equal(event.name, "guildAvailable");
