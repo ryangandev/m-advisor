@@ -92,6 +92,17 @@ export interface ReportData {
  */
 export const printedAverage = (member: Pick<MemberReport, "averageScore">): number => Number(formatScore(member.averageScore));
 
+/**
+ * The bottom member of a 马报 still averaged at least this much: their last place is only relative, so the 军师 does
+ * not roast them as a 没有马. It is also relative when their worst game of the period was a 特等马 or 上等马.
+ */
+export const RELATIVE_BOTTOM_AVERAGE = 6;
+
+/** Whether a bottom member in a 马报 is last only relative to a strong field, so the roast is softened. */
+export function isRelativeBottom(member: MemberReport): boolean {
+  return printedAverage(member) >= RELATIVE_BOTTOM_AVERAGE || member.worst.tier === "特等马" || member.worst.tier === "上等马";
+}
+
 const byScoreThenAge = (a: HorseRecord, b: HorseRecord) => b.score - a.score || a.playedAt - b.playedAt || a.matchId.localeCompare(b.matchId);
 
 export interface ReportInput {

@@ -1,6 +1,7 @@
 import { EmbedBuilder } from "discord.js";
 import { formatScore } from "../services/announcementText";
 import { HORSE_TIERS } from "../services/horseRanking";
+import { isRelativeBottom } from "../services/reports";
 import type { MemberReport, ReportData } from "../services/reports";
 import type { HorseRecord } from "../store/horseRecordStore";
 import { PACIFIC_TIME_ZONE } from "./pacificTime";
@@ -90,10 +91,31 @@ function topRemark(data: ReportData, members: readonly MemberReport[], final: bo
   return `${mention(member)}：${detail}。${closing}`;
 }
 
+/**
+ * The soft line for a last place that is only relative: the average is still a good one, or the worst game was a
+ * 特等马 or 上等马. It mirrors the 车队内战's 相对背锅 and, like every line here, talks about play only.
+ */
+function relativeBottomRemark(data: ReportData, members: readonly MemberReport[], final: boolean, seed: string): string {
+  const when = whenWord(data, final);
+  if (members.length > 1) {
+    const closing = pick(["水准都不低，只是车队里有人更强，别往心里去。", "这个垫底只是相对的，军师的羽扇没有摇头。"], seed);
+    return `${mentions(members)} 并列相对垫底：${when}各自均分都是 ${formatScore(members[0].averageScore)}。${closing}`;
+  }
+  const member = members[0];
+  const detail = `${when} ${member.games} 局均分 ${formatScore(member.averageScore)}，在车队里排最后，最低的是${championLabel(member.worst)}那把 ${kda(member.worst)}，${formatScore(member.worst.score)} 分`;
+  const closing = pick([
+    "其实打得不差，只是车队里有人更强，这口锅只是相对的。",
+    "分数不低，只是在车队里排最后，相对垫底，别往心里去。",
+    "军师不扣分，下把和大家一起再往上走一步。",
+  ], seed);
+  return `${mention(member)}：${detail}。${closing}`;
+}
+
 /** The 军师's line for the period's 没有马, or for several who share the worst average. It talks about play only. */
 function noneRemark(data: ReportData, members: readonly MemberReport[], final: boolean): string {
   const when = whenWord(data, final);
   const seed = `${data.kind}:${data.range.start}:none:${members.map((member) => member.discordUserId).join(",")}`;
+  if (members.every(isRelativeBottom)) return relativeBottomRemark(data, members, final, seed);
   if (members.length > 1) {
     const closing = pick(["难兄难弟，军师建议结伴去训练模式。", "一起罚抄孙子兵法，抄完再战。"], seed);
     return `${mentions(members)} 并列：${when}各自均分都只有 ${formatScore(members[0].averageScore)}。${closing}`;
@@ -177,7 +199,9 @@ export function buildReportEmbed(data: ReportData, options: { final: boolean }):
   if (data.topHorses.length > 0 && data.noneHorses.length > 0) {
     embed.addFields(
       { name: `👑 ${when}特等马`, value: fit([topRemark(data, data.topHorses, options.final)]) },
-      { name: `🪦 ${when}没有马`, value: fit([noneRemark(data, data.noneHorses, options.final)]) },
+      data.noneHorses.every(isRelativeBottom)
+        ? { name: `🐴 ${when}垫底（相对）`, value: fit([noneRemark(data, data.noneHorses, options.final)]) }
+        : { name: `🪦 ${when}没有马`, value: fit([noneRemark(data, data.noneHorses, options.final)]) },
     );
   } else {
     embed.addFields({ name: `${when}特等马 / 没有马`, value: noWinnerNote(data, options.final) });

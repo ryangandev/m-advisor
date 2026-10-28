@@ -103,6 +103,75 @@ test("busiest and longest-streak lines name everyone who shares the top value, o
   assert.doesNotMatch(evenSummary, /出勤最多/);
 });
 
+function bottomField(data: ReturnType<typeof buildReportData>) {
+  const fields = buildReportEmbed(data, { final: true }).toJSON().fields!;
+  return fields.find((field) => field.name.startsWith("🪦") || field.name.includes("垫底"))!;
+}
+
+test("a bottom member who still averaged well is 相对垫底, not roasted as 没有马", () => {
+  // Both averages are high: bob only has the lower of two good scores, and his worst game was a 上等马.
+  const data = buildReportData({
+    kind: "day", range: DAY, mock: false, memberIds: ["alice", "bob"],
+    records: [game("alice", "特等马", 9, DAY.start + HOUR), game("bob", "上等马", 7.8, DAY.start + 2 * HOUR)],
+  });
+  assert.deepEqual(data.noneHorses.map((member) => member.discordUserId), ["bob"], "the data still names the bottom member");
+  const field = bottomField(data);
+  assert.ok(!field.name.includes("没有马"), field.name);
+  assert.match(field.name, /垫底/);
+  assert.match(field.value, /^<@bob>：当日 1 局均分 7\.8，在车队里排最后/);
+  assert.doesNotMatch(field.value, /只有|只拿|脸红|知耻|训练模式|罚抄|木桩|败军/, "no harsh roast words");
+  assert.ok(!field.value.includes("—"));
+  // Deterministic: the same report always reads the same.
+  assert.equal(bottomField(data).value, field.value);
+});
+
+test("an average of 6.0 or more is relative whatever tier the worst game was", () => {
+  const records = [
+    ...games("a", "特等马", 9, 3, WEEK.start + HOUR),
+    ...games("b", "中等马", 6, 3, WEEK.start + 5 * HOUR),
+  ];
+  const data = buildReportData({ kind: "week", range: WEEK, mock: false, memberIds: ["a", "b"], records });
+  assert.match(bottomField(data).name, /垫底/, "a 6.0 average is only relatively last");
+  assert.match(bottomField(data).value, /相对垫底|只是相对|不低/);
+});
+
+test("a genuinely bad bottom member keeps the harsh 没有马 closing, in a day and a week", () => {
+  for (const kind of ["day", "week"] as const) {
+    const data = twoMemberData(kind);
+    const field = bottomField(data);
+    assert.match(field.name, /^🪦 .*没有马$/);
+    assert.match(field.value, /均分只有 1\.0/);
+    assert.match(field.value, /军师|兵法|训练模式|罚抄|木桩|脸红|知耻|败军/);
+  }
+  // Just under the line, with a worst game that is no good, is still harsh.
+  const near = buildReportData({
+    kind: "day", range: DAY, mock: false, memberIds: ["a", "b"],
+    records: [game("a", "特等马", 9, DAY.start + HOUR), game("b", "中等马", 5.9, DAY.start + 2 * HOUR)],
+  });
+  assert.match(bottomField(near).name, /没有马/);
+  // A worst game that was a 特等马 or 上等马 is relative even under 6.0 (tiers come from the team ranking, not the score).
+  const strongWorst = buildReportData({
+    kind: "day", range: DAY, mock: false, memberIds: ["a", "b"],
+    records: [game("a", "特等马", 9, DAY.start + HOUR), game("b", "上等马", 5.2, DAY.start + 2 * HOUR)],
+  });
+  assert.match(bottomField(strongWorst).name, /垫底/);
+});
+
+test("tied bottom members are softened only when all of them are relative", () => {
+  const records = [
+    ...games("a", "特等马", 9, 3, WEEK.start + HOUR),
+    ...games("b", "上等马", 7, 3, WEEK.start + 5 * HOUR),
+    ...games("c", "上等马", 7, 3, WEEK.start + 9 * HOUR),
+  ];
+  const soft = bottomField(buildReportData({ kind: "week", range: WEEK, mock: false, memberIds: ["a", "b", "c"], records }));
+  assert.match(soft.value, /^<@b>、<@c> 并列相对垫底：当周各自均分都是 7\.0/);
+  const harsh = bottomField(buildReportData({
+    kind: "week", range: WEEK, mock: false, memberIds: ["a", "b", "c"],
+    records: [...games("a", "特等马", 9, 3, WEEK.start + HOUR), ...games("b", "没有马", 1, 3, WEEK.start + 5 * HOUR), ...games("c", "没有马", 1, 3, WEEK.start + 9 * HOUR)],
+  }));
+  assert.match(harsh.value, /^<@b>、<@c> 并列：当周各自均分都只有 1\.0/);
+});
+
 test("a single game in the period is listed once, not as both the best and the worst", () => {
   const lone = buildReportData({ kind: "day", range: DAY, mock: false, memberIds: ["a"], records: [game("a", "上等马", 7.2, DAY.start + HOUR)] });
   const field = buildReportEmbed(lone, { final: true }).toJSON().fields!.find((entry) => entry.name === "单局之最")!;
