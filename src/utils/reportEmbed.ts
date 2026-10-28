@@ -1,7 +1,7 @@
 import { EmbedBuilder } from "discord.js";
 import { formatScore } from "../services/announcementText";
 import { HORSE_TIERS } from "../services/horseRanking";
-import { isRelativeBottom } from "../services/reports";
+import { RELATIVE_BOTTOM_AVERAGE, isRelativeBottom, printedAverage } from "../services/reports";
 import type { MemberReport, ReportData } from "../services/reports";
 import type { HorseRecord } from "../store/horseRecordStore";
 import { PACIFIC_TIME_ZONE } from "./pacificTime";
@@ -97,17 +97,28 @@ function topRemark(data: ReportData, members: readonly MemberReport[], final: bo
  */
 function relativeBottomRemark(data: ReportData, members: readonly MemberReport[], final: boolean, seed: string): string {
   const when = whenWord(data, final);
+  // Score-based praise only when the printed average really is a good one; otherwise only the rank in the party is talked about.
+  const goodScores = members.every((member) => printedAverage(member) >= RELATIVE_BOTTOM_AVERAGE);
   if (members.length > 1) {
-    const closing = pick(["水准都不低，只是车队里有人更强，别往心里去。", "这个垫底只是相对的，军师的羽扇没有摇头。"], seed);
+    const closing = pick(goodScores
+      ? ["水准都不低，只是车队里有人更强，别往心里去。", "这个垫底只是相对的，军师的羽扇没有摇头。"]
+      : ["队内排名不差，只是车队里有人更强，别往心里去。", "这个垫底只是相对的，军师的羽扇没有摇头。"], seed);
     return `${mentions(members)} 并列相对垫底：${when}各自均分都是 ${formatScore(members[0].averageScore)}。${closing}`;
   }
   const member = members[0];
-  const detail = `${when} ${member.games} 局均分 ${formatScore(member.averageScore)}，在车队里排最后，最低的是${championLabel(member.worst)}那把 ${kda(member.worst)}，${formatScore(member.worst.score)} 分`;
-  const closing = pick([
-    "其实打得不差，只是车队里有人更强，这口锅只是相对的。",
-    "分数不低，只是在车队里排最后，相对垫底，别往心里去。",
-    "军师不扣分，下把和大家一起再往上走一步。",
-  ], seed);
+  const lowest = member.games === 1 ? `那一把是${championLabel(member.worst)}` : `最低的是${championLabel(member.worst)}那把`;
+  const detail = `${when} ${member.games} 局均分 ${formatScore(member.averageScore)}，在车队里排最后，${lowest} ${kda(member.worst)}，${formatScore(member.worst.score)} 分`;
+  const closing = pick(goodScores
+    ? [
+      "其实打得不差，只是车队里有人更强，这口锅只是相对的。",
+      "分数不低，只是在车队里排最后，相对垫底，别往心里去。",
+      "军师不扣分，下把和大家一起再往上走一步。",
+    ]
+    : [
+      "队内排名不差，只是车队里有人更强，这口锅只是相对的。",
+      "只是在车队里排最后，相对垫底，别往心里去。",
+      "军师不扣分，下把和大家一起再往上走一步。",
+    ], seed);
   return `${mention(member)}：${detail}。${closing}`;
 }
 
@@ -121,7 +132,7 @@ function noneRemark(data: ReportData, members: readonly MemberReport[], final: b
     return `${mentions(members)} 并列：${when}各自均分都只有 ${formatScore(members[0].averageScore)}。${closing}`;
   }
   const member = members[0];
-  const detail = `${when} ${member.games} 局均分只有 ${formatScore(member.averageScore)}，最难看的是${championLabel(member.worst)}那把 ${kda(member.worst)}，只拿 ${formatScore(member.worst.score)} 分`;
+  const detail = `${when} ${member.games} 局均分只有 ${formatScore(member.averageScore)}，${member.games === 1 ? `那一把是${championLabel(member.worst)}` : `最难看的是${championLabel(member.worst)}那把`} ${kda(member.worst)}，只拿 ${formatScore(member.worst.score)} 分`;
   const closing = pick(data.kind === "day"
     ? ["军师建议先去训练模式热热身。", "兵法有云，知耻而后勇。", "这样的操作，军师看了都替马脸红。"]
     : ["罚抄孙子兵法一遍，军师等着看长进。", "这一周的操作，军师建议先跟木桩谈谈心。", "败军之将不言勇，请拿出点真功夫。"], seed);
@@ -188,7 +199,8 @@ export function buildReportEmbed(data: ReportData, options: { final: boolean }):
   const ranked = data.members.filter((member) => member.qualified);
   const unranked = data.members.filter((member) => !member.qualified);
   const board = [
-    ...ranked.map((member, index) => memberLine(member, index + 1)),
+    // Members whose printed averages are equal share the same place, as with 并列: 1, 1, 3.
+    ...ranked.map((member) => memberLine(member, 1 + ranked.filter((other) => printedAverage(other) > printedAverage(member)).length)),
     ...unranked.map((member) => memberLine(member, null)),
   ];
   const notes: string[] = [];
@@ -200,7 +212,7 @@ export function buildReportEmbed(data: ReportData, options: { final: boolean }):
     embed.addFields(
       { name: `👑 ${when}特等马`, value: fit([topRemark(data, data.topHorses, options.final)]) },
       data.noneHorses.every(isRelativeBottom)
-        ? { name: `🐴 ${when}垫底（相对）`, value: fit([noneRemark(data, data.noneHorses, options.final)]) }
+        ? { name: `🐢 ${when}垫底（相对）`, value: fit([noneRemark(data, data.noneHorses, options.final)]) }
         : { name: `🪦 ${when}没有马`, value: fit([noneRemark(data, data.noneHorses, options.final)]) },
     );
   } else {

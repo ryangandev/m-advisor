@@ -95,6 +95,12 @@ export function gapText(neighbour: Pick<Neighbour, "gap" | "identical">): string
   return neighbour.identical ? formatScore(neighbour.gap) : formatGap(neighbour.gap);
 }
 
+/** A gap as a sentence part, spaced like the other numbers: `只差${...}` reads 只差 0.2 分 or 只差不到 0.1 分. */
+function gapAmount(neighbour: Neighbour): string {
+  const text = gapText(neighbour);
+  return `${text.startsWith("不到") ? "" : " "}${text} 分`;
+}
+
 function neighbour(record: HorseRecord, rank: number, score: number | null): Neighbour | null {
   if (score === null || rank < 1 || rank > record.teamSize) return null;
   // The two scores as the report prints them: the gap players compare is the difference of those.
@@ -236,7 +242,7 @@ export function verdictSummary(verdict: Verdict, self: boolean): string {
   }
   if (above.close) {
     const advice = worst ? `${ADVICE[worst.dimension]}就上去了` : "下把再争一口气";
-    return `离${neighbourName(above, "above")}只差 ${gapText(above)} 分，惜败，${advice}。`;
+    return `${above.identical ? `和${neighbourName(above, "above")}同分` : `离${neighbourName(above, "above")}只差${gapAmount(above)}`}，惜败，${advice}。`;
   }
   if (!worst) {
     return `${everyItem(verdict)}都在同位置中位数以上，只是队友更猛，${record.tier}输在了比较上。`;
@@ -274,15 +280,15 @@ export function appealRuling(verdict: Verdict): string {
     lines.push(`呈堂证供：${DIMENSION_LABELS[worst.dimension]}只超过 ${percent(worst.percentile)} 的同位置玩家，`
       + `而这一项在这局${verdict.positionLabel}评分里占 ${percent(worst.share)}${evidence.length > 0 ? `，${evidence.join("，")}` : ""}。`);
   } else {
-    lines.push(`呈堂证供：${everyItem(verdict)}都在同位置中位数以上，但队内第 ${record.teamRank - 1} 名比你高 ${gapText(above)} 分，比较之下，${tier}没有判错。`);
+    lines.push(`呈堂证供：${everyItem(verdict)}都在同位置中位数以上，但队内第 ${record.teamRank - 1} 名${above.identical ? "和你同分" : `比你高${gapAmount(above)}`}，比较之下，${tier}没有判错。`);
   }
 
   if (below?.close) {
     lines.push(below.sameTier
-      ? `顺便提醒，你只比下一名多 ${gapText(below)} 分，这是险胜。`
-      : `顺便提醒，你只比${below.tier}多 ${gapText(below)} 分，这是险胜，再闹下去怕要改判成${below.tier}。`);
+      ? `顺便提醒，${below.identical ? "你和下一名同分" : `你只比下一名多${gapAmount(below)}`}，这是险胜。`
+      : `顺便提醒，${below.identical ? `你和${below.tier}同分` : `你只比${below.tier}多${gapAmount(below)}`}，这是险胜，再闹下去怕要改判成${below.tier}。`);
   }
-  const admission = above?.close ? `军师承认这一局是惜败，离${neighbourName(above, "above")}只差 ${gapText(above)} 分。可差一点也是差，` : "";
+  const admission = above?.close ? `军师承认这一局是惜败，${above.identical ? `和${neighbourName(above, "above")}同分` : `离${neighbourName(above, "above")}只差${gapAmount(above)}`}。可差一点也是差，` : "";
   lines.push(`${admission}驳回上诉，维持原判：${tier}。${pick(["退堂！", "此案到此为止，下把峡谷见真章。", "军师的扇子就是法槌。"], seed)}`);
   return lines.join("\n");
 }

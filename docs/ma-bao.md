@@ -38,9 +38,12 @@ Members below the bar are listed without a rank and are not eligible.
 Nobody is named when fewer than two members are ranked or when everyone averaged the same, and the report then says why.
 Averages are compared as the report prints them, with one decimal, so 6.34 and 6.26 (both 6.3) are a tie.
 That applies to the top, the bottom, the everyone-tied check and the leaderboard order, where a printed tie falls to the count of 特等马 games, then games played.
+Members whose printed averages are equal share the same medal or place, as 并列 does, and the next place skips (1, 1, 3).
 When several members share the best or the worst average, all of them are named as 并列 in the text and all of them get the weekly role.
-Last place can be only relative: when the bottom member's printed average is at least `RELATIVE_BOTTOM_AVERAGE` = 6.0, or their worst game of the period was a 特等马 or 上等马, the field is titled `垫底（相对）` and the 军师 says so softly instead of roasting a 没有马, like the 车队内战 does with 相对背锅 (Ryan's decision of 2026-10-28).
+Last place can be only relative: when the bottom member's printed average is at least `RELATIVE_BOTTOM_AVERAGE` = 6.0, or their worst game of the period was a 特等马 or 上等马, the field is titled `🐢 垫底（相对）` (a neutral icon, not a tier icon) and the 军师 says so softly instead of roasting a 没有马, like the 车队内战 does with 相对背锅 (Ryan's decision of 2026-10-28).
 With a 并列 bottom, the soft wording is used only when every one of them qualifies.
+The soft closings praise the score (分数不低) only when the printed average is at least 6.0; a bottom member triggered by a 上等马 or 特等马 worst game with a lower average gets closings about the rank in the party (队内排名不差) instead.
+A member with exactly one game is described with 那一把是…, in the soft and in the harsh closing, instead of 最低的是… or 最难看的是….
 A genuinely bad bottom member keeps the harsh 没有马 closing.
 The soft line is chosen deterministically from the period and the members like the others, and it talks about play only.
 The weekly 没有马 role follows the data, not the wording.
