@@ -16,6 +16,7 @@ import {
 } from "../src/store/horseRecordStore";
 import { pacificDay, pacificWeek } from "../src/utils/pacificTime";
 import { makeHorseRecord, recordTracked } from "./helpers/horseRecords";
+import { backupLine, captureConsole } from "./helpers/captureConsole";
 
 let directory: string;
 let savedDatabasePath: string | undefined;
@@ -101,7 +102,8 @@ function writeVersionTwoDatabase(filePath: string, extraSql = ""): void {
   assert.ok(existsSync(`${filePath}-wal`) && statSync(`${filePath}-wal`).size > 0, "the fixture must leave an uncheckpointed WAL");
 }
 
-test("a version 2 database upgrades through version 3 to the current version with a backup and keeps every member", () => {
+test("a version 2 database upgrades through version 3 to the current version with a backup and keeps every member", (t) => {
+  const log = captureConsole(t);
   const filePath = join(directory, "v2.sqlite3");
   process.env.DATABASE_PATH = filePath;
   writeVersionTwoDatabase(filePath);
@@ -119,6 +121,7 @@ test("a version 2 database upgrades through version 3 to the current version wit
 
   // The backup is the version 2 file, written from the uncheckpointed WAL, with no horse table.
   assert.deepEqual(backupFiles(filePath), ["v2.sqlite3.v2.bak"]);
+  assert.equal(log.lines.filter((line) => backupLine(2, filePath).test(line)).length, 1, "the backup is announced once");
   const backupPath = `${filePath}.v2.bak`;
   if (process.platform !== "win32") assert.equal(statSync(backupPath).mode & 0o777, 0o600);
   const backup = new Database(backupPath, { readonly: true });
@@ -139,12 +142,14 @@ test("a version 2 database upgrades through version 3 to the current version wit
   assert.deepEqual(backupFiles(filePath), ["v2.sqlite3.v2.bak"]);
 });
 
-test("a failed version 3 step rolls back and leaves the version 2 database intact", () => {
+test("a failed version 3 step rolls back and leaves the version 2 database intact", (t) => {
+  const log = captureConsole(t);
   const filePath = join(directory, "v2-conflict.sqlite3");
   process.env.DATABASE_PATH = filePath;
   writeVersionTwoDatabase(filePath, "CREATE TABLE horse_records (stray TEXT);");
   assert.throws(() => getDatabase(), /Could not open the bot database.*horse_records/);
   assert.deepEqual(backupFiles(filePath), ["v2-conflict.sqlite3.v2.bak"]);
+  assert.equal(log.lines.filter((line) => backupLine(2, filePath).test(line)).length, 1, "the backup is announced once");
 
   const verify = new Database(filePath, { readonly: true });
   try {

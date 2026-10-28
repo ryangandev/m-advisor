@@ -15,6 +15,7 @@ import type { RankResult } from "../src/store/rankStore";
 import { makeHorseRecord, recordTracked } from "./helpers/horseRecords";
 import { recordTrackedRanks } from "./helpers/rankResults";
 import { ROWS_V6, SCHEMA_V6 } from "./helpers/schemaV6";
+import { backupLine, captureConsole } from "./helpers/captureConsole";
 
 let directory: string;
 let savedDatabasePath: string | undefined;
@@ -146,12 +147,14 @@ test("the upgraded table is STRICT, has its two indexes and no foreign key", () 
   );
 });
 
-test("a failed version 7 step rolls back and leaves the version 6 database intact", () => {
+test("a failed version 7 step rolls back and leaves the version 6 database intact", (t) => {
+  const log = captureConsole(t);
   const filePath = join(directory, "v6-conflict.sqlite3");
   process.env.DATABASE_PATH = filePath;
   writeVersionSixDatabase(filePath, "CREATE TABLE rank_results (stray TEXT);");
   assert.throws(() => getDatabase(), /Could not open the bot database.*rank_results/);
   assert.deepEqual(backupFiles(filePath), ["v6-conflict.sqlite3.v6.bak"]);
+  assert.equal(log.lines.filter((line) => backupLine(6, filePath).test(line)).length, 1, "the backup is announced once");
 
   const verify = new Database(filePath, { readonly: true });
   try {
