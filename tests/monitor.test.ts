@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import { afterEach, beforeEach, test } from "node:test";
+import { afterEach, beforeEach, mock, test } from "node:test";
 import { VoiceChannel, type Client, type MessageCreateOptions, type MessageEditOptions } from "discord.js";
 import type { MatchDetail, RankedEntry, TrackedMember } from "../src/types";
-import { GameMonitor, MAX_VOICE_ATTEMPTS, resolveMonitoredVoiceChannel, type MonitorDependencies } from "../src/services/gameMonitor";
+import { GameMonitor, KEEP_BASELINES_MS, MAX_VOICE_ATTEMPTS, resolveMonitoredVoiceChannel, type MonitorDependencies } from "../src/services/gameMonitor";
 import { AnnouncementQueueFullError, VoiceAnnouncementService, type VoiceAnnouncementDependencies } from "../src/services/voiceAnnouncements";
 import { resetMockData, RiotApiError, simulateMockMatch } from "../src/services/riotData";
 import { buildMatchAnnouncement } from "../src/services/announcementText";
@@ -380,16 +380,85 @@ test("shared-match failure attempts speech once per poll and retries next time",
   assert.equal(attempts, 4);
 });
 
-test("stop and restart create a new baseline instead of replaying an offline match", async () => {
+test("a bot restart creates a new baseline instead of replaying an offline match", async () => {
   const bot = harness("restart-monitor-guild");
   await bot.start();
   bot.monitor.stop(bot.guildId);
   assert.equal(getAnnouncerState(bot.guildId).pollingInterval, null);
   bot.latestIds.set("tracked", "offline-match");
-  assert.deepEqual(await bot.start(), { announced: 0, errors: 0 });
+  // A restart is a new process: the kept baselines live in memory and are gone with the old monitor.
+  const restarted = new GameMonitor(bot.dependencies);
+  monitors.push(restarted);
+  restarted.sync(bot.client, bot.guildId, ["member-1"]);
+  assert.deepEqual(await restarted.poll(bot.client, bot.guildId), { announced: 0, errors: 0 });
   assert.deepEqual(bot.generated, []);
   bot.latestIds.set("tracked", "online-match");
-  assert.equal((await bot.poll()).announced, 1);
+  assert.equal((await restarted.poll(bot.client, bot.guildId)).announced, 1);
+});
+
+/** Runs the steps with Date.now moved forward, for Date.now only; timers keep real time. */
+async function afterKeepWindow<T>(steps: () => Promise<T> | T): Promise<T> {
+  const real = Date.now.bind(Date);
+  const clock = mock.method(Date, "now", () => real() + KEEP_BASELINES_MS + 1_000);
+  try {
+    return await steps();
+  } finally {
+    clock.mock.restore();
+  }
+}
+
+test("a member who briefly leaves and rejoins gets the match they just finished announced once", async () => {
+  const bot = harness("keep-baseline-guild");
+  await bot.start();
+  bot.move("member-1", null);
+  bot.sync();
+  assert.equal(bot.status().active, false);
+  // The game ended while they were switching devices.
+  bot.latestIds.set("tracked", "just-finished");
+  bot.move("member-1", "first-channel");
+  assert.deepEqual(await bot.start(), { announced: 1, errors: 0 });
+  assert.equal(bot.generated.length, 1);
+  assert.equal(getLastMatchId(bot.guildId, "tracked"), "just-finished");
+  assert.deepEqual(await bot.poll(), { announced: 0, errors: 0 }, "and never a second time");
+  assert.ok(bot.infos.some((line) => /Baseline for tracked#NA1 kept from before they left voice: historical-match/.test(line)));
+});
+
+test("a rejoin after the keep window takes a fresh baseline, so the match finished meanwhile is not replayed", async () => {
+  const bot = harness("expired-baseline-guild");
+  await bot.start();
+  bot.move("member-1", null);
+  bot.sync();
+  bot.latestIds.set("tracked", "finished-while-away");
+  bot.move("member-1", "first-channel");
+  assert.deepEqual(await afterKeepWindow(() => bot.start()), { announced: 0, errors: 0 });
+  assert.deepEqual(bot.generated, []);
+  assert.equal(getLastMatchId(bot.guildId, "tracked"), "finished-while-away", "the new baseline");
+});
+
+test("a member who leaves a session that goes on keeps their baseline for the window, and only for the same member", async () => {
+  const bot = harness("keep-baseline-party-guild", [
+    { id: "alice-id", puuids: ["alice"], channel: "x" },
+    { id: "bob-id", puuids: ["bob"], channel: "x" },
+  ]);
+  bot.matches.set("alice-game", match("alice-game", ["alice", "bob"]));
+  await bot.start();
+  bot.move("alice-id", null);
+  bot.sync();
+  assert.deepEqual(bot.status().presentMemberIds, ["bob-id"]);
+  bot.latestIds.set("alice", "alice-game");
+  bot.move("alice-id", "x");
+  bot.sync();
+  await until(() => bot.generated.length === 1, "alice's match to be announced");
+  assert.equal(getLastMatchId(bot.guildId, "alice"), "alice-game");
+
+  // The same window does not apply to an account that moved to another member: it starts fresh.
+  bot.move("alice-id", null);
+  bot.sync();
+  bot.members = [{ ...bot.members[0], accounts: [] }, { ...bot.members[1], accounts: [...bot.members[1].accounts, ...bot.members[0].accounts] }];
+  bot.latestIds.set("alice", "after-handover");
+  bot.sync();
+  await bot.poll();
+  assert.equal(bot.generated.length, 1, "bob's baseline for the handed-over account is fresh, so nothing more is announced");
 });
 
 test("an account with no history announces its first later match", async () => {
@@ -428,7 +497,8 @@ test("a cancelled old session cannot alter the next session's baseline", async (
   await started.promise;
   bot.monitor.stop(bot.guildId);
   bot.latestIds.set("tracked", "new-baseline-match");
-  await bot.start();
+  // Long enough after the stop that the old baseline is no longer kept, so the new session takes its own.
+  await afterKeepWindow(() => bot.start());
   speech.resolve("old-session.wav");
   assert.deepEqual(await oldPoll, { announced: 0, errors: 0 });
   assert.equal(getLastMatchId(bot.guildId, "tracked"), "new-baseline-match");
@@ -771,9 +841,12 @@ test("one member leaving keeps the session; a rejoin starts a fresh baseline; th
   bot.lookups.length = 0;
   await bot.poll();
   assert.deepEqual(bot.lookups, ["alice"]);
-  bot.move("bob-id", "y");
-  bot.sync();
-  await bot.poll();
+  // After the keep window, so the baseline is fresh.
+  await afterKeepWindow(async () => {
+    bot.move("bob-id", "y");
+    bot.sync();
+    await bot.poll();
+  });
   assert.equal(getLastMatchId(bot.guildId, "bob"), "bob-offline-match");
   assert.deepEqual(bot.generated, []);
   bot.move("alice-id", null);
@@ -1106,12 +1179,12 @@ test("a game that ends after a member joined is announced even when their first 
   assert.deepEqual(await bot.poll(), { announced: 0, errors: 0 });
   assert.equal(bot.played.length, 2, "neither game is announced twice and Cara's earlier game never");
 
-  // A restart takes every latest match as a baseline, even one that ended while the old session ran.
+  // A new session after the keep window takes every latest match as a baseline, even one that ended while the old session ran.
   bot.monitor.stop(bot.guildId);
   bot.matches.set("bob-during-old-session", match("bob-during-old-session", ["bob"], [], Date.now()));
   bot.latestIds.set("bob", "bob-during-old-session");
   await delay(5);
-  assert.deepEqual(await bot.start(), { announced: 0, errors: 0 });
+  assert.deepEqual(await afterKeepWindow(() => bot.start()), { announced: 0, errors: 0 });
   assert.equal(getLastMatchId(bot.guildId, "bob"), "bob-during-old-session");
   assert.equal(bot.played.length, 2);
 });
@@ -1186,11 +1259,13 @@ test("a match waiting for a usable channel is fetched and logged once, and forgo
   await leaving.poll();
   leaving.move("alice-id", null);
   leaving.sync();
-  leaving.move("alice-id", "x");
-  leaving.sync();
-  await leaving.poll();
-  await leaving.poll();
-  // Alice's return starts a fresh baseline, so the game she finished before rejoining is not announced.
+  await afterKeepWindow(async () => {
+    leaving.move("alice-id", "x");
+    leaving.sync();
+    await leaving.poll();
+    await leaving.poll();
+  });
+  // Alice's return after the keep window starts a fresh baseline, so the game she finished before rejoining is not announced.
   assert.deepEqual(leaving.played, []);
   assert.equal(getLastMatchId(leaving.guildId, "alice"), "alice-solo");
   assert.equal(leaving.infos.filter((message) => message.startsWith("Match alice-solo is waiting")).length, 1);

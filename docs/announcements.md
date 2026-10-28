@@ -21,9 +21,10 @@ A latest match that ended after the member joined is announced instead of becomi
 An account added to a member who is already in voice also gets a fresh baseline before anything is announced, counted from when it was added.
 Accounts present when the session starts, at the first join or after a bot restart, take their latest match as the baseline without that check, so nothing is replayed.
 A member who leaves voice or is unbound drops out of the session, and their accounts' baselines are cleared with `clearLastMatchIds`.
-When they return, they get a new baseline, so a match they finished while away is never replayed.
-An account that moves to another member or is removed from its member loses its baseline the same way.
-The session stops when no tracked member is left in voice, and a bot restart creates new baselines, so offline matches are not replayed.
+A member who leaves voice and still owns their accounts has those baselines kept in memory for 2 minutes (`KEEP_BASELINES_MS`), also when their leaving stops the session.
+If the same member returns within the window, their accounts take the kept baselines back instead of a new one, so a match they finished meanwhile is announced once, and one already announced is not announced again.
+After the window, or for an unbound member or an account that moved to another member or was removed, the return gets a new baseline, so a match finished while away is never replayed.
+The session stops when no tracked member is left in voice, and a bot restart creates new baselines because the kept ones live in memory only, so offline matches are not replayed.
 Moving between channels does not touch the session or its baselines.
 
 Each poll reads only the accounts of members in the session, and duplicate PUUIDs are queried once.

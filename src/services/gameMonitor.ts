@@ -49,6 +49,8 @@ export type GameStartWatcherInputs = Pick<GameStartDependencies, "activeGame" | 
 export const POLL_INTERVAL_MS = 45_000;
 /** After this many failed voice attempts a match is consumed without voice; its text report was already posted. */
 export const MAX_VOICE_ATTEMPTS = 3;
+/** How long the baselines of accounts whose member left voice are kept, so a quick return does not lose the match just finished. */
+export const KEEP_BASELINES_MS = 120_000;
 /** The monitor's own limit on the timeline, above its request timeout, so a stuck timeline never holds a report. */
 const TIMELINE_WAIT_MS = 8_000;
 export interface PollResult { announced: number; errors: number }
@@ -175,6 +177,13 @@ interface AccountState {
   baselined: boolean;
 }
 
+/** The baseline of an account whose member left voice: the latest match it had consumed, or none for a valid empty history. */
+interface KeptBaseline {
+  owner: string;
+  matchId: string | undefined;
+  keptAt: number;
+}
+
 /** A match none of whose players is in a usable voice channel; kept so later polls neither refetch nor relog it. */
 interface WaitingMatch {
   detail: MatchDetail;
@@ -274,6 +283,8 @@ export class GameMonitor {
   private readonly gameStartMemory = new Map<string, GameStartMemory>();
   /** stopAll ran: the bot is shutting down. */
   private closed = false;
+  /** Baselines of accounts whose member left voice, per guild, kept for KEEP_BASELINES_MS; see keepBaselines. */
+  private readonly keptBaselines = new Map<string, Map<string, KeptBaseline>>();
 
   constructor(private readonly dependencies: MonitorDependencies) {}
 
@@ -303,7 +314,7 @@ export class GameMonitor {
         waiting: new Map(),
         progress: new Map(),
       };
-      this.track(session, members);
+      this.track(guildId, session, members);
       this.sessions.set(guildId, session);
       session.watcher = this.createWatcher(client, guildId, session);
       this.dependencies.info(`Monitoring started for ${members.map((member) => this.describe(client, guildId, member)).join("; ")}; `
@@ -327,7 +338,7 @@ export class GameMonitor {
     const joined = members.filter((member) => !previous.has(member.discordUserId));
     for (const member of joined) this.dependencies.info(`Monitoring now also covers ${this.describe(client, guildId, member)}.`);
     this.prune(guildId, session, members);
-    this.track(session, members, now);
+    this.track(guildId, session, members, now);
     session.watcher?.sync(members);
     const needsBaseline = members.some((member) => member.accounts.some((account) =>
       !session.accounts.get(account.puuid)?.baselined && (this.dependencies.mock() || !account.puuid.startsWith("MOCK-"))));
@@ -338,20 +349,57 @@ export class GameMonitor {
    * Start tracking present members' accounts the session has not seen.
    * `since` is passed for accounts joining a running session: the member's join time, or later for an account added afterwards.
    */
-  private track(session: MonitorSession, members: TrackedMember[], since?: number): void {
+  private track(guildId: string, session: MonitorSession, members: TrackedMember[], since?: number): void {
     for (const member of members) {
       if (!session.present.has(member.discordUserId)) continue;
       for (const account of member.accounts) {
         if (session.accounts.has(account.puuid)) continue;
+        const kept = this.takeKeptBaseline(guildId, account.puuid, member.discordUserId);
+        if (kept) {
+          // The same member is back within the window: the match they finished meanwhile is detected like any later one.
+          if (kept.matchId) setLastMatchId(guildId, account.puuid, kept.matchId);
+          session.accounts.set(account.puuid, { owner: member.discordUserId, since, baselined: true });
+          this.dependencies.info(`Baseline for ${account.gameName}#${account.tagLine} kept from before they left voice: `
+            + `${kept.matchId ?? "no Summoner's Rift history"}.`);
+          continue;
+        }
         session.accounts.set(account.puuid, { owner: member.discordUserId, since, baselined: false });
       }
     }
+  }
+
+  /**
+   * Remember the baselines of accounts whose member left voice but still owns them, for KEEP_BASELINES_MS.
+   * An unbound member, a moved account and the shutdown keep nothing.
+   */
+  private keepBaselines(guildId: string, accounts: Iterable<[string, AccountState]>): void {
+    if (this.closed) return;
+    const now = Date.now();
+    const kept = this.keptBaselines.get(guildId) ?? new Map<string, KeptBaseline>();
+    for (const [puuid, keptAt] of kept) if (now - keptAt.keptAt > KEEP_BASELINES_MS) kept.delete(puuid);
+    for (const [puuid, state] of accounts) {
+      if (!state.baselined || this.ownerOf(guildId, puuid) !== state.owner) continue;
+      kept.set(puuid, { owner: state.owner, matchId: getLastMatchId(guildId, puuid), keptAt: now });
+    }
+    if (kept.size > 0) this.keptBaselines.set(guildId, kept);
+    else this.keptBaselines.delete(guildId);
+  }
+
+  /** The kept baseline of an account, if its same member returned within the window; it is used up either way. */
+  private takeKeptBaseline(guildId: string, puuid: string, owner: string): KeptBaseline | undefined {
+    const kept = this.keptBaselines.get(guildId);
+    const entry = kept?.get(puuid);
+    if (!kept || !entry) return undefined;
+    kept.delete(puuid);
+    if (kept.size === 0) this.keptBaselines.delete(guildId);
+    return entry.owner === owner && Date.now() - entry.keptAt <= KEEP_BASELINES_MS ? entry : undefined;
   }
 
   stop(guildId: string, reason = "monitoring was stopped"): void {
     const session = this.sessions.get(guildId);
     session?.controller.abort(new AnnouncementCancelledError());
     session?.watcher?.stop();
+    if (session) this.keepBaselines(guildId, session.accounts);
     this.sessions.delete(guildId);
     resetAnnouncerRuntime(guildId);
     if (session) this.dependencies.info(`Monitoring stopped: ${reason}.`);
@@ -460,6 +508,7 @@ export class GameMonitor {
     }
     session.watcher?.prune(members);
     const dropped = [...session.accounts].filter(([puuid, state]) => owners.get(puuid) !== state.owner).map(([puuid]) => puuid);
+    this.keepBaselines(guildId, dropped.map((puuid) => [puuid, session.accounts.get(puuid)!] as [string, AccountState]));
     for (const puuid of dropped) session.accounts.delete(puuid);
     clearLastMatchIds(guildId, dropped);
     for (const cache of [session.waiting, session.progress]) {
@@ -529,7 +578,7 @@ export class GameMonitor {
       const members = this.dependencies.members(guildId);
       this.prune(guildId, session, members);
       // Accounts changed without a sync (for example a rebind) still count from now.
-      this.track(session, members, Date.now());
+      this.track(guildId, session, members, Date.now());
       const accounts: RiotAccount[] = [];
       const seen = new Set<string>();
       for (const member of members) {
