@@ -50,6 +50,11 @@ export interface FinishedRankedMatch {
 export interface RankTracking {
   /** Reads the accounts' entries as their before-value: at the monitoring baseline and at a ranked game's start. */
   snapshot(puuids: readonly string[]): void;
+  /**
+   * Whether a read of the account that succeeded was sent at or after `since`. A game's start asks it to retry a failed
+   * snapshot until there is one newer than the first sighting. Optional: a tracker without it gets one attempt per game.
+   */
+  hasReadSince?(puuid: string, since: number): boolean;
   /** Starts the after-reads of a finished ranked match (not a remake, not aborted). */
   matchFinished(match: FinishedRankedMatch): void;
   /** Settles once the first after-read of every account of the match has settled. Never rejects. */
@@ -216,6 +221,12 @@ export class RankTracker implements RankTracking {
   /** In real mode a saved mock account never reaches Riot. */
   private skipped(mode: Mode, puuid: string): boolean {
     return mode === "real" && puuid.startsWith("MOCK-");
+  }
+
+  hasReadSince(puuid: string, since: number): boolean {
+    // Nothing more will be read for an account that is skipped, or once LP is off, so there is nothing to wait for.
+    if (this.off() || this.skipped(this.mode(), puuid)) return true;
+    return this.account(this.mode(), puuid).snapshots.some((snapshot) => snapshot.at >= since);
   }
 
   snapshot(puuids: readonly string[]): void {

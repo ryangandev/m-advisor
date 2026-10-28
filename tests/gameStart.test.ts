@@ -1229,14 +1229,20 @@ const solo = (tier: string, division: string, leaguePoints: number, wins = 10, l
 function rankOn(bot: Harness) {
   const league = new Map<string, readonly RankedEntry[]>();
   const reads: string[] = [];
+  /** Accounts whose league-v4 reads time out, the way a slow Riot answers. */
+  const failing = new Set<string>();
   bot.dependencies.rank = new RankTracker({
-    readEntries: async (puuid) => { reads.push(puuid); return league.get(puuid) ?? []; },
+    readEntries: async (puuid) => {
+      reads.push(puuid);
+      if (failing.has(puuid)) throw new RiotApiError("Riot API request timed out.", "timeout");
+      return league.get(puuid) ?? [];
+    },
     mock: () => false,
     log: () => undefined,
     info: () => undefined,
     now: bot.now,
   });
-  return { league, reads };
+  return { league, reads, failing };
 }
 
 const rankFieldOfReport = (bot: Harness): string | undefined =>
@@ -1298,4 +1304,38 @@ test("a ranked game first seen in progress is read too; a game without LP is not
   await delay(30);
   assert.deepEqual(reads.slice(3).sort(), ["acct-a", "acct-b"]);
   assert.ok(bot.infos.some((line) => line.startsWith("Game NA1_7002 is not announced at its start: it was already 300 s in")));
+});
+
+test("a game-start LP read that fails is retried on the next in-game recheck, so a dodge is not counted in the game", async () => {
+  const bot = harness([{ id: A, puuids: ["acct-a"], channel: "voice-1" }]);
+  const { league, reads, failing } = rankOn(bot);
+  league.set("acct-a", [solo("GOLD", "II", 64)]);
+  bot.sync();
+  await bot.monitor.poll(bot.client, GUILD);
+  await until(() => reads.length === 1, "the monitoring baseline");
+
+  // A dodge costs 5 LP and no game. The game then loads, but its first read times out.
+  league.set("acct-a", [solo("GOLD", "II", 59)]);
+  failing.add("acct-a");
+  bot.advance(5 * 60_000);
+  bot.enter(spectatorGame(7101, [{ puuid: "acct-a", teamId: 100, championId: AHRI }]));
+  await bot.tick();
+  await until(() => reads.length === 2, "the first game start read");
+  await delay(30);
+
+  // Riot recovers. The account is asked about its game again after the in-game recheck interval, and that tick reads the rank.
+  failing.delete("acct-a");
+  for (let tick = 0; tick < 4; tick++) await bot.tick();
+  assert.equal(reads.length, 2, "no retry before the recheck");
+  await bot.tick();
+  await bot.tick();
+  await until(() => reads.length === 3, "the retried game start read");
+
+  league.set("acct-a", [solo("GOLD", "II", 81, 11, 10)]);
+  bot.advance(25 * 60_000);
+  await finishGame(bot, "NA1_7101", ["acct-a"], (detail) => { detail.info.gameEndTimestamp = bot.now(); });
+  assert.equal(rankFieldOfReport(bot), `<@${A}> 单双排 黄金 II · 81 LP · 本局 +22`, "the dodge is not in this game's LP");
+
+  // Once the start read exists, later rechecks read nothing more.
+  assert.equal(reads.length, 4, "one baseline, two start reads and one after-read");
 });
