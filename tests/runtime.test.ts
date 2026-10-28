@@ -5,6 +5,15 @@ import fs from "node:fs";
 import test from "node:test";
 import ffmpeg from "ffmpeg-static";
 
+test("build starts from an empty dist so a deleted command is never loaded or registered", () => {
+  const scripts = JSON.parse(fs.readFileSync("package.json", "utf8")).scripts;
+  const steps = String(scripts.build).split("&&").map((step: string) => step.trim());
+  assert.equal(steps.at(-1), "tsc");
+  const clean = steps.findIndex((step: string) => /rmSync\(.dist.,\s*\{[^}]*recursive:\s*true[^}]*force:\s*true/.test(step));
+  assert.ok(clean >= 0 && clean < steps.length - 1, "build must remove dist before tsc runs");
+  assert.ok(scripts["probe:spectator"].includes("scripts/probe-spectator.ts"));
+});
+
 test("installed FFmpeg decodes generated PCM into Discord Opus", () => {
   assert.ok(ffmpeg);
   const audio = execFileSync(ffmpeg, ["-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=0.1", "-ar", "48000", "-ac", "2", "-c:a", "libopus", "-f", "ogg", "pipe:1"]);
