@@ -240,6 +240,8 @@ export function getDatabase(): Database.Database {
     }
     connection.pragma("busy_timeout = 5000");
     connection.pragma("foreign_keys = ON");
+    // Erased rows are overwritten with zeros in the file instead of lingering in free pages.
+    connection.pragma("secure_delete = ON");
 
     const version = connection.pragma("user_version", { simple: true }) as number;
     if (version > SCHEMA_VERSION) {
