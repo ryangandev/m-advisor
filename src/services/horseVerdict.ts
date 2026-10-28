@@ -52,8 +52,13 @@ export interface Neighbour {
   /** True when the neighbour has the same tier, which happens only in teams larger than five. */
   sameTier: boolean;
   score: number;
-  /** Always positive: how far the neighbour is from this record's score. */
+  /**
+   * How far the neighbour is from this record's score, as the difference of the two printed (one decimal) scores, so
+   * it always matches the report. Zero when both print the same, whether the raw scores differ or not.
+   */
   gap: number;
+  /** The raw scores are exactly equal; a printed gap of 0 between different raw scores is 不到 0.1 instead. */
+  identical: boolean;
   /** The printed gap is within CLOSE_GAP, so the 军师 admits 惜败 (above) or 险胜 (below). */
   close: boolean;
 }
@@ -85,11 +90,17 @@ export function formatGap(gap: number): string {
   return text === "0.0" ? "不到 0.1" : text;
 }
 
+/** The text of a neighbour's gap: 不到 0.1 only when different scores print the same. */
+export function gapText(neighbour: Pick<Neighbour, "gap" | "identical">): string {
+  return neighbour.identical ? formatScore(neighbour.gap) : formatGap(neighbour.gap);
+}
+
 function neighbour(record: HorseRecord, rank: number, score: number | null): Neighbour | null {
   if (score === null || rank < 1 || rank > record.teamSize) return null;
-  const gap = Math.abs(score - record.score);
+  // The two scores as the report prints them: the gap players compare is the difference of those.
+  const gap = Math.abs(Number(formatScore(score)) - Number(formatScore(record.score)));
   const tier = tierForRank(rank, record.teamSize);
-  return { tier, sameTier: tier === record.tier, score, gap, close: Number(formatScore(gap)) <= CLOSE_GAP };
+  return { tier, sameTier: tier === record.tier, score, gap, identical: score === record.score, close: Number(formatScore(gap)) <= CLOSE_GAP };
 }
 
 /** Explains one stored record: what it was judged on, what cost it and how close the neighbouring tiers were. */
@@ -225,7 +236,7 @@ export function verdictSummary(verdict: Verdict, self: boolean): string {
   }
   if (above.close) {
     const advice = worst ? `${ADVICE[worst.dimension]}就上去了` : "下把再争一口气";
-    return `离${neighbourName(above, "above")}只差 ${formatGap(above.gap)} 分，惜败，${advice}。`;
+    return `离${neighbourName(above, "above")}只差 ${gapText(above)} 分，惜败，${advice}。`;
   }
   if (!worst) {
     return `${everyItem(verdict)}都在同位置中位数以上，只是队友更猛，${record.tier}输在了比较上。`;
@@ -263,15 +274,15 @@ export function appealRuling(verdict: Verdict): string {
     lines.push(`呈堂证供：${DIMENSION_LABELS[worst.dimension]}只超过 ${percent(worst.percentile)} 的同位置玩家，`
       + `而这一项在这局${verdict.positionLabel}评分里占 ${percent(worst.share)}${evidence.length > 0 ? `，${evidence.join("，")}` : ""}。`);
   } else {
-    lines.push(`呈堂证供：${everyItem(verdict)}都在同位置中位数以上，但队内第 ${record.teamRank - 1} 名比你高 ${formatGap(above.gap)} 分，比较之下，${tier}没有判错。`);
+    lines.push(`呈堂证供：${everyItem(verdict)}都在同位置中位数以上，但队内第 ${record.teamRank - 1} 名比你高 ${gapText(above)} 分，比较之下，${tier}没有判错。`);
   }
 
   if (below?.close) {
     lines.push(below.sameTier
-      ? `顺便提醒，你只比下一名多 ${formatGap(below.gap)} 分，这是险胜。`
-      : `顺便提醒，你只比${below.tier}多 ${formatGap(below.gap)} 分，这是险胜，再闹下去怕要改判成${below.tier}。`);
+      ? `顺便提醒，你只比下一名多 ${gapText(below)} 分，这是险胜。`
+      : `顺便提醒，你只比${below.tier}多 ${gapText(below)} 分，这是险胜，再闹下去怕要改判成${below.tier}。`);
   }
-  const admission = above?.close ? `军师承认这一局是惜败，离${neighbourName(above, "above")}只差 ${formatGap(above.gap)} 分。可差一点也是差，` : "";
+  const admission = above?.close ? `军师承认这一局是惜败，离${neighbourName(above, "above")}只差 ${gapText(above)} 分。可差一点也是差，` : "";
   lines.push(`${admission}驳回上诉，维持原判：${tier}。${pick(["退堂！", "此案到此为止，下把峡谷见真章。", "军师的扇子就是法槌。"], seed)}`);
   return lines.join("\n");
 }
