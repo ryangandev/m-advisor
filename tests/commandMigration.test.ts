@@ -3,10 +3,10 @@ import { test } from "node:test";
 import { REST, Routes } from "discord.js";
 import { retireLegacyGlobalCommands } from "../src/services/commandMigration";
 
-const app = "1048644967171625021";
-const guild = "1048644967171625020";
+const app = "900000000000000001";
+const guild = "900000000000000002";
 const manifest = ["announcer", "bind", "bindings", "profile", "simulate", "testvoice", "unbind"];
-const legacy = ["announcer", "bind", "bindings", "profile", "testvc", "unbind"].map((name, index) => ({ id: String(1048644967171625030n + BigInt(index)), name, type: 1 }));
+const legacy = ["announcer", "bind", "bindings", "profile", "testvc", "unbind"].map((name, index) => ({ id: String(900000000000000100n + BigInt(index)), name, type: 1 }));
 function fixture(options: { guilds?: unknown; registered?: unknown; globals?: unknown; failDelete?: boolean } = {}) {
   const deleted: string[] = [];
   const api = {
@@ -30,7 +30,7 @@ test("single authorized server replaces all known legacy global controls after g
   assert.deepEqual(f.deleted, legacy.map(command => Routes.applicationCommand(app, command.id)));
 });
 test("multiple servers and a different sole server refuse all global mutations", async () => {
-  for (const guilds of [[{ id: guild }, { id: "1048644967171625099" }], [{ id: "1048644967171625099" }], []]) {
+  for (const guilds of [[{ id: guild }, { id: "900000000000000003" }], [{ id: "900000000000000003" }], []]) {
     const f = fixture({ guilds });
     await assert.rejects(retireLegacyGlobalCommands(f.api, app, guild, manifest), /only to the authorized test server/);
     assert.deepEqual(f.deleted, []);
@@ -44,7 +44,7 @@ test("missing replacement or malformed inventory refuses migration before any de
   }
 });
 test("unknown commands and context-menu commands remain untouched", async () => {
-  const f = fixture({ globals: [...legacy, { id: "1048644967171625088", name: "unrelated", type: 1 }, { id: "1048644967171625089", name: "profile", type: 2 }] });
+  const f = fixture({ globals: [...legacy, { id: "900000000000000200", name: "unrelated", type: 1 }, { id: "900000000000000201", name: "profile", type: 2 }] });
   assert.deepEqual(await retireLegacyGlobalCommands(f.api, app, guild, manifest), legacy.map(command => command.name));
   assert.equal(f.deleted.length, legacy.length);
 });
