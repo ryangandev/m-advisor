@@ -39,6 +39,11 @@ Nobody is named when fewer than two members are ranked or when everyone averaged
 Averages are compared as the report prints them, with one decimal, so 6.34 and 6.26 (both 6.3) are a tie.
 That applies to the top, the bottom, the everyone-tied check and the leaderboard order, where a printed tie falls to the count of 特等马 games, then games played.
 When several members share the best or the worst average, all of them are named as 并列 in the text and all of them get the weekly role.
+Last place can be only relative: when the bottom member's printed average is at least `RELATIVE_BOTTOM_AVERAGE` = 6.0, or their worst game of the period was a 特等马 or 上等马, the field is titled `垫底（相对）` and the 军师 says so softly instead of roasting a 没有马, like the 车队内战 does with 相对背锅 (Ryan's decision of 2026-10-28).
+With a 并列 bottom, the soft wording is used only when every one of them qualifies.
+A genuinely bad bottom member keeps the harsh 没有马 closing.
+The soft line is chosen deterministically from the period and the members like the others, and it talks about play only.
+The weekly 没有马 role follows the data, not the wording.
 The busiest member and the longest 特等马 or 没有马 streak name everyone who shares the top value, and the busiest line is left out when the whole field played the same number of games.
 The 军师 lines are chosen deterministically from the period and the member, so the same report always reads the same, and they talk about play only.
 
