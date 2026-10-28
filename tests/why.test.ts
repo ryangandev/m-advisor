@@ -6,7 +6,7 @@ import { afterEach, beforeEach, test } from "node:test";
 import { ButtonStyle, MessageFlags } from "discord.js";
 import whyCommand, { choiceName, whyDependencies } from "../src/commands/why";
 import { isAppealClosed, reopenAppeal } from "../src/store/appealStore";
-import { closeDatabase } from "../src/store/database";
+import { closeDatabase, getDatabase } from "../src/store/database";
 import { eraseMemberHorseRecords, listHorseRecords } from "../src/store/horseRecordStore";
 import type { HorseRecord } from "../src/store/horseRecordStore";
 import { setMemberAccounts } from "../src/store/bindingStore";
@@ -375,6 +375,19 @@ test("a case is reopened when the ruling follow-up fails after the button was di
   assert.equal(restored.custom_id, "why-appeal:r:support-friend:NA1_5100000001");
   assert.notEqual(restored.label, buttonOf(stub.calls[0].payload).label);
   assert.deepEqual(stub.calls[1].payload.allowedMentions, NO_MENTIONS);
+});
+
+test("the button stays disabled when the case could not be reopened", async () => {
+  seed([seededSupport()]);
+  const stub = button("why-appeal:r:support-friend:NA1_5100000001", "support-friend");
+  (stub.stub as unknown as { followUp: () => Promise<void> }).followUp = async () => {
+    // The follow-up fails and the case table is gone, so reopening it throws too.
+    getDatabase().exec("DROP TABLE appeal_cases");
+    throw new Error("Missing Permissions");
+  };
+  await assert.rejects(whyCommand.handleButton!(stub.stub), /Missing Permissions/);
+  assert.deepEqual(stub.calls.map((call) => call.kind), ["update"], "the case is still closed, so the button is not offered again");
+  assert.ok(errors.some((line) => line.includes("could not be reopened")));
 });
 
 test("the original follow-up error is thrown even when the button cannot be restored", async () => {

@@ -4,8 +4,15 @@ import { join, relative } from "node:path";
 import { test } from "node:test";
 
 const SRC = join(__dirname, "..", "src");
-/** Interaction responses that can carry text. Autocomplete `respond` and `deferReply` send no message body. */
-const RESPONSE_CALL = /\binteraction\.(reply|editReply|followUp|update)\(/g;
+/**
+ * Any response method on an identifier, optionally `?.` and with the dot on the next line, so a renamed receiver such as
+ * `i` or `button` is still scanned. A call chained on a `)` like `createHash(...).update(` has no identifier before the dot.
+ * Autocomplete `respond` and `deferReply` send no message body.
+ */
+const RESPONSE_CALL = /\b\w+\??\s*\.\s*(reply|editReply|followUp|update)\(/g;
+/** The key with a value, or the shorthand property. A comment or the bare word does not count. */
+const EXPLICIT_MENTIONS = /\ballowedMentions\s*(:|,|\})/;
+const withoutComments = (text: string) => text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
 
 function sourceFiles(directory: string): string[] {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
@@ -36,7 +43,7 @@ test("every interaction response in src sets allowedMentions explicitly", () => 
     for (const match of source.matchAll(RESPONSE_CALL)) {
       checked++;
       const args = callArguments(source, match.index + match[0].length - 1);
-      if (!/\ballowedMentions\b/.test(args)) {
+      if (!EXPLICIT_MENTIONS.test(withoutComments(args))) {
         const line = source.slice(0, match.index).split("\n").length;
         missing.push(`${relative(SRC, file)}:${line} ${match[0]}`);
       }
