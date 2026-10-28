@@ -7,7 +7,29 @@ import type { MatchTimeline } from "./matchTimeline";
 const AMERICAS = "https://americas.api.riotgames.com";
 // Current Riot game constants include Swiftplay and Quickplay; keep Blind Pick for older history.
 const SR_QUEUE_IDS = [400, 420, 430, 440, 480, 490];
+/** Match details kept; the least recently used entry is dropped first. */
+const MATCH_CACHE_LIMIT = 200;
+/** Queue IDs remembered, far more than the details: a number per match is tiny and saves a request each. */
+const QUEUE_CACHE_LIMIT = 2_000;
 const matchCache = new Map<string, MatchDetail>();
+/** `mode:matchId` to the queue the match was played in, so a non-Summoner's-Rift match is never fetched twice just to be skipped. */
+const queueCache = new Map<string, number>();
+
+/** Reads an entry and marks it the most recently used. */
+function touch<K, V>(cache: Map<K, V>, key: K): V | undefined {
+  const value = cache.get(key);
+  if (value !== undefined) {
+    cache.delete(key);
+    cache.set(key, value);
+  }
+  return value;
+}
+
+function remember<K, V>(cache: Map<K, V>, key: K, value: V, limit: number): void {
+  cache.delete(key);
+  cache.set(key, value);
+  if (cache.size > limit) cache.delete(cache.keys().next().value!);
+}
 
 /** Summoner's Rift normal, ranked, Swiftplay and Quickplay games are announced; other modes are not. */
 export function isAnnouncedQueue(queueId: number): boolean {
@@ -24,25 +46,31 @@ export async function getRecentMatchIds(puuid: string, count = 20): Promise<stri
   return (matchIds as string[]).slice(0, count);
 }
 
+/**
+ * The newest match in a supported Summoner's Rift queue. A match whose queue is already known costs no request:
+ * a non-Summoner's-Rift one is skipped and a supported one is returned as it is, so only matches never seen before
+ * are fetched, newest first, until the first supported one.
+ */
 export async function getLatestSRMatchId(puuid: string): Promise<string | null> {
+  const mode = getRiotMode();
   for (const matchId of await getRecentMatchIds(puuid)) {
-    const detail = await getMatchDetail(matchId);
-    if (isAnnouncedQueue(detail.info.queueId)) {
-      return matchId;
-    }
+    const known = touch(queueCache, `${mode}:${matchId}`);
+    const queueId = known ?? (await getMatchDetail(matchId)).info.queueId;
+    if (isAnnouncedQueue(queueId)) return matchId;
   }
 
   return null;
 }
 
 export async function getMatchDetail(matchId: string): Promise<MatchDetail> {
-  const cacheKey = `${getRiotMode()}:${matchId}`;
-  const cached = matchCache.get(cacheKey);
+  const mode = getRiotMode();
+  const cacheKey = `${mode}:${matchId}`;
+  const cached = touch(matchCache, cacheKey);
   if (cached) return structuredClone(cached);
   const detailUrl = `${AMERICAS}/lol/match/v5/matches/${encodeURIComponent(matchId)}`;
   const detail = parseMatchDetail(await riotFetch<unknown>(detailUrl), matchId);
-  matchCache.set(cacheKey, structuredClone(detail));
-  if (matchCache.size > 200) matchCache.delete(matchCache.keys().next().value!);
+  remember(matchCache, cacheKey, structuredClone(detail), MATCH_CACHE_LIMIT);
+  remember(queueCache, cacheKey, detail.info.queueId, QUEUE_CACHE_LIMIT);
   return detail;
 }
 
@@ -74,6 +102,8 @@ export function parseMatchDetail(body: unknown, matchId: string): MatchDetail {
     throw new RiotApiError("Riot API returned a match without participants.", "invalid_response");
   }
   const participants = info.participants.map(parseParticipant);
+  // Other modes (Arena has up to eight teams, with other IDs) are never ranked or announced, so only the queues that are must have two teams.
+  if (isAnnouncedQueue(riotNumber(info.queueId))) checkTeams(participants);
   if (metadata.matchId !== matchId) throw new RiotApiError("Riot API returned a mismatched match ID.", "invalid_response");
   return {
     metadata: { matchId, participants: participants.map((player) => player.puuid) },
@@ -90,6 +120,19 @@ export function parseMatchDetail(body: unknown, matchId: string): MatchDetail {
       participants,
     },
   };
+}
+
+/**
+ * A Summoner's Rift match has exactly two teams of at most five. A missing or odd team ID would put all ten players on one
+ * team, and the ranking would then name and rate the enemies.
+ */
+function checkTeams(participants: readonly MatchParticipant[]): void {
+  const sizes = new Map<number, number>();
+  for (const { teamId } of participants) {
+    if (teamId !== 100 && teamId !== 200) throw new RiotApiError("Riot API returned a participant on an unknown team.", "invalid_response");
+    sizes.set(teamId, (sizes.get(teamId) ?? 0) + 1);
+  }
+  if ([...sizes.values()].some((size) => size > 5)) throw new RiotApiError("Riot API returned a team of more than five players.", "invalid_response");
 }
 
 function parsePosition(...values: unknown[]): Position | null {

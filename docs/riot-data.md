@@ -32,6 +32,10 @@ In both outcomes the support carries a won objective fight and the feeding ADC i
 Other Riot IDs receive deterministic synthetic profiles, and previously persisted bindings can be tested in mock mode.
 This does not validate that a real player exists.
 Mock histories live in memory and reset when the bot restarts; user bindings and voice settings have a separate persistence layer.
+A simulated match ID is `MOCK_<boot>_<epoch>_<sequence>`, where `<boot>` is a base36 clock plus 16 random bits chosen once per process.
+The stable and the LP store keep a game by its ID and skip one they already hold, so IDs never repeat after a restart.
+The ID is about 20 characters and does not contain the PUUID, which keeps it far inside the 40 characters an appeal button allows even after thousands of simulations.
+The baseline match keeps `MOCK_<puuid>_<epoch>_BASELINE`; it is old history and never a stored record.
 Each mock account's history starts with one baseline match, created on its first lookup and ended 24 hours before that.
 It is old history even for a member whose first lookup runs after they join voice, so a saved mock binding never announces it.
 
@@ -56,6 +60,9 @@ Errors carry a stable `code`, optional HTTP `status`, optional `retryAfterMs`, a
 Response parsers normalize omitted zero statistics and reject malformed profile, rank, or match shapes.
 `parseMatchDetail()` keeps each participant's position (team position, falling back to individual position), champion, K/D/A, result and the scoring statistics, plus team objective counts, the game end time when present, whether the game was a remake, and whether it was aborted without a winner (`endOfGameResult` other than `GameComplete`).
 Optional scoring statistics that are missing or non-numeric are omitted rather than treated as zero.
+In a supported Summoner's Rift queue every participant must be on team 100 or 200, with at most five on each team, or the match is an `invalid_response`.
+Without that check a missing `teamId` would parse as 0 for everyone, and the ranking would treat all ten players as one team and name the enemies.
+Other modes, such as Arena with up to eight teams, are never ranked or announced, so their team IDs are not checked.
 
 `getMatchTimeline()` reads `/lol/match/v5/matches/{matchId}/timeline` on the Americas host with its own requester.
 That requester makes one attempt, aborts the request after 5 seconds, never retries, and fails at once during its own 429 cooldown instead of waiting.
@@ -68,7 +75,10 @@ The timeline is optional flavor for the report: `fetchMatchEvents()` returns nul
 It never falls back to a mock timeline, and it skips the request for remakes, aborted games and games shorter than 10 minutes.
 The fields it reads (`position`, `shutdownBounty`, `KILL_FIRST_BLOOD`, `KILL_MULTI` with `multiKillLength`, `killerTeamId`, `monsterSubType` and `info.participants`) were confirmed on a real NA timeline on 2026-10-07.
 
-The latest match lookup checks up to 20 matches for supported Summoner's Rift queues and caches at most 200 immutable match details.
+The latest match lookup checks up to 20 matches for supported Summoner's Rift queues and caches at most 200 immutable match details, dropping the least recently used first.
+It also remembers the queue of up to 2000 matches, so a match already seen as another mode is skipped and one already seen as supported is returned without a request.
+A repeat poll of an account therefore costs only its ID list, and only matches never seen before are fetched, newest first, until the first supported one.
+`/recent` reads its accounts two at a time (each account's matches one at a time), so a large server cannot burst past the americas limit that finished-match polling shares.
 Supported queues are 400, 420, 430, 440, 480, and 490; this includes Swiftplay and Quickplay and preserves Blind Pick for older history.
 
 Queue IDs were checked against [Riot's official queue constants](https://static.developer.riotgames.com/docs/lol/queues.json) on 2026-10-02.
@@ -125,7 +135,7 @@ The `blue` accounts (one to five) take team 100 in order and the optional `red` 
 `MOCK-ALLY-*` and `MOCK-ENEMY-*` fill the remaining seats, numbered in seat order.
 Parsed mock games have `mock: true`, and their game ID starts at 9 billion, far above the game IDs Riot has issued so far, which makes them easy to tell apart.
 Nothing relies on that: `mock` comes from the mode.
-Its match ID is reserved as `MOCK_<first puuid>_<epoch>_<sequence>`, and `matchIdOf()` returns it.
+Its match ID is reserved in the same `MOCK_<boot>_<epoch>_<sequence>` form, and `matchIdOf()` returns it.
 `simulateMockMatch()` for an account in the game ends it for everyone in it and reuses that ID, so the start and the finished match are one match.
 The finished match seats every member of the game on their own team with the champions the game had, and its ID is the newest entry of every member's history.
 The outcome passed to `simulateMockMatch()` is the result of the team of the account it was called for.
@@ -190,6 +200,7 @@ It depends on an injected `readEntries(puuid)`, which is `getLeagueEntries` in p
 - While league-v4 has not caught up (`wins + losses` unchanged), the account is read again on that floor, at most 4 reads per account per match.
 - Only one snapshot read per account waits in the queue.
 - The worst case is therefore 3 reads per account in any 2 minutes (two reads a floor apart plus one first after-read), 30 for 10 accounts, and in practice about 2 per account. That leaves room under the na1 app limit of 100 per 2 minutes next to spectator's 60 for `/profile` and `/bind`.
+- `hasReadSince(puuid, since)` says whether a successful read was sent at or after `since`. A ranked game's start uses it to retry: the watcher remembers the first sighting and, on each later in-game recheck, asks again for the players who still have no read from that time on, so a timeout or 429 at the start does not leave an older read as the before-value (which would count a dodge or decay as part of the game). It is true when nothing more will be read for the account, such as LP off or a saved mock account in real mode.
 - `rebase(puuids)` exists for `/simulate` only and does nothing in real mode: in mock mode it forgets the accounts' earlier reads and reads them again at once, past the floor, so a mock entry that was just placed is the before-value of the next simulated game. Mock reads never reach Riot.
 - At shutdown `stop()` turns every queued read into a no-op, clears the retry timers and settles every pending row with no row; a read already sent is ignored when it answers.
 
