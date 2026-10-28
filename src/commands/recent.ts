@@ -8,6 +8,23 @@ import { getMatchDetail, getRecentMatchIds } from "../utils/riotMatchApi";
 import { buildErrorEmbed, buildRecentMatchesEmbed, NO_MENTIONS, type RecentAccountView, type RecentMemberView } from "../utils/embeds";
 import { getRiotUserErrorMessage } from "../utils/userFacingErrors";
 
+/** How many accounts /recent reads from Riot at once; each reads its matches one at a time. */
+export const RECENT_ACCOUNT_CONCURRENCY = 2;
+
+/** Maps in order with at most `limit` calls running at once. `fn` must not reject. */
+async function mapWithLimit<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (next < items.length) {
+      const index = next++;
+      results[index] = await fn(items[index]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
+
 const recentCommand: BotCommand = {
   data: new SlashCommandBuilder()
     .setName("recent")
@@ -45,7 +62,9 @@ const recentCommand: BotCommand = {
     const count = interaction.options.getInteger("count") ?? 5;
     const mock = isMockData();
     const accounts = members.flatMap(({ member, order }) => member.accounts.map((account) => ({ account, order })));
-    const views = await Promise.all(accounts.map(async ({ account, order }): Promise<RecentAccountView> => {
+    // At most RECENT_ACCOUNT_CONCURRENCY accounts at a time, so a large server cannot burst past the americas limit
+    // that finished-match polling shares; the replies still come back in bind order.
+    const views = await mapWithLimit(accounts, RECENT_ACCOUNT_CONCURRENCY, async ({ account, order }): Promise<RecentAccountView> => {
       const view: RecentAccountView = { memberOrder: order, riotId: `${account.gameName}#${account.tagLine}`, puuid: account.puuid, matches: [] };
       if (!mock && account.puuid.startsWith("MOCK-")) {
         return { ...view, notice: "⚠️ 这是模拟账号，真实模式下监听会跳过它。用 /bind 绑定真实 Riot ID 后会自动移除它。" };
@@ -59,7 +78,7 @@ const recentCommand: BotCommand = {
       } catch (error) {
         return { ...view, matches: [], notice: `⚠️ ${getRiotUserErrorMessage(error)}` };
       }
-    }));
+    });
 
     const status = getMonitorStatus(guildId);
     const memberViews: RecentMemberView[] = members.map(({ member, order }) => ({
