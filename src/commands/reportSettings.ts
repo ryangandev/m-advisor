@@ -111,8 +111,10 @@ const reportSettingsCommand: BotCommand = {
     if (subcommand === "channel-clear" || (subcommand === "weekly" && interaction.options.getBoolean("enabled", true) === false)) {
       if (getReportSettings(guildId)?.rolesEnabled) await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       let roleNote = "";
+      let rolesStopped = false;
       try {
         const stopped = await stopWeeklyRoles(guild, guildId);
+        rolesStopped = stopped.active;
         if (stopped.active) {
           roleNote = stopped.problems.length === 0
             ? "\n每周身份组跟着每周马报换人，所以也一并关闭了，并从机器人发过身份组的成员身上收回了它们。身份组本身没有删除，要继续用请重新执行 /report-settings roles。"
@@ -129,7 +131,9 @@ const reportSettingsCommand: BotCommand = {
       }
       const had = getReportSettings(guildId)?.channelId != null;
       setReportChannel(guildId, null);
-      await reply(`${had ? "已清除马报频道，不会再自动发马报。其余设置保留。" : "本来就没有设置马报频道。"}${roleNote}`);
+      // "The other settings are kept" is only true when the weekly roles were not switched off along with the channel.
+      const kept = rolesStopped ? "" : "其余设置保留。";
+      await reply(`${had ? `已清除马报频道，不会再自动发马报。${kept}` : "本来就没有设置马报频道。"}${roleNote}`);
       return;
     }
 
