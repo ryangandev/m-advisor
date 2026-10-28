@@ -137,9 +137,9 @@ A server administrator should join the configured channel and run these commands
 6. Confirm both outcomes and mock labels are correct, no old game is replayed and no duplicate announcement appears on the next poll.
    Then run `/simulate outcome:开局（赛前锦囊）` and confirm the `模拟数据 · 军师赛前锦囊` card is posted before the `模拟锦囊，` line plays.
 7. Run `/simulate outcome:晋级（模拟）` and then `/simulate outcome:掉段（模拟）`.
-   Confirm each posts the report with a `模拟数据 · 段位变化` row, then the separate `模拟数据 · 段位播报` message, and that its `模拟段位播报，` voice line plays after the report's voice.
+   Confirm each report has a `段位变化` row and the mock footer, then the separate `模拟数据 · 段位播报` message, and that its `模拟段位播报，` voice line plays after the report's voice.
 8. Run `/stable user:@yourself` and confirm the simulated games appear in the 马厩 profile with their mock labels.
-9. Run `/why` with no `match` for your latest game and confirm the verdict, the radar image and the 上诉 button that only you can press.
+9. Run `/why` with no `match` for your latest game and confirm the verdict, the radar image and the 上诉 button that only you can use.
 10. Run `/report day` and `/report week` and confirm the 马报 counts the simulated games and is labeled as simulated data.
 11. Stop with Ctrl+C, launch again and confirm `/bindings` and the chosen voice persist.
 12. Leave voice, move out of the permitted test channel or `/unbind`, and confirm stale work does not play there.
@@ -168,9 +168,10 @@ An expired key or rate-limit error must stay an explicit real-provider error, wi
 
 ### Spectator probe
 
-`npm run probe:spectator` makes one read-only spectator-v5 request for the first real bound account and prints the fields that [#24](https://github.com/ryangandev/m-advisor/issues/24) needs: `gameStartTime`, `gameLength`, `gameQueueConfigId`, `mapId`, `platformId`, the participant count and Riot's rate-limit headers.
+`npm run probe:spectator` makes one read-only spectator-v5 request for a real bound account and prints the fields that [#24](https://github.com/ryangandev/m-advisor/issues/24) needs: `gameStartTime`, `gameLength`, `gameQueueConfigId`, `mapId`, `platformId`, the participant count and Riot's rate-limit headers.
 It needs `RIOT_MODE=real` and `RIOT_API_KEY` in the local `.env`, reads the database without writing to it and never prints the key or the PUUID.
-Pass a PUUID as the first argument to probe another account.
+Pass a Riot ID as the first argument, as in `npm run probe:spectator -- "name#tag"`, to probe a specific bound account; it is matched case-insensitively against the stored name and tag.
+Without an argument it uses the first account of the first tracked member.
 Run it once on the loading screen and once a minute or two into the game, then compare the output with the assumptions in `src/services/gameStartWatcher.ts`.
 Run it by hand only; no test or verifier calls it.
 

@@ -12,7 +12,7 @@
 | How are 段位变化, LP and 晋级/掉段 read, stored and announced? | [Announcements](announcements.md#段位变化), [Storage](storage.md), [Riot data](riot-data.md) | Update with rank reading, the result table and the 段位播报 wording |
 | What does the 段位播报 say and when is it skipped? | [Announcements](announcements.md#段位播报) | Update with rank wording and skip rules |
 | How does the 赛前锦囊 start, speak and get recapped? | [Announcements](announcements.md#game-start), [马厩](stable.md#军师赛前锦囊) | Update with the start watcher, the brief and the recap |
-| How does the 车队内战 ranking of tracked friends work? | [Horse ranking](scoring.md), [Announcements](announcements.md) | Update with party ranking rules and wording |
+| How does the 车队内战 ranking of tracked friends work? | [Horse ranking](scoring.md), [Announcements](announcements.md#车队内战) | Update with party ranking rules and wording |
 | How do mock fixtures and real Riot requests work? | [Riot data](riot-data.md) | Update with provider, fixtures and request policy |
 | How does local Qwen speech run? | [Local voice](local-voice.md) | Update with worker, providers and speech evidence |
 | How are monitoring, retries and voice playback coordinated? | [Announcements](announcements.md) | Update with monitoring sessions and transport behavior |

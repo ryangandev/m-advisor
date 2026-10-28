@@ -5,8 +5,8 @@
 | Location | Responsibility |
 | --- | --- |
 | `src/commands/` | Slash commands and permission checks |
-| `src/handlers/commandHandler.ts` | Loads every compiled command file and routes interactions to it |
-| `src/events/ready.ts`, `voiceStateUpdate.ts`, `interactionCreate.ts` | Startup restore, voice membership and interaction dispatch |
+| `src/handlers/commandHandler.ts` | Loads every compiled command file and registers guild commands |
+| `src/events/ready.ts`, `voiceStateUpdate.ts`, `interactionCreate.ts` | Startup restore, voice membership, and `interactionCreate.ts` routing interactions to commands |
 | `src/events/reportScheduler.ts` | Starts the 马报 scheduler once the client is ready |
 | `src/events/guildAvailable.ts`, `guildDelete.ts` | Guild lifecycle: a guild becoming available and the bot being removed from one |
 | `src/services/gameMonitor.ts` | Match monitoring and announcement orchestration |
@@ -35,7 +35,7 @@
 | `src/utils/voicePlayback.ts` | Discord connection and audio playback |
 | `tests/` | Reproducible behavioral and integration checks |
 | `src/cli/` | Explicit guild command registration and local runtime diagnosis |
-| `scripts/` | Local launcher, persistent Python speech worker, acceptance verifiers and reference data generators |
+| `scripts/` | Local launcher, persistent Python speech worker, acceptance verifiers, the read-only spectator probe and reference data generators |
 
 ## Scope
 
