@@ -129,9 +129,9 @@ The bot logs how long league-v4 takes to catch up after each game, and about 10 
 | B2 | Resolved: Ryan heard the real five-horse report in General on 2026-10-07 | No longer blocks acceptance |
 | B3 | Resolved: a real game with Ryan's account bound in real mode was announced on 2026-10-07 | No longer blocks acceptance |
 | B4 | Resolved: Mac unlocked and Discord UI testing resumed | No longer blocks live operations |
-| B5 | Start the bot, run `/simulate` 晋级（模拟） and 掉段（模拟） in General and listen | Live acceptance of the feature round |
+| B5 | Set `RIOT_MODE=mock`, start the bot, run `/simulate` 晋级（模拟） and 掉段（模拟） in General and listen, then switch back to `RIOT_MODE=real` (see the Live Discord test in [Acceptance](acceptance.md)) | Live acceptance of the feature round |
 | B6 | Play about 10 real ranked games with the bot running | Tuning the LP edit and showing the LP change on demotion |
-| B7 | Run the spectator probe once while in a real game | Closing [#24](https://github.com/ryangandev/m-advisor/issues/24) |
+| B7 | Run `npm run probe:spectator` once on a loading screen and once in game, in real mode | Closing [#24](https://github.com/ryangandev/m-advisor/issues/24) |
 
 Mock data allows implementation and voice integration to continue without B3.
 Discord Portal or server-permission changes become a blocker only if the actual test demonstrates they are required and unavailable to the agent.
