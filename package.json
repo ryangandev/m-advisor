@@ -4,7 +4,7 @@
   "description": "Discord Bot - M Advisor (策马军师)",
   "main": "dist/index.js",
   "engines": {
-    "node": ">=22.12.0"
+    "node": ">=24"
   },
   "scripts": {
     "test": "node --import tsx --test tests/*.test.ts",

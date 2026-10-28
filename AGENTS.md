@@ -3,7 +3,7 @@
 A local, on-demand Discord bot for NA League of Legends profiles and Chinese game-end voice announcements.
 Start with [docs/README.md](docs/README.md) and read only the relevant subsystem.
 
-- Use Node.js 22.12 or newer; this checkout is verified with Node 24.
+- Use Node.js 24 or newer; better-sqlite3 13 crashed with SIGSEGV on Node 22.12 in CI.
 - Run `npm run check` before committing and keep each feature in its own commit.
 - Never log tokens, commit `.env`, database files, generated audio, or model weights.
 - Mock data must be visibly labeled and must never replace a failed real API request silently.

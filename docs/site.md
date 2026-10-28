@@ -13,7 +13,7 @@ npm --prefix site run build   # writes site/dist, must finish without warnings
 ```
 
 Node 22.23.4 or newer is required, because the locked `@astrojs/mdx` and `@astrojs/prism` need it.
-The bot itself only needs Node 22.12.
+The bot itself needs Node 24.
 `astro` and `@astrojs/starlight` are pinned to exact versions that were at least two weeks old when chosen.
 
 ## Deploy
