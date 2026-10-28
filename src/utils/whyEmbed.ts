@@ -1,7 +1,7 @@
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder } from "discord.js";
 import { formatScore } from "../services/announcementText";
 import { DIMENSION_LABELS } from "../services/horseProfile";
-import { appealRuling, dimensionEvidence, everyItem, formatGap, verdictSummary } from "../services/horseVerdict";
+import { appealRuling, dimensionEvidence, everyItem, gapText, verdictSummary } from "../services/horseVerdict";
 import type { DimensionImpact, Verdict } from "../services/horseVerdict";
 import type { HorseRecord } from "../store/horseRecordStore";
 import { TIER_ICONS } from "./stableEmbed";
@@ -63,10 +63,10 @@ function gapLines(verdict: Verdict): string[] {
   const { above, below } = verdict;
   return [
     above
-      ? `⬆️ 离上一名${above.sameTier ? "" : `（${above.tier}）`}差 **${formatGap(above.gap)}** 分${above.close ? "，惜败" : ""}`
+      ? `⬆️ ${above.identical ? `和上一名${above.sameTier ? "" : `（${above.tier}）`}**同分**` : `离上一名${above.sameTier ? "" : `（${above.tier}）`}差 **${gapText(above)}** 分`}${above.close ? "，惜败" : ""}`
       : "⬆️ 队内第一，上面没有更高的档位了",
     below
-      ? `⬇️ 领先下一名${below.sameTier ? "" : `（${below.tier}）`}**${formatGap(below.gap)}** 分${below.close ? "，险胜" : ""}`
+      ? `⬇️ ${below.identical ? `和下一名${below.sameTier ? "" : `（${below.tier}）`}**同分**` : `领先下一名${below.sameTier ? "" : `（${below.tier}）`}**${gapText(below)}** 分`}${below.close ? "，险胜" : ""}`
       : "⬇️ 队内最后一名，后面没有退路了",
   ];
 }

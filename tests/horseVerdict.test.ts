@@ -8,6 +8,7 @@ import {
   CLOSE_GAP, appealRuling, buildVerdict, dimensionEvidence, findVerdictRecord, formatGap, gapText, listVerdictChoices, verdictSummary,
 } from "../src/services/horseVerdict";
 import { closeDatabase } from "../src/store/database";
+import { buildWhyEmbed } from "../src/utils/whyEmbed";
 import { makeHorseRecord, recordTracked } from "./helpers/horseRecords";
 import { seededJungler, seededSupport } from "./helpers/verdicts";
 
@@ -224,6 +225,34 @@ test("an appeal is always 维持原判, cites the strongest data and admits 惜�
   assert.equal(lines[1], "呈堂证供：视野只超过 9% 的同位置玩家，而这一项在这局辅助评分里占 22%，每分钟视野得分 0.8，插了 3 个真眼。");
   assert.match(lines[2], /^军师承认这一局是惜败，离下等马只差 0\.2 分。可差一点也是差，驳回上诉，维持原判：没有马。/);
   assert.equal(appealRuling(buildVerdict(seededSupport())), ruling, "deterministic for the same match and appellant");
+});
+
+test("exactly equal scores read 和...同分, never 只差 0.0 分, and 不到 0.1 is spaced like the other gaps", () => {
+  const same = buildVerdict(seededSupport({ score: 1.6, scoreAbove: 1.6 }));
+  const summary = verdictSummary(same, true);
+  assert.match(summary, /^和下等马同分，惜败，/);
+  const ruling = appealRuling(same);
+  assert.match(ruling, /军师承认这一局是惜败，和下等马同分。可差一点也是差，/);
+  assert.ok(!/0\.0 分/.test(summary + ruling), summary + ruling);
+
+  const sameBelow = appealRuling(buildVerdict(makeHorseRecord({ tier: "上等马", teamRank: 2, teamSize: 7, score: 6.2, scoreAbove: 7, scoreBelow: 6.2 })));
+  assert.match(sameBelow, /你和下一名同分，这是险胜。/);
+  const sameAbove = appealRuling(buildVerdict(makeHorseRecord({ tier: "下等马", teamRank: 4, score: 5.2, scoreAbove: 5.2, dimensions: { damage: 0.6, teamfight: 0.7 } })));
+  assert.match(sameAbove, /第 3 名和你同分/);
+
+  // Different raw scores that print the same: 不到 0.1, with no stray space after 只差.
+  const tiny = buildVerdict(seededSupport({ score: 1.64, scoreAbove: 1.56 }));
+  assert.match(verdictSummary(tiny, true), /^离下等马只差不到 0\.1 分，惜败/);
+  assert.match(appealRuling(tiny), /只差不到 0\.1 分。可差一点也是差/);
+  const tinyBelow = appealRuling(buildVerdict(makeHorseRecord({ tier: "上等马", teamRank: 2, teamSize: 7, score: 6.24, scoreAbove: 7, scoreBelow: 6.16 })));
+  assert.match(tinyBelow, /你只比下一名多不到 0\.1 分/);
+});
+
+test("the /why gap field reads 同分 for equal scores and the gap text otherwise", () => {
+  const field = (record: ReturnType<typeof makeHorseRecord>) => buildWhyEmbed({ verdict: buildVerdict(record), self: true, champion: "x", image: false })
+    .toJSON().fields!.find((entry) => entry.name === "离上下一档")!.value;
+  assert.equal(field(seededSupport({ score: 1.6, scoreAbove: 1.6 })), "⬆️ 和上一名（下等马）**同分**，惜败\n⬇️ 队内最后一名，后面没有退路了");
+  assert.equal(field(seededSupport({ score: 1.64, scoreAbove: 1.56 })).split("\n")[0], "⬆️ 离上一名（下等马）差 **不到 0.1** 分，惜败");
 });
 
 test("a clear verdict is upheld without admitting anything", () => {

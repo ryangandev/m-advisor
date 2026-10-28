@@ -172,6 +172,69 @@ test("tied bottom members are softened only when all of them are relative", () =
   assert.match(harsh.value, /^<@b>、<@c> 并列：当周各自均分都只有 1\.0/);
 });
 
+test("a relative bottom with a low printed average never claims a good score, whatever the seed", () => {
+  const SCORE_PRAISE = /分数不低|水准都不低|其实打得不差/;
+  for (let day = 0; day < 12; day++) {
+    const range = pacificDay(DAY.start + day * 24 * HOUR);
+    // bob's worst game was a 上等马 but his average is 4.0.
+    const low = buildReportData({
+      kind: "day", range, mock: false, memberIds: ["alice", "bob"],
+      records: [game("alice", "特等马", 9, range.start + HOUR), game("bob", "上等马", 4, range.start + 2 * HOUR)],
+    });
+    const field = bottomField(low);
+    assert.match(field.name, /^🐢 .*垫底（相对）$/, "a neutral icon, not a tier icon");
+    assert.doesNotMatch(field.value, SCORE_PRAISE, field.value);
+    assert.match(field.value, /队内排名不差|相对垫底|只是相对|不扣分/);
+    const tie = buildReportData({
+      kind: "week", range: pacificWeek(range.start), mock: false, memberIds: ["a", "b", "c"],
+      records: [...games("a", "特等马", 9, 3, range.start + HOUR), ...games("b", "上等马", 4, 3, range.start + 5 * HOUR), ...games("c", "上等马", 4, 3, range.start + 9 * HOUR)],
+    });
+    assert.doesNotMatch(bottomField(tie).value, SCORE_PRAISE, bottomField(tie).value);
+    // A good printed average may still say so.
+    const good = buildReportData({
+      kind: "day", range, mock: false, memberIds: ["alice", "bob"],
+      records: [game("alice", "特等马", 9, range.start + HOUR), game("bob", "上等马", 7.8, range.start + 2 * HOUR)],
+    });
+    assert.doesNotMatch(bottomField(good).value, /队内排名不差/);
+  }
+});
+
+test("a member with exactly one game gets 那一把是, and several games keep the lowest-game wording", () => {
+  const soft = bottomField(buildReportData({
+    kind: "day", range: DAY, mock: false, memberIds: ["alice", "bob"],
+    records: [game("alice", "特等马", 9, DAY.start + HOUR), game("bob", "上等马", 7.8, DAY.start + 2 * HOUR)],
+  }));
+  assert.match(soft.value, /，那一把是.* \d+\/\d+\/\d+，7\.8 分/);
+  assert.doesNotMatch(soft.value, /最低的是/);
+  const harsh = bottomField(twoMemberData("day"));
+  assert.match(harsh.value, /，那一把是.* \d+\/\d+\/\d+，只拿 1\.0 分/);
+  assert.doesNotMatch(harsh.value, /最难看的是/);
+
+  const several = buildReportData({
+    kind: "day", range: DAY, mock: false, memberIds: ["alice", "bob"],
+    records: [game("alice", "特等马", 9, DAY.start + HOUR), game("bob", "没有马", 1, DAY.start + 2 * HOUR), game("bob", "没有马", 2, DAY.start + 3 * HOUR)],
+  });
+  assert.match(bottomField(several).value, /最难看的是/);
+  const softSeveral = buildReportData({
+    kind: "day", range: DAY, mock: false, memberIds: ["alice", "bob"],
+    records: [game("alice", "特等马", 9, DAY.start + HOUR), game("bob", "上等马", 7.8, DAY.start + 2 * HOUR), game("bob", "上等马", 7.6, DAY.start + 3 * HOUR)],
+  });
+  assert.match(bottomField(softSeveral).value, /最低的是/);
+});
+
+test("members with equal printed averages share the same medal, then the next place skips", () => {
+  const data = buildReportData({
+    kind: "day", range: DAY, mock: false, memberIds: ["a", "b", "c", "d"],
+    // a and b both print 8.3; c is third, d is fourth.
+    records: [game("a", "特等马", 8.34, DAY.start + HOUR), game("b", "特等马", 8.26, DAY.start + 2 * HOUR), game("c", "中等马", 5, DAY.start + 3 * HOUR), game("d", "没有马", 1, DAY.start + 4 * HOUR)],
+  });
+  const board = buildReportEmbed(data, { final: true }).toJSON().fields![0].value.split("\n");
+  assert.equal(board.length, 4);
+  assert.ok(board[0].startsWith("🥇 ") && board[1].startsWith("🥇 "), board.join("\n"));
+  assert.ok(board[2].startsWith("🥉 "), "the next place is 3rd after two share 1st");
+  assert.ok(board[3].startsWith("4. "));
+});
+
 test("a single game in the period is listed once, not as both the best and the worst", () => {
   const lone = buildReportData({ kind: "day", range: DAY, mock: false, memberIds: ["a"], records: [game("a", "上等马", 7.2, DAY.start + HOUR)] });
   const field = buildReportEmbed(lone, { final: true }).toJSON().fields!.find((entry) => entry.name === "单局之最")!;

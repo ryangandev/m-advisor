@@ -245,7 +245,7 @@ test("the embed shows the leaderboard, the named horses and safe mentions", () =
   // Same input, same words; a different week may read differently.
   assert.deepEqual(buildReportEmbed(data, { final: true }).toJSON(), json);
   for (const text of [json.title, json.description, ...json.fields!.map((entry) => entry.value)]) {
-    assert.ok(!text!.includes("—"), "copy never uses an em dash");
+    assert.ok(!text!.includes("\u2014"), "copy never uses an em dash");
     assert.ok(!text!.includes("@everyone") && !text!.includes("@here"));
   }
 });
