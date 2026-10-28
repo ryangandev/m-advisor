@@ -540,3 +540,36 @@ test("rebase makes a freshly set mock entry the next game's before-value even wi
   await realRun.tracker.rebase(["acct"]);
   assert.equal(realRun.reads.length, realReads);
 });
+
+test("hasReadSince is true only for a successful read sent at or after the time asked", async () => {
+  let clock = 1_900_000_000_000;
+  const { tracker, league, state } = setup({ now: () => clock });
+  const start = clock;
+  assert.equal(tracker.hasReadSince("acct", start), false, "never read");
+
+  // A read that times out is not a read.
+  league.set("acct", new RiotApiError("Riot API request timed out.", "timeout"));
+  tracker.snapshot(["acct"]);
+  await flush();
+  assert.equal(tracker.hasReadSince("acct", start), false, "a failed read does not count");
+
+  clock += RANK_RETRY_FLOOR_MS;
+  league.set("acct", [entry("GOLD", "II", 59)]);
+  const retryAt = clock;
+  tracker.snapshot(["acct"]);
+  await flush();
+  assert.equal(tracker.hasReadSince("acct", start), true);
+  assert.equal(tracker.hasReadSince("acct", retryAt), true, "sent exactly then");
+  assert.equal(tracker.hasReadSince("acct", retryAt + 1), false, "a read older than the sighting does not count");
+  assert.equal(tracker.hasReadSince("other", start), false, "per account");
+
+  // A mock read is never a real read.
+  state.mock = true;
+  assert.equal(tracker.hasReadSince("acct", start), false);
+  state.mock = false;
+
+  // Nothing more is read for a saved mock account in real mode, or once the bot is stopping, so there is nothing to wait for.
+  assert.equal(tracker.hasReadSince("MOCK-saved", clock + 1), true);
+  tracker.stop();
+  assert.equal(tracker.hasReadSince("never", clock + 1), true);
+});

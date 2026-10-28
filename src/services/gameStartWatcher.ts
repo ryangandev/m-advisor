@@ -178,6 +178,8 @@ const errorKey = (error: unknown): string => error instanceof RiotApiError ? `${
 export class GameStartWatcher {
   private readonly accounts = new Map<string, AccountPresence>();
   private readonly gameStarts = new Map<string, GameStartEntry>();
+  /** Ranked games whose start read is not done yet, by match ID: the time of the first sighting, which a read must not predate. */
+  private readonly rankStarts = new Map<string, number>();
   private readonly loggedErrors = new Set<string>();
   private timer?: NodeJS.Timeout;
   private inFlight?: Promise<GameStartTickResult>;
@@ -399,10 +401,10 @@ export class GameStartWatcher {
     presence.state = { kind: "inGame", gameId: game.gameId, checkedTick: tick };
     const matchId = matchIdOf(game);
     const known = this.gameStarts.get(matchId);
-    if (known?.status === "started") return false;
     // LP does not move during a game, so its start, announced or skipped, is the best before-value; it absorbs a
-    // dodge or decay since the last read. A game whose finished match is already known is over, so it reads nothing.
-    if (!known && !this.host.finished(matchId)) this.snapshotRank(game);
+    // dodge or decay since the last read. A read that failed or was skipped is tried again on the later in-game rechecks.
+    this.readRankStart(game, matchId, !known);
+    if (known?.status === "started") return false;
     const fresh = isLoading(game) || (previous === "notInGame" && game.gameLength <= FRESH_GAME_SECONDS);
     const reason = !isAnnouncedGame(game) ? `queue ${game.gameQueueConfigId ?? "unknown"} on map ${game.mapId ?? "unknown"} is not announced`
       : this.host.finished(matchId) ? "it has already finished"
@@ -421,15 +423,37 @@ export class GameStartWatcher {
     return true;
   }
 
-  /** Reads the rank of every bound player of a ranked game, both teams. A failure is logged and changes nothing else. */
-  private snapshotRank(game: ActiveGame): void {
+  /**
+   * Reads the rank of every bound player of a ranked game, both teams, as the before-value of the game's LP row.
+   * The first sighting remembers its time, and every later sighting (the in-game rechecks) asks again for the players
+   * who still have no successful read from that time on, so a timeout or a 429 at the start does not leave an older read
+   * as the before-value, which would count a dodge or decay as part of the game. The tracker's own floor paces the retries.
+   * A game whose finished match is already known is over and reads nothing. A failure is logged and changes nothing else.
+   */
+  private readRankStart(game: ActiveGame, matchId: string, first: boolean): void {
     const rank = this.dependencies.rank;
     if (!rank || game.gameQueueConfigId === null || !rankedQueueFor(game.gameQueueConfigId)) return;
+    if (this.host.finished(matchId)) {
+      this.rankStarts.delete(matchId);
+      return;
+    }
+    if (first) {
+      this.rankStarts.delete(matchId);
+      this.rankStarts.set(matchId, this.now());
+      if (this.rankStarts.size > GAME_STARTS_LIMIT) this.rankStarts.delete(this.rankStarts.keys().next().value!);
+    }
+    const since = this.rankStarts.get(matchId);
+    if (since === undefined) return;
     try {
       const members = this.dependencies.members(this.host.guildId);
-      rank.snapshot(liveParticipants(members, boundParticipants(members, game.participants)).map(({ puuid }) => puuid));
+      const players = liveParticipants(members, boundParticipants(members, game.participants)).map(({ puuid }) => puuid);
+      const { hasReadSince } = rank;
+      const waiting = hasReadSince ? players.filter((puuid) => !hasReadSince.call(rank, puuid, since)) : players;
+      if (waiting.length > 0) rank.snapshot(waiting);
+      // Done once everyone has a read, or when the tracker cannot say (one attempt per game).
+      if (waiting.length === 0 || !hasReadSince) this.rankStarts.delete(matchId);
     } catch (error) {
-      this.dependencies.log(new Error(`The LP snapshot of game ${matchIdOf(game)} was skipped: ${errorMessage(error)}`));
+      this.dependencies.log(new Error(`The LP snapshot of game ${matchId} was skipped: ${errorMessage(error)}`));
     }
   }
 
