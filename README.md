@@ -28,7 +28,7 @@ When two or more tracked friends play a game on the same team, the report adds a
 
 ## Local setup
 
-Use Node.js 22.12 or newer and the existing Apple Silicon Media speech installation.
+Use Node.js 24 or newer and the existing Apple Silicon Media speech installation.
 See [Runtime](docs/runtime.md) for configuration, permissions, launch and shutdown.
 See [Local voice](docs/local-voice.md) for the model paths and measured startup behavior.
 
