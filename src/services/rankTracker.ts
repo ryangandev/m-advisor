@@ -46,10 +46,21 @@ export interface FinishedRankedMatch {
   accounts: readonly RankAccount[];
 }
 
+/** The first sighting of a ranked game by the game start watcher. */
+export interface GameStartMark {
+  matchId: string;
+  /** When the game was first seen; a read sent before it may hold a dodge or decay that is not part of the game. */
+  since: number;
+}
+
 /** What the monitor and the game start watcher need from the tracker; tests may pass a fake. */
 export interface RankTracking {
-  /** Reads the accounts' entries as their before-value: at the monitoring baseline and at a ranked game's start. */
-  snapshot(puuids: readonly string[]): void;
+  /**
+   * Reads the accounts' entries as their before-value: at the monitoring baseline and at a ranked game's start.
+   * A game's start names the game and the time it was first seen, so that once the game finishes an account with no
+   * successful read from that time on is not given a normal LP change from an older read.
+   */
+  snapshot(puuids: readonly string[], start?: GameStartMark): void;
   /**
    * Whether a read of the account that succeeded was sent at or after `since`. A game's start asks it to retry a failed
    * snapshot until there is one newer than the first sighting. Optional: a tracker without it gets one attempt per game.
@@ -125,6 +136,8 @@ interface MatchRead {
   reads: number;
   /** The before-value, taken when the first after-read runs so any snapshot read queued before it counts; null when there is none. */
   before?: Snapshot | null;
+  /** The game was seen at its start but no read followed that sighting, so a change is not given to the game. Set with `before`. */
+  untrusted?: boolean;
   /** What the row shows once no more reads are coming; null for no row. Undefined while pending. */
   outcome?: RankRowState | null;
   firstRead: Deferred;
@@ -148,6 +161,8 @@ const isTimeout = (error: unknown) => error instanceof RiotApiError && error.cod
 export class RankTracker implements RankTracking {
   private readonly accounts = new Map<string, AccountReads>();
   private readonly matches = new Map<string, MatchRead>();
+  /** Ranked games seen at their start, by `mode:matchId`, with the time of the first sighting. At most MATCH_READS_LIMIT. */
+  private readonly gameStarts = new Map<string, number>();
   private readonly loggedErrors = new Set<string>();
   private queue: Promise<void> = Promise.resolve();
   private disabled = false;
@@ -229,9 +244,10 @@ export class RankTracker implements RankTracking {
     return this.account(this.mode(), puuid).snapshots.some((snapshot) => snapshot.at >= since);
   }
 
-  snapshot(puuids: readonly string[]): void {
+  snapshot(puuids: readonly string[], start?: GameStartMark): void {
     if (this.off()) return;
     const mode = this.mode();
+    if (start) this.markStart(mode, start);
     for (const puuid of new Set(puuids)) {
       if (this.skipped(mode, puuid)) continue;
       const account = this.account(mode, puuid);
@@ -261,6 +277,27 @@ export class RankTracker implements RankTracking {
         this.failed(outcome.error);
       });
     }
+  }
+
+  /** The earliest sighting of a game counts, so a second guild's later sighting never tightens it. */
+  private markStart(mode: Mode, { matchId, since }: GameStartMark): void {
+    const key = `${mode}:${matchId}`;
+    const known = this.gameStarts.get(key);
+    if (known !== undefined && known <= since) return;
+    this.gameStarts.delete(key);
+    this.gameStarts.set(key, since);
+    if (this.gameStarts.size > MATCH_READS_LIMIT) this.gameStarts.delete(this.gameStarts.keys().next().value!);
+  }
+
+  /**
+   * Whether the before-value of a match was read after the game was first seen at its start, and so holds no dodge or
+   * decay. A game the watcher never saw (monitoring started after it) and mock data, whose entries only move when a
+   * test moves them, are trusted as they are.
+   */
+  private trusted(read: MatchRead): boolean {
+    if (read.mode === "mock") return true;
+    const since = this.gameStarts.get(`${read.mode}:${read.matchId}`);
+    return since === undefined || (read.before !== null && read.before !== undefined && read.before.at >= since);
   }
 
   /**
@@ -365,7 +402,10 @@ export class RankTracker implements RankTracking {
       this.schedule(read, account);
       return;
     }
-    if (read.before === undefined) read.before = this.beforeOf(account, read.gameEndTimestamp);
+    if (read.before === undefined) {
+      read.before = this.beforeOf(account, read.gameEndTimestamp);
+      read.untrusted = !this.trusted(read);
+    }
     read.reads++;
     const startedAt = this.now();
     account.lastReadAt = startedAt;
@@ -395,7 +435,12 @@ export class RankTracker implements RankTracking {
       this.finish(read, null);
       return;
     }
-    const change = classifyRankChange(entryForQueue(read.before.entries, read.queueType), entryForQueue(after.entries, read.queueType));
+    let change = classifyRankChange(entryForQueue(read.before.entries, read.queueType), entryForQueue(after.entries, read.queueType));
+    if (read.untrusted && (change.kind === "change" || change.kind === "promoted" || change.kind === "demoted")) {
+      // The only older read may hold a dodge or decay, so the difference belongs to no single game.
+      this.dependencies.info(`LP of match ${read.matchId} for ${read.label}: no read followed the game start, so the change is unattributable.`);
+      change = { kind: "unattributable", after: change.after };
+    }
     if (change.kind === "pending") {
       this.retryLater(read, account, startedAt);
       return;

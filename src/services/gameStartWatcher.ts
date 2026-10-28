@@ -22,6 +22,8 @@ export const IN_GAME_RECHECK_TICKS = 6;
 export const GAME_START_WINDOW_MS = 90_000;
 /** A game seen by an account whose previous check found no game is announced while it has run at most this long. */
 export const FRESH_GAME_SECONDS = 60;
+/** A player's start read is asked again at most this many times after the first attempt, per game. */
+export const RANK_START_RETRIES = 3;
 /** At most this many games are remembered per session, and per guild across sessions; the oldest is forgotten first. */
 const GAME_STARTS_LIMIT = 50;
 /** A guild remembers a game whose 锦囊 went out this long, far past any loading screen. */
@@ -129,6 +131,16 @@ interface AccountPresence {
   state: PresenceState;
 }
 
+/** A ranked game whose players' start reads are still being waited for. */
+interface RankStart {
+  /** The first sighting, which a read must not predate. */
+  since: number;
+  /** Start reads asked for so far, by player; one more than the retries at most. */
+  attempts: Map<string, number>;
+  /** The accounts of this watcher that see the game; the entry goes with the last of them. */
+  observers: Set<string>;
+}
+
 export type PregameVoiceOutcome = "played" | "off" | "failed" | "dropped" | "pending";
 
 /** A game the session has decided about: announced (started) or skipped. Kept for dedup and for the optional 锦囊回顾. */
@@ -178,8 +190,8 @@ const errorKey = (error: unknown): string => error instanceof RiotApiError ? `${
 export class GameStartWatcher {
   private readonly accounts = new Map<string, AccountPresence>();
   private readonly gameStarts = new Map<string, GameStartEntry>();
-  /** Ranked games whose start read is not done yet, by match ID: the time of the first sighting, which a read must not predate. */
-  private readonly rankStarts = new Map<string, number>();
+  /** Ranked games whose start read is not done yet, by match ID. */
+  private readonly rankStarts = new Map<string, RankStart>();
   private readonly loggedErrors = new Set<string>();
   private timer?: NodeJS.Timeout;
   private inFlight?: Promise<GameStartTickResult>;
@@ -212,6 +224,7 @@ export class GameStartWatcher {
   stop(): void {
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
+    this.rankStarts.clear();
   }
 
   /** Whether the watcher gave up for this session, after Riot rejected the key for spectator. */
@@ -243,7 +256,19 @@ export class GameStartWatcher {
       if (!this.host.isPresent(member.discordUserId)) continue;
       for (const account of member.accounts) if (!owners.has(account.puuid)) owners.set(account.puuid, member.discordUserId);
     }
-    for (const [puuid, presence] of this.accounts) if (owners.get(puuid) !== presence.owner) this.accounts.delete(puuid);
+    for (const [puuid, presence] of this.accounts) {
+      if (owners.get(puuid) === presence.owner) continue;
+      this.accounts.delete(puuid);
+      this.releaseRankStarts(puuid);
+    }
+  }
+
+  /** An account no longer sees its game (it left, or the game is over): a ranked start nobody sees any more is forgotten. */
+  private releaseRankStarts(puuid: string): void {
+    for (const [matchId, start] of this.rankStarts) {
+      start.observers.delete(puuid);
+      if (start.observers.size === 0) this.rankStarts.delete(matchId);
+    }
   }
 
   private tickSoon(): void {
@@ -348,7 +373,7 @@ export class GameStartWatcher {
       }
       const shared = seen.get(puuid);
       if (shared) {
-        if (this.observe(presence, shared, tick, requiredChannelId)) result.started++;
+        if (this.observe(presence, puuid, shared, tick, requiredChannelId)) result.started++;
         continue;
       }
       const { state } = presence;
@@ -384,10 +409,11 @@ export class GameStartWatcher {
       if (!this.live() || this.accounts.get(puuid) !== presence) continue;
       if (!game) {
         presence.state = { kind: "notInGame" };
+        this.releaseRankStarts(puuid);
         continue;
       }
       for (const participant of game.participants) if (participant.puuid) seen.set(participant.puuid, game);
-      if (this.observe(presence, game, tick, requiredChannelId)) result.started++;
+      if (this.observe(presence, puuid, game, tick, requiredChannelId)) result.started++;
     }
     await this.deliverPending(result, requiredChannelId);
   }
@@ -396,14 +422,14 @@ export class GameStartWatcher {
    * One account was seen in a game. Returns true when this decided to announce it:
    * the game is still loading, or this account's previous check in this presence found no game and the game is at most a minute old.
    */
-  private observe(presence: AccountPresence, game: ActiveGame, tick: number, requiredChannelId?: string): boolean {
+  private observe(presence: AccountPresence, puuid: string, game: ActiveGame, tick: number, requiredChannelId?: string): boolean {
     const previous = presence.state.kind;
     presence.state = { kind: "inGame", gameId: game.gameId, checkedTick: tick };
     const matchId = matchIdOf(game);
     const known = this.gameStarts.get(matchId);
     // LP does not move during a game, so its start, announced or skipped, is the best before-value; it absorbs a
     // dodge or decay since the last read. A read that failed or was skipped is tried again on the later in-game rechecks.
-    this.readRankStart(game, matchId, !known);
+    this.readRankStart(game, matchId, puuid, !known);
     if (known?.status === "started") return false;
     const fresh = isLoading(game) || (previous === "notInGame" && game.gameLength <= FRESH_GAME_SECONDS);
     const reason = !isAnnouncedGame(game) ? `queue ${game.gameQueueConfigId ?? "unknown"} on map ${game.mapId ?? "unknown"} is not announced`
@@ -427,10 +453,12 @@ export class GameStartWatcher {
    * Reads the rank of every bound player of a ranked game, both teams, as the before-value of the game's LP row.
    * The first sighting remembers its time, and every later sighting (the in-game rechecks) asks again for the players
    * who still have no successful read from that time on, so a timeout or a 429 at the start does not leave an older read
-   * as the before-value, which would count a dodge or decay as part of the game. The tracker's own floor paces the retries.
+   * as the before-value, which would count a dodge or decay as part of the game. The tracker's own floor paces the retries,
+   * and a player is asked at most 1 + RANK_START_RETRIES times per game; a player who never got a read is shown as
+   * unattributable by the tracker, which is told the first sighting.
    * A game whose finished match is already known is over and reads nothing. A failure is logged and changes nothing else.
    */
-  private readRankStart(game: ActiveGame, matchId: string, first: boolean): void {
+  private readRankStart(game: ActiveGame, matchId: string, observer: string, first: boolean): void {
     const rank = this.dependencies.rank;
     if (!rank || game.gameQueueConfigId === null || !rankedQueueFor(game.gameQueueConfigId)) return;
     if (this.host.finished(matchId)) {
@@ -439,18 +467,21 @@ export class GameStartWatcher {
     }
     if (first) {
       this.rankStarts.delete(matchId);
-      this.rankStarts.set(matchId, this.now());
+      this.rankStarts.set(matchId, { since: this.now(), attempts: new Map(), observers: new Set() });
       if (this.rankStarts.size > GAME_STARTS_LIMIT) this.rankStarts.delete(this.rankStarts.keys().next().value!);
     }
-    const since = this.rankStarts.get(matchId);
-    if (since === undefined) return;
+    const start = this.rankStarts.get(matchId);
+    if (!start) return;
+    start.observers.add(observer);
     try {
       const members = this.dependencies.members(this.host.guildId);
       const players = liveParticipants(members, boundParticipants(members, game.participants)).map(({ puuid }) => puuid);
       const { hasReadSince } = rank;
-      const waiting = hasReadSince ? players.filter((puuid) => !hasReadSince.call(rank, puuid, since)) : players;
-      if (waiting.length > 0) rank.snapshot(waiting);
-      // Done once everyone has a read, or when the tracker cannot say (one attempt per game).
+      const waiting = players.filter((puuid) => (start.attempts.get(puuid) ?? 0) <= RANK_START_RETRIES
+        && !hasReadSince?.call(rank, puuid, start.since));
+      for (const puuid of waiting) start.attempts.set(puuid, (start.attempts.get(puuid) ?? 0) + 1);
+      if (waiting.length > 0 || first) rank.snapshot(waiting, { matchId, since: start.since });
+      // Done once everyone has a read or has used the attempts, or when the tracker cannot say (one attempt per game).
       if (waiting.length === 0 || !hasReadSince) this.rankStarts.delete(matchId);
     } catch (error) {
       this.dependencies.log(new Error(`The LP snapshot of game ${matchId} was skipped: ${errorMessage(error)}`));
