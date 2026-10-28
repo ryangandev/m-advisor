@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { buildMockActiveGame, buildMockMatch, buildMockProfile, buildMockTimeline } from "../fixtures/riotFixtures";
 import type { MockOutcome, MockProfile, RawMatch } from "../fixtures/riotFixtures";
@@ -88,6 +89,13 @@ const MOCK_GAME_ID_BASE = 9_000_000_000;
 let mockSequence = 0;
 let mockEpoch = 0;
 /**
+ * Fixed per process (a base36 clock plus 16 random bits), so the IDs of simulated games never repeat after a restart:
+ * the stable and the LP store keep a game by its ID and silently skip one they already hold.
+ */
+const MOCK_BOOT_ID = `${Date.now().toString(36)}${randomBytes(2).toString("hex")}`;
+/** `MOCK_<boot>_<epoch>_<sequence>`: about 20 characters, far inside the 40 an appeal button allows, and independent of the PUUID. */
+const mockMatchId = (): string => `MOCK_${MOCK_BOOT_ID}_${mockEpoch}_${++mockSequence}`;
+/**
  * How long before its creation a mock account's history match ended. The fixture is created on the first lookup,
  * which can come after the member joined voice, so ending it "now" would make it look like a game that ended
  * after the join and announce it.
@@ -169,7 +177,7 @@ export function simulateMockMatch(puuid: string, outcome: MockOutcome): { matchI
   // Ending a mock game that has this account keeps the ID reserved when it started, so the start and the end are one match.
   const game = gameOf(puuid);
   if (game) mockGames.delete(game.matchId);
-  const matchId = game?.matchId ?? `MOCK_${puuid}_${mockEpoch}_${++mockSequence}`;
+  const matchId = game?.matchId ?? mockMatchId();
   const seatOf = (member: string) => ({ puuid: member, name: profileForPuuid(member).account.gameName });
   const squads = game ? { blue: game.blue.map(seatOf), red: game.red.map(seatOf), profileTeam: game.blue.includes(puuid) ? 100 as const : 200 as const } : undefined;
   mockMatches.set(matchId, buildMockMatch(profile, matchId, outcome, Date.now(), squads));
@@ -205,7 +213,7 @@ export function simulateMockGameStart(blue: string[], red: string[] = []): { mat
     checkFixtureFailure(profileForPuuid(puuid));
     if (gameOf(puuid)) throw new RiotApiError("An account is already in a mock game.", "bad_request");
   }
-  const matchId = `MOCK_${blue[0]}_${mockEpoch}_${++mockSequence}`;
+  const matchId = mockMatchId();
   const gameId = MOCK_GAME_ID_BASE + mockEpoch * 1_000_000 + mockSequence;
   mockGames.set(matchId, { gameId, matchId, blue: [...blue], red: [...red] });
   return { matchId, gameId };
