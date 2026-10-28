@@ -1,7 +1,7 @@
 import type { RankedEntry } from "../types";
 import type { RankRow } from "./rankTracker";
 import { readableName, seededChooser } from "./announcementText";
-import { fitNames } from "./partyRanking";
+import { spokenNames } from "./partyRanking";
 
 /**
  * Chinese names for league-v4 ranks and queues. rankMath.ts keeps Riot's enums; every display name lives here.
@@ -170,7 +170,8 @@ export function buildRankVoiceLine(input: { matchId: string; mock: boolean; move
   }
   if (spoken.length === 0) return "";
   // Long names share a speech budget, so two 16-letter names cannot stretch the line past about 15 seconds.
-  const names = fitNames(spoken.map(({ move }) => readableName(move.name)), SPOKEN_NAME_BUDGET);
+  // Two members must still sound different after trimming, so names that collide keep their ends instead.
+  const names = spokenNames(spoken.map(({ move }) => readableName(move.name)), SPOKEN_NAME_BUDGET);
   const sentences = spoken.map(({ move, queue, rank }, index) => {
     const choose = seededChooser(`rank:${input.matchId}:${move.puuid}`);
     const phrase = choose(move.kind === "promoted" ? PROMOTION_PHRASES : DEMOTION_PHRASES);

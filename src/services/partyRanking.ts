@@ -129,16 +129,15 @@ const distinct = (names: readonly string[]) => new Set(names).size === names.len
 
 /**
  * The names as they are spoken: whole, or trimmed to the budget. Two members must never sound the same,
- * so names that collide after trimming keep their ends instead, and then fall back to the champions.
+ * so names that collide after trimming keep their ends instead, and then fall back to `fallbacks` (the champions).
  */
-function spokenNames(entries: readonly PartyEntry[], budget: number): string[] {
-  const names = entries.map((entry) => entry.name);
+export function spokenNames(names: readonly string[], budget: number, fallbacks?: readonly string[]): string[] {
   const fromFront = fitNames(names, budget, false);
   if (distinct(fromFront)) return fromFront;
   const fromEnd = fitNames(names, budget, true);
   if (distinct(fromEnd)) return fromEnd;
-  const champions = fitNames(entries.map((entry) => entry.champion), budget, false);
-  return distinct(champions) ? champions : fromFront;
+  const other = fallbacks ? fitNames(fallbacks, budget, false) : undefined;
+  return other && distinct(other) ? other : fromFront;
 }
 
 /**
@@ -183,7 +182,7 @@ export function buildPartyRanking(input: PartyInput): PartyRanking | undefined {
   const spoken = [...best, ...worst];
   // The words around the names decide how many characters the names may take.
   const fixed = say(spoken.map(() => "")).length;
-  const sentence = say(spokenNames(spoken, PARTY_SENTENCE_LIMIT - fixed));
+  const sentence = say(spokenNames(spoken.map((entry) => entry.name), PARTY_SENTENCE_LIMIT - fixed, spoken.map((entry) => entry.champion)));
 
   return {
     entries, best, worst, tiedAll, modest, relative, sentence,
