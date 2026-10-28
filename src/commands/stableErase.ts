@@ -29,7 +29,7 @@ const stableEraseCommand: BotCommand = {
     }
     const guildId = interaction.guildId;
     if (!guildId) {
-      await interaction.reply({ embeds: [buildErrorEmbed("这个命令只能在服务器里使用。")], flags: MessageFlags.Ephemeral });
+      await interaction.reply({ embeds: [buildErrorEmbed("这个命令只能在服务器里使用。")], flags: MessageFlags.Ephemeral, allowedMentions: noMentions });
       return;
     }
     const user = interaction.options.getUser("user", true);
@@ -52,8 +52,9 @@ const stableEraseCommand: BotCommand = {
       return;
     }
     const erased = eraseMemberHorseRecords(guildId, user.id);
-    logInfo(`Erased ${erased} horse records of one member on request.`);
-    await interaction.reply({ content: `已清除 <@${user.id}> 的全部马厩档案（${detail}）。`, flags: MessageFlags.Ephemeral, allowedMentions: noMentions });
+    logInfo(`Erased ${erased} horse records, ${appeals} appeal cases and ${ranks} LP results of one member on request.`);
+    // The database file itself is scrubbed, but backups made before upgrades and the log files keep their own copies.
+    await interaction.reply({ content: `已清除 <@${user.id}> 的全部马厩档案（${detail}）。升级前的备份和日志里可能仍有副本，需由机器人主人另行删除。`, flags: MessageFlags.Ephemeral, allowedMentions: noMentions });
   },
 };
 

@@ -206,6 +206,16 @@ test("/stable refuses direct messages", async () => {
   assert.match(embedOf(replies[0]).description!, /只能在服务器里使用/);
 });
 
+test("/stable-erase refuses direct messages without allowing any mention", async () => {
+  // The administrator check already rejects direct messages, so this guard is reached only when the server ID is missing.
+  const { stub, replies } = interaction({ target: "friend", confirm: true });
+  const withoutGuild = Object.assign(stub, { guildId: null });
+  await stableEraseCommand.execute(withoutGuild);
+  assert.equal(replies[0].flags, MessageFlags.Ephemeral);
+  assert.deepEqual(replies[0].allowedMentions, NO_MENTIONS);
+  assert.match(embedOf(replies[0]).description!, /只能在服务器里使用/);
+});
+
 test("/stable-erase needs an administrator and erases nothing without one", async () => {
   recordTracked(seed(FULL.slice(0, 3)));
   const { stub, replies } = interaction({ target: "friend", admin: false, confirm: true });
@@ -238,7 +248,8 @@ test("/stable-erase counts first and erases only on confirmation", async () => {
   assert.match(real.replies[0].content!, /已清除 <@friend> 的全部马厩档案（3 局真实记录和 1 局模拟记录）/);
   assert.deepEqual(countMemberHorseRecords(GUILD, "friend"), { real: 0, mock: 0 });
   assert.deepEqual(countMemberHorseRecords(GUILD, "someone-else"), { real: 2, mock: 0 });
-  assert.ok(logs.some((line) => /Erased 4 horse records/.test(line)));
+  assert.match(real.replies[0].content!, /升级前的备份和日志里可能仍有副本，需由机器人主人另行删除。$/);
+  assert.ok(logs.some((line) => /Erased 4 horse records, 0 appeal cases and 0 LP results of one member on request\./.test(line)));
 
   const again = interaction({ target: "friend", confirm: true });
   await stableEraseCommand.execute(again.stub);
@@ -326,6 +337,7 @@ test("/stable-erase counts and erases a member who has only LP results or appeal
   const real = interaction({ target: "friend", confirm: true });
   await stableEraseCommand.execute(real.stub);
   assert.match(real.replies[0].content!, /已清除 <@friend> 的全部马厩档案（.*1 个上诉案件和 2 条段位记录）/);
+  assert.ok(logs.some((line) => /Erased 0 horse records, 1 appeal cases and 2 LP results of one member on request\./.test(line)));
   assert.deepEqual(listRankResults(GUILD, { mock: false, discordUserId: "friend" }), []);
   assert.deepEqual(listRankResults(GUILD, { mock: true, discordUserId: "friend" }), []);
   assert.equal(isAppealClosed({ guildId: GUILD, discordUserId: "friend", matchId: "NA1_R", mock: false }), false);
