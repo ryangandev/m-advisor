@@ -34,6 +34,8 @@ A member removed with `/unbind` keeps their history but is left out of reports, 
 The weekly bar is 3 games, the same bar the 马厩 uses before it calls a dimension a strength, so that one lucky or unlucky game cannot decide the week.
 Members below the bar are listed without a rank and are not eligible.
 Nobody is named when fewer than two members are ranked or when everyone averaged the same, and the report then says why.
+Averages are compared as the report prints them, with one decimal, so 6.34 and 6.26 (both 6.3) are a tie.
+That applies to the top, the bottom, the everyone-tied check and the leaderboard order, where a printed tie falls to the count of 特等马 games, then games played.
 When several members share the best or the worst average, all of them are named as 并列 in the text and all of them get the weekly role.
 The busiest member and the longest 特等马 or 没有马 streak name everyone who shares the top value, and the busiest line is left out when the whole field played the same number of games.
 The 军师 lines are chosen deterministically from the period and the member, so the same report always reads the same, and they talk about play only.
