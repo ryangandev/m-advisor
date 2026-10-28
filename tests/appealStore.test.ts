@@ -13,6 +13,7 @@ import { eraseMemberHorseRecords } from "../src/store/horseRecordStore";
 import { getPregameVoiceEnabled } from "../src/store/announcerStore";
 import { ROWS_V5, SCHEMA_V5 } from "./helpers/schemaV5";
 import { makeHorseRecord, recordTracked } from "./helpers/horseRecords";
+import { backupLine, captureConsole } from "./helpers/captureConsole";
 
 let directory: string;
 let savedDatabasePath: string | undefined;
@@ -97,12 +98,14 @@ test("a version 5 database upgrades to version 6 in a separate process with a ba
   }
 });
 
-test("a failed version 6 step rolls back and leaves the version 5 database intact", () => {
+test("a failed version 6 step rolls back and leaves the version 5 database intact", (t) => {
+  const log = captureConsole(t);
   const filePath = join(directory, "v5-conflict.sqlite3");
   process.env.DATABASE_PATH = filePath;
   writeVersionFiveDatabase(filePath, "CREATE TABLE appeal_cases (stray TEXT);");
   assert.throws(() => getDatabase(), /Could not open the bot database.*appeal_cases/);
   assert.deepEqual(backupFiles(filePath), ["v5-conflict.sqlite3.v5.bak"]);
+  assert.equal(log.lines.filter((line) => backupLine(5, filePath).test(line)).length, 1, "the backup is announced once");
 
   const verify = new Database(filePath, { readonly: true });
   try {

@@ -19,6 +19,7 @@ import {
   setReportRoles,
 } from "../src/store/reportStore";
 import { makeHorseRecord } from "./helpers/horseRecords";
+import { backupLine, captureConsole } from "./helpers/captureConsole";
 
 let directory: string;
 let savedDatabasePath: string | undefined;
@@ -149,7 +150,8 @@ function writeVersionThreeDatabase(filePath: string, extraSql = ""): void {
   assert.ok(existsSync(`${filePath}-wal`) && statSync(`${filePath}-wal`).size > 0, "the fixture must leave an uncheckpointed WAL");
 }
 
-test("a version 3 database upgrades to the current version with a backup and keeps members, preferences and horse history", () => {
+test("a version 3 database upgrades to the current version with a backup and keeps members, preferences and horse history", (t) => {
+  const log = captureConsole(t);
   const filePath = join(directory, "v3.sqlite3");
   process.env.DATABASE_PATH = filePath;
   writeVersionThreeDatabase(filePath);
@@ -167,6 +169,7 @@ test("a version 3 database upgrades to the current version with a backup and kee
 
   // The backup is the version 3 file written from the uncheckpointed WAL: it has the horse row and no report tables.
   assert.deepEqual(backupFiles(filePath), ["v3.sqlite3.v3.bak"]);
+  assert.equal(log.lines.filter((line) => backupLine(3, filePath).test(line)).length, 1, "the backup is announced once");
   const backup = new Database(`${filePath}.v3.bak`, { readonly: true });
   try {
     assert.equal(backup.pragma("user_version", { simple: true }), 3);
@@ -184,12 +187,14 @@ test("a version 3 database upgrades to the current version with a backup and kee
   assert.deepEqual(backupFiles(filePath), ["v3.sqlite3.v3.bak"]);
 });
 
-test("a failed version 4 step rolls back and leaves the version 3 database intact", () => {
+test("a failed version 4 step rolls back and leaves the version 3 database intact", (t) => {
+  const log = captureConsole(t);
   const filePath = join(directory, "v3-conflict.sqlite3");
   process.env.DATABASE_PATH = filePath;
   writeVersionThreeDatabase(filePath, "CREATE TABLE report_marks (stray TEXT);");
   assert.throws(() => getDatabase(), /Could not open the bot database.*report_marks/);
   assert.deepEqual(backupFiles(filePath), ["v3-conflict.sqlite3.v3.bak"]);
+  assert.equal(log.lines.filter((line) => backupLine(3, filePath).test(line)).length, 1, "the backup is announced once");
 
   const verify = new Database(filePath, { readonly: true });
   try {

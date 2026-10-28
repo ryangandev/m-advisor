@@ -9,6 +9,7 @@ import { getAnnouncerState, getPregameVoiceEnabled, setPregameVoiceEnabled } fro
 import { listTrackedMembers } from "../src/store/bindingStore";
 import { SCHEMA_VERSION, closeDatabase, getDatabase } from "../src/store/database";
 import { getReportSettings } from "../src/store/reportStore";
+import { backupLine, captureConsole } from "./helpers/captureConsole";
 
 let directory: string;
 let savedDatabasePath: string | undefined;
@@ -150,7 +151,8 @@ function writeVersionFourDatabase(filePath: string, extraSql = ""): void {
   assert.ok(existsSync(`${filePath}-wal`) && statSync(`${filePath}-wal`).size > 0, "the fixture must leave an uncheckpointed WAL");
 }
 
-test("a version 4 database upgrades to the current version with a backup, default on and its data intact", () => {
+test("a version 4 database upgrades to the current version with a backup, default on and its data intact", (t) => {
+  const log = captureConsole(t);
   const filePath = join(directory, "v4.sqlite3");
   process.env.DATABASE_PATH = filePath;
   writeVersionFourDatabase(filePath);
@@ -164,6 +166,7 @@ test("a version 4 database upgrades to the current version with a backup, defaul
   if (process.platform !== "win32") assert.equal(statSync(filePath).mode & 0o777, 0o600);
 
   assert.deepEqual(backupFiles(filePath), ["v4.sqlite3.v4.bak"]);
+  assert.equal(log.lines.filter((line) => backupLine(4, filePath).test(line)).length, 1, "the backup is announced once");
   const backup = new Database(`${filePath}.v4.bak`, { readonly: true });
   try {
     assert.equal(backup.pragma("user_version", { simple: true }), 4);
@@ -189,12 +192,14 @@ test("the pregame voice switch defaults on, can be turned off and on, and surviv
   assert.throws(() => getDatabase().prepare("INSERT INTO pregame_settings VALUES ('guild-c', 2)").run(), /CHECK/);
 });
 
-test("a failed version 5 step rolls back and leaves the version 4 database intact", () => {
+test("a failed version 5 step rolls back and leaves the version 4 database intact", (t) => {
+  const log = captureConsole(t);
   const filePath = join(directory, "v4-conflict.sqlite3");
   process.env.DATABASE_PATH = filePath;
   writeVersionFourDatabase(filePath, "CREATE TABLE pregame_settings (stray TEXT);");
   assert.throws(() => getDatabase(), /Could not open the bot database.*pregame_settings/);
   assert.deepEqual(backupFiles(filePath), ["v4-conflict.sqlite3.v4.bak"]);
+  assert.equal(log.lines.filter((line) => backupLine(4, filePath).test(line)).length, 1, "the backup is announced once");
 
   const verify = new Database(filePath, { readonly: true });
   try {

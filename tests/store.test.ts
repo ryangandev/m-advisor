@@ -31,6 +31,7 @@ import { closeAppeal } from "../src/store/appealStore";
 import { countMemberHorseRecords, eraseMemberHorseRecords } from "../src/store/horseRecordStore";
 import { recordRankResults } from "../src/store/rankStore";
 import { makeHorseRecord, recordTracked } from "./helpers/horseRecords";
+import { backupLine, captureConsole } from "./helpers/captureConsole";
 
 let temporaryDirectory: string;
 let savedDatabasePath: string | undefined;
@@ -391,7 +392,8 @@ test("a version 1 database upgrades in place when a separate process opens it", 
   assert.deepEqual(listTrackedMembers("guild-one").map((member) => member.discordUserId), ["member-one", "member-three"]);
 });
 
-test("upgrading writes a private consistent backup first and a second open adds none", () => {
+test("upgrading writes a private consistent backup first and a second open adds none", (t) => {
+  const log = captureConsole(t);
   const filePath = join(temporaryDirectory, "v1-backup.sqlite3");
   process.env.DATABASE_PATH = filePath;
   writeVersionOneDatabase(filePath);
@@ -399,6 +401,7 @@ test("upgrading writes a private consistent backup first and a second open adds 
   assert.equal(getDatabase().pragma("user_version", { simple: true }), SCHEMA_VERSION);
   const backupPath = `${filePath}.v1.bak`;
   assert.deepEqual(backupFiles(filePath), ["v1-backup.sqlite3.v1.bak"]);
+  assert.equal(log.lines.filter((line) => backupLine(1, filePath).test(line)).length, 1, "the backup is announced once");
   if (process.platform !== "win32") assert.equal(statSync(backupPath).mode & 0o777, 0o600);
   const backup = new Database(backupPath, { readonly: true });
   try {
@@ -422,6 +425,7 @@ test("upgrading writes a private consistent backup first and a second open adds 
   getDatabase();
   closeDatabase();
   assert.deepEqual(backupFiles(filePath), ["v1-backup.sqlite3.v1.bak"]);
+  assert.equal(log.lines.length, 1, "the second open logs nothing more");
 });
 
 test("a fresh database and an in-memory database are not backed up", () => {
@@ -434,7 +438,8 @@ test("a fresh database and an in-memory database are not backed up", () => {
   assert.deepEqual(backupFiles(filePath), []);
 });
 
-test("an existing backup is never overwritten", () => {
+test("an existing backup is never overwritten", (t) => {
+  const log = captureConsole(t);
   const filePath = join(temporaryDirectory, "v1-existing.sqlite3");
   process.env.DATABASE_PATH = filePath;
   writeVersionOneDatabase(filePath);
@@ -442,6 +447,8 @@ test("an existing backup is never overwritten", () => {
   getDatabase();
   assert.equal(readFileSync(`${filePath}.v1.bak`, "utf8"), "older backup, keep me");
   assert.deepEqual(backupFiles(filePath), ["v1-existing.sqlite3.v1.2.bak", "v1-existing.sqlite3.v1.bak"]);
+  assert.equal(log.lines.length, 1);
+  assert.match(log.lines[0], /Backed up the version 1 database to .*v1-existing\.sqlite3\.v1\.2\.bak before upgrading it\./);
   const backup = new Database(`${filePath}.v1.2.bak`, { readonly: true });
   try {
     assert.equal((backup.prepare("SELECT count(*) AS count FROM bound_accounts").get() as { count: number }).count, 3);
@@ -483,13 +490,15 @@ test("two processes opening the same version 1 file at once both succeed and mig
   assert.deepEqual(listAllTracking().map((guild) => guild.members.length), [1, 1]);
 });
 
-test("a failed migration rolls back completely and leaves the version 1 database intact", () => {
+test("a failed migration rolls back completely and leaves the version 1 database intact", (t) => {
+  const log = captureConsole(t);
   const filePath = join(temporaryDirectory, "v1-conflict.sqlite3");
   process.env.DATABASE_PATH = filePath;
   // A stray table with the new name makes the second migration step fail midway.
   writeVersionOneDatabase(filePath, "CREATE TABLE tracked_members (stray TEXT);");
   assert.throws(() => getDatabase(), /Could not open the bot database.*tracked_members/);
   assert.deepEqual(backupFiles(filePath), ["v1-conflict.sqlite3.v1.bak"]);
+  assert.equal(log.lines.filter((line) => backupLine(1, filePath).test(line)).length, 1, "the backup is announced once");
 
   const verifyDb = new Database(filePath, { readonly: true });
   try {
@@ -583,7 +592,8 @@ test("an erase also scrubs rows that were already checkpointed into the main fil
   assert.equal(fileText("-wal").includes(MARKER), false, "neither does the WAL");
 });
 
-test("an erase does not wait for another connection that is reading, and still commits", () => {
+test("an erase does not wait for another connection that is reading, and still commits", (t) => {
+  const log = captureConsole(t);
   storeMarkedRows();
   const reader = new Database(process.env.DATABASE_PATH!);
   try {
@@ -596,6 +606,7 @@ test("an erase does not wait for another connection that is reading, and still c
     assert.ok(elapsed < 1000, `the erase took ${Math.round(elapsed)} ms with a reader open`);
     assert.deepEqual(countMemberHorseRecords("guild-one", "member-one"), { real: 0, mock: 0 });
     assert.equal(getDatabase().pragma("busy_timeout", { simple: true }), 5000, "the normal timeout is restored");
+    assert.equal(log.lines.filter((line) => line.includes("another process is reading the database")).length, 1, "the skipped WAL truncation is warned about");
     reader.exec("COMMIT");
   } finally {
     reader.close();
