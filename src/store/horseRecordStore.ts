@@ -4,7 +4,7 @@ import { POSITIONS } from "../types";
 import type { Position } from "../types";
 import { logWarn } from "../utils/log";
 import { eraseMemberAppeals } from "./appealStore";
-import { getDatabase } from "./database";
+import { getDatabase, truncateWal } from "./database";
 import { eraseMemberRankResults } from "./rankStore";
 import { UntrackedMemberError } from "./storeErrors";
 
@@ -322,7 +322,7 @@ export function countMemberHorseRecords(guildId: string, discordUserId: string):
  * Deletes every record, real and mock, of one member in one server and returns how many were removed.
  * The member's closed /why appeal cases and stored LP results go in the same transaction, so erased history leaves nothing behind.
  * This is the only way history is erased: removing a tracked member never touches it.
- * The connection overwrites deleted content (`secure_delete`), and the WAL is checkpointed and truncated afterwards so the old page images do not linger in it.
+ * The connection overwrites deleted content (`secure_delete`), and the WAL is checkpointed and truncated afterwards (without waiting for other processes) so the old page images do not linger in it.
  * Backups made before schema upgrades and log files are separate copies that this never touches.
  */
 export function eraseMemberHorseRecords(guildId: string, discordUserId: string): number {
@@ -335,9 +335,9 @@ export function eraseMemberHorseRecords(guildId: string, discordUserId: string):
     return database.prepare("DELETE FROM horse_records WHERE guild_id = ? AND discord_user_id = ?").run(guildId, discordUserId).changes;
   })();
   // The erase is already committed, so a checkpoint that cannot finish is reported but never fails the command.
+  // The checkpoint never waits for another process, so a busy database cannot stall the reply.
   try {
-    const [result] = database.pragma("wal_checkpoint(TRUNCATE)") as Array<{ busy: number }>;
-    if (result?.busy) logWarn("The erase is saved, but the WAL could not be truncated because the database was busy; erased rows may stay in it until the next checkpoint.");
+    if (!truncateWal(database)) logWarn("The erase is saved, but another process is reading the database, so the WAL was not truncated; the copy of the erased rows in it is cleared when the bot shuts down.");
   } catch (error) {
     logWarn(`The erase is saved, but the WAL checkpoint failed: ${error instanceof Error ? error.message : "unknown error"}`);
   }

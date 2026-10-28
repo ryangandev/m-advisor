@@ -248,7 +248,7 @@ test("/stable-erase counts first and erases only on confirmation", async () => {
   assert.match(real.replies[0].content!, /已清除 <@friend> 的全部马厩档案（3 局真实记录和 1 局模拟记录）/);
   assert.deepEqual(countMemberHorseRecords(GUILD, "friend"), { real: 0, mock: 0 });
   assert.deepEqual(countMemberHorseRecords(GUILD, "someone-else"), { real: 2, mock: 0 });
-  assert.match(real.replies[0].content!, /升级前的备份和日志里可能仍有副本，需由机器人主人另行删除。$/);
+  assert.match(real.replies[0].content!, /升级前的备份和日志里可能仍有副本，需由运行机器人的人另行删除。$/);
   assert.ok(logs.some((line) => /Erased 4 horse records, 0 appeal cases and 0 LP results of one member on request\./.test(line)));
 
   const again = interaction({ target: "friend", confirm: true });

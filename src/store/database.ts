@@ -181,6 +181,7 @@ const MIGRATIONS: readonly string[] = [
 ];
 /** The schema version of this bot: a database at this version needs no migration. */
 export const SCHEMA_VERSION = MIGRATIONS.length;
+const BUSY_TIMEOUT_MS = 5000;
 let database: Database.Database | undefined;
 
 /** Resolved lazily so importing a store does not create a database. */
@@ -238,7 +239,7 @@ export function getDatabase(): Database.Database {
       // SQLite's WAL and SHM files inherit the database file's permissions.
       chmodSync(filePath, 0o600);
     }
-    connection.pragma("busy_timeout = 5000");
+    connection.pragma(`busy_timeout = ${BUSY_TIMEOUT_MS}`);
     connection.pragma("foreign_keys = ON");
     // Erased rows are overwritten with zeros in the file instead of lingering in free pages.
     connection.pragma("secure_delete = ON");
@@ -272,8 +273,32 @@ export function getDatabase(): Database.Database {
   }
 }
 
+/**
+ * Checkpoints the WAL and truncates it, so page images of erased rows do not linger in the `-wal` file.
+ * It never waits: with `busy_timeout = 0` a checkpoint blocked by another connection's open read returns at once,
+ * because the store is synchronous and a wait would stall the event loop past Discord's three second reply window.
+ * Returns whether the WAL was fully truncated. The previous timeout is restored even if the checkpoint throws.
+ */
+export function truncateWal(connection: Database.Database = getDatabase()): boolean {
+  connection.pragma("busy_timeout = 0");
+  try {
+    const [result] = connection.pragma("wal_checkpoint(TRUNCATE)") as Array<{ busy: number }>;
+    return !result?.busy;
+  } finally {
+    connection.pragma(`busy_timeout = ${BUSY_TIMEOUT_MS}`);
+  }
+}
+
 /** Close during graceful shutdown; a later store operation opens a new connection. */
 export function closeDatabase(): void {
-  database?.close();
+  if (database) {
+    // One last attempt, so rows erased while another process held the database leave the WAL when the bot shuts down.
+    try {
+      truncateWal(database);
+    } catch {
+      // Closing must still succeed; SQLite also checkpoints when the last connection closes.
+    }
+    database.close();
+  }
   database = undefined;
 }
