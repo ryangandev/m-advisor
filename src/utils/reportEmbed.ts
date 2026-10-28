@@ -183,7 +183,12 @@ export function buildReportEmbed(data: ReportData, options: { final: boolean }):
     embed.addFields({ name: `${when}特等马 / 没有马`, value: noWinnerNote(data, options.final) });
   }
   if (data.bestGame && data.worstGame) {
-    embed.addFields({ name: "单局之最", value: fit([gameLine("👑 最佳", data.bestGame), gameLine("🪦 最差", data.worstGame)]) });
+    // With a single game the best and the worst are the same record, which is listed once.
+    const only = data.bestGame.discordUserId === data.worstGame.discordUserId && data.bestGame.matchId === data.worstGame.matchId;
+    embed.addFields({
+      name: "单局之最",
+      value: fit(only ? [gameLine("唯一一局", data.bestGame)] : [gameLine("👑 最佳", data.bestGame), gameLine("🪦 最差", data.worstGame)]),
+    });
   }
   embed.addFields({ name: "军师总评", value: fit([...summaryLines(data), overallRemark(data)]) });
   return embed;
