@@ -1,4 +1,4 @@
-import type { Client, VoiceState } from "discord.js";
+import type { Client, Guild, VoiceState } from "discord.js";
 import type { TrackedMember } from "../types";
 import { listAllTracking, listTrackedMembers } from "../store/bindingStore";
 import { stopPolling, syncMonitoring } from "./gameMonitor";
@@ -49,6 +49,14 @@ export class MonitorLifecycle {
     return this.reconcile(newState.client, guildId);
   }
 
+  /**
+   * A guild that comes back after a gateway re-identify has reloaded its voice states without any VoiceStateUpdate,
+   * so the session is read against the real voice states again.
+   */
+  guildAvailable(guild: Guild): Promise<void> {
+    return this.reconcile(guild.client, guild.id);
+  }
+
   private async apply(client: Client, guildId: string): Promise<void> {
     if (this.dependencies.stopping()) return;
     const members = this.dependencies.members(guildId);
@@ -83,4 +91,8 @@ export function restoreMonitoring(client: Client): Promise<void> {
 
 export function handleVoiceStateUpdate(oldState: VoiceState, newState: VoiceState): Promise<void> | undefined {
   return lifecycle.voiceStateChanged(oldState, newState);
+}
+
+export function handleGuildAvailable(guild: Guild): Promise<void> {
+  return lifecycle.guildAvailable(guild);
 }
