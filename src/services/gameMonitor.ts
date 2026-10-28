@@ -27,7 +27,7 @@ import type { HorseRecord } from "../store/horseRecordStore";
 import { buildHorseReportEmbed, buildPartyEmbed, buildRankAnnouncementEmbed, NO_MENTIONS } from "../utils/embeds";
 import { AnnouncementCancelledError, AnnouncementQueueFullError, announceTextToCurrentChannel } from "./voiceAnnouncements";
 import { logError, logInfo } from "../utils/log";
-import { boundParticipants, chooseChannel, liveParticipantIds, liveParticipants, perspective } from "./channelChoice";
+import { boundParticipants, chooseChannel, isUsableVoiceChannel, liveParticipantIds, liveParticipants, perspective } from "./channelChoice";
 import type { BoundParticipant } from "./channelChoice";
 import { createGameStartMemory, GameStartWatcher, recallPick } from "./gameStartWatcher";
 import type { GameStartDependencies, GameStartMemory, GameStartOutcome, GameStartTickResult } from "./gameStartWatcher";
@@ -1242,7 +1242,7 @@ export class GameMonitor {
 
 export function resolveMonitoredVoiceChannel(client: Client, guildId: string, userId: string): VoiceChannel | null {
   const channel = client.guilds.cache.get(guildId)?.members.cache.get(userId)?.voice.channel;
-  if (!(channel instanceof VoiceChannel)) return null;
+  if (!(channel instanceof VoiceChannel) || !isUsableVoiceChannel(channel)) return null;
   if (getRiotMode() === "mock") {
     const testGuildId = process.env.TEST_GUILD_ID?.trim();
     const testChannelId = process.env.TEST_VOICE_CHANNEL_ID?.trim();
