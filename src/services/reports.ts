@@ -5,6 +5,7 @@ import { markReportHandled } from "../store/reportStore";
 import type { ReportKind } from "../store/reportStore";
 import { pacificDay, pacificWeek } from "../utils/pacificTime";
 import type { TimeRange } from "../utils/pacificTime";
+import { formatScore } from "./announcementText";
 import { summarizeHorseRecords } from "./horseProfile";
 import { HORSE_TIERS } from "./horseRanking";
 import type { HorseTier } from "./horseRanking";
@@ -85,8 +86,11 @@ export interface ReportData {
   worstGame: HorseRecord | null;
 }
 
-/** Averages are sums of fractions, so equal averages can differ in the last bits. */
-const TIE_EPSILON = 1e-9;
+/**
+ * An average as the embed prints it, with one decimal. Ties, ranking and the top and bottom decisions all use this, so
+ * two members whose averages print the same are never split by a hidden difference (6.34 and 6.26 both print 6.3).
+ */
+export const printedAverage = (member: Pick<MemberReport, "averageScore">): number => Number(formatScore(member.averageScore));
 
 const byScoreThenAge = (a: HorseRecord, b: HorseRecord) => b.score - a.score || a.playedAt - b.playedAt || a.matchId.localeCompare(b.matchId);
 
@@ -133,13 +137,15 @@ export function buildReportData(input: ReportInput): ReportData {
   members.sort((a, b) =>
     Number(b.qualified) - Number(a.qualified)
     || (a.qualified
-      ? b.averageScore - a.averageScore || b.tiers["特等马"] - a.tiers["特等马"] || b.games - a.games
-      : b.games - a.games || b.averageScore - a.averageScore)
+      ? printedAverage(b) - printedAverage(a) || b.tiers["特等马"] - a.tiers["特等马"] || b.games - a.games
+      : b.games - a.games || printedAverage(b) - printedAverage(a))
     || a.discordUserId.localeCompare(b.discordUserId));
 
   const ranked = members.filter((member) => member.qualified);
-  // Nobody is crowned or shamed when the whole field averaged the same.
-  const separated = ranked.length >= 2 && ranked[0].averageScore - ranked[ranked.length - 1].averageScore > TIE_EPSILON;
+  // Nobody is crowned or shamed when the whole field averaged the same, as printed.
+  const topAverage = ranked.length > 0 ? printedAverage(ranked[0]) : 0;
+  const bottomAverage = ranked.length > 0 ? printedAverage(ranked[ranked.length - 1]) : 0;
+  const separated = ranked.length >= 2 && topAverage !== bottomAverage;
   const ordered = [...records].sort(byScoreThenAge);
   return {
     kind,
@@ -149,8 +155,8 @@ export function buildReportData(input: ReportInput): ReportData {
     totalGames: records.length,
     tierTotals: Object.fromEntries(HORSE_TIERS.map((tier) => [tier, records.filter((record) => record.tier === tier).length])) as Record<HorseTier, number>,
     members,
-    topHorses: separated ? ranked.filter((member) => Math.abs(member.averageScore - ranked[0].averageScore) <= TIE_EPSILON) : [],
-    noneHorses: separated ? ranked.filter((member) => Math.abs(member.averageScore - ranked[ranked.length - 1].averageScore) <= TIE_EPSILON) : [],
+    topHorses: separated ? ranked.filter((member) => printedAverage(member) === topAverage) : [],
+    noneHorses: separated ? ranked.filter((member) => printedAverage(member) === bottomAverage) : [],
     bestGame: ordered[0] ?? null,
     worstGame: ordered[ordered.length - 1] ?? null,
   };

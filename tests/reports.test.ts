@@ -150,6 +150,47 @@ test("nobody is crowned or shamed with fewer than two ranked members or when eve
   assert.deepEqual(onlyOneWeekly.topHorses, [], "one ranked member is not enough to name a champion");
 });
 
+test("averages that print the same are a tie, so nobody is crowned or shamed on a hidden difference", () => {
+  // 6.34 and 6.26 both print 6.3.
+  const at = (index: number) => DAY.start + index * HOUR;
+  const everyone = buildReportData({
+    kind: "day", range: DAY, mock: false, memberIds: ["a", "b"],
+    records: [game("a", "上等马", 6.34, at(1)), game("b", "上等马", 6.26, at(2))],
+  });
+  assert.deepEqual(everyone.topHorses, [], "the printed averages are equal, so nobody is the top horse");
+  assert.deepEqual(everyone.noneHorses, []);
+
+  const crowd = buildReportData({
+    kind: "day", range: DAY, mock: false, memberIds: ["a", "b", "c"],
+    records: [game("a", "特等马", 8, at(1)), game("b", "中等马", 6.34, at(2)), game("c", "没有马", 6.26, at(3))],
+  });
+  assert.deepEqual(crowd.topHorses.map((member) => member.discordUserId), ["a"]);
+  assert.deepEqual(crowd.noneHorses.map((member) => member.discordUserId).sort(), ["b", "c"], "6.34 and 6.26 both print 6.3");
+
+  const topTie = buildReportData({
+    kind: "day", range: DAY, mock: false, memberIds: ["a", "b", "c"],
+    records: [game("a", "特等马", 8.34, at(1)), game("b", "特等马", 8.26, at(2)), game("c", "没有马", 2, at(3))],
+  });
+  assert.deepEqual(topTie.topHorses.map((member) => member.discordUserId).sort(), ["a", "b"], "8.34 and 8.26 both print 8.3");
+  assert.deepEqual(topTie.noneHorses.map((member) => member.discordUserId), ["c"]);
+
+  const bottomTie = buildReportData({
+    kind: "day", range: DAY, mock: false, memberIds: ["a", "b", "c"],
+    records: [game("a", "特等马", 9, at(1)), game("b", "下等马", 3.04, at(2)), game("c", "没有马", 2.96, at(3))],
+  });
+  assert.deepEqual(bottomTie.noneHorses.map((member) => member.discordUserId).sort(), ["b", "c"], "3.04 and 2.96 both print 3.0");
+});
+
+test("the leaderboard breaks a printed tie by top-tier games, not by the hidden decimals", () => {
+  const at = (index: number) => DAY.start + index * HOUR;
+  const data = buildReportData({
+    kind: "day", range: DAY, mock: false, memberIds: ["a", "b"],
+    // a's raw average is higher, but both print 6.3 and b has the 特等马 game.
+    records: [game("a", "上等马", 6.34, at(1)), game("b", "特等马", 6.26, at(2))],
+  });
+  assert.deepEqual(data.members.map((member) => member.discordUserId), ["b", "a"]);
+});
+
 test("only real records of currently tracked members make a real report", () => {
   const records = [
     game("a", "特等马", 9, DAY.start + HOUR),
