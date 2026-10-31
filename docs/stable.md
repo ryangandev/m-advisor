@@ -123,8 +123,8 @@ The record on the champion in the game, the signature champion, the position and
 The card shows:
 
 - the last 5 tiers, newest first, and their average score;
-- the last 5 against the 5 before with an arrow, only when both sides have at least 3 games, where a difference of 1.0 or more counts as up or down;
-- the record on the champion in the game when there are at least 2 games, and the likely position, which is 打野 with Smite and otherwise the most common position on that champion;
+- the last 5 against the 5 before with an arrow, only when both sides have at least 3 games, where a difference of 1.0 or more counts as up or down, and the card labels the earlier window with its real size (前3局 to 前5局);
+- the record on the champion in the game when there are at least 2 games, and the likely position, which is 打野 only with Smite and otherwise the most common non-jungle position on that champion, or none;
 - 🔥 for a run of at least 2 特等马 and 🥶 for a run of at least 2 没有马.
 
 军师之选 is the teammate with the highest last-5 average among those with at least 3 recorded games, plus up to 2 points when the champion in the game is a signature champion (拿手英雄).
