@@ -26,7 +26,7 @@ import type { RankResult } from "../store/rankStore";
 import type { HorseRecord } from "../store/horseRecordStore";
 import { buildHorseReportEmbed, buildPartyEmbed, buildRankAnnouncementEmbed, NO_MENTIONS } from "../utils/embeds";
 import { AnnouncementCancelledError, AnnouncementQueueFullError, announceTextToCurrentChannel } from "./voiceAnnouncements";
-import { logError, logInfo } from "../utils/log";
+import { logError, logInfo, logWarn } from "../utils/log";
 import { boundParticipants, chooseChannel, isUsableVoiceChannel, liveParticipantIds, liveParticipants, perspective } from "./channelChoice";
 import type { BoundParticipant } from "./channelChoice";
 import { createGameStartMemory, GameStartWatcher, recallPick } from "./gameStartWatcher";
@@ -125,6 +125,8 @@ export interface MonitorDependencies {
   log: (error: unknown) => void;
   /** Progress messages for the operator, such as a newly detected match. */
   info: (message: string) => void;
+  /** Warnings for the operator that are not failures; `logWarn` by default. */
+  warn?: (message: string) => void;
 }
 
 export type { BoundParticipant } from "./channelChoice";
@@ -942,9 +944,10 @@ export class GameMonitor {
       // up to the cap.
       if (++progress.voiceFailures >= MAX_VOICE_ATTEMPTS) {
         this.consume(guildId, session, match, progress);
-        if (progress.rankCast) this.finishRankVoice(progress.rankCast, progress.textPosted ? "given_up" : "dropped");
+        const out = progress.textPosted || progress.postUnknown;
+        if (progress.rankCast) this.finishRankVoice(progress.rankCast, out ? "given_up" : "dropped");
         this.dependencies.info(`Gave up on the voice report of match ${match.matchId} after ${progress.voiceFailures} failed attempts; `
-          + `${progress.textPosted ? "its text report was posted" : "its text report was not posted"}, and it is not retried.`);
+          + `${progress.textPosted ? "its text report was posted" : progress.postUnknown ? "its text report may have been posted" : "its text report was not posted"}, and it is not retried.`);
       }
       throw error;
     }
@@ -972,8 +975,8 @@ export class GameMonitor {
       if (!settled && progress.posting === inFlight) {
         // Never post twice: the old send may still land, so the text is skipped and only the voice is spoken.
         progress.postUnknown = true;
-        this.dependencies.log(new Error(`Warning: the text report of match ${match.matchId} is still in flight after `
-          + `${((this.dependencies.inFlightWaitMs ?? IN_FLIGHT_WAIT_MS) / 1000).toFixed(0)} s; it is not posted again and the voice goes on.`));
+        (this.dependencies.warn ?? logWarn)(`The text report of match ${match.matchId} is still in flight after `
+          + `${((this.dependencies.inFlightWaitMs ?? IN_FLIGHT_WAIT_MS) / 1000).toFixed(0)} s; it is not posted again and the voice goes on.`);
       }
     }
     if (progress.events === undefined) {
@@ -1060,7 +1063,7 @@ export class GameMonitor {
     this.consume(guildId, session, match, progress);
     // Only now may a 段位播报 line be queued, behind nothing: it never plays before or over the report. This comes after
     // consume and cannot throw, so a rank failure can never replay the report or count as a voice failure.
-    if (progress.rankCast) this.finishRankVoice(progress.rankCast, progress.textPosted ? "done" : "dropped");
+    if (progress.rankCast) this.finishRankVoice(progress.rankCast, progress.textPosted || progress.postUnknown ? "done" : "dropped");
     this.dependencies.info(`Announced match ${match.matchId} in voice ${secondsSince(match.detectedAt!)} s after detection.`);
     return true;
   }

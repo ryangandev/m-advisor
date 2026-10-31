@@ -39,6 +39,7 @@ A remembered match whose text went out but whose voice did not finish is carried
 A text post is remembered as soon as it is sent, before Discord answers, so a session that stops during the send and a quick return never post it twice.
 The session that carries such a match on waits for that send to settle, for its own stop, or for 2 minutes (`IN_FLIGHT_WAIT_MS`) at most, before it decides anything: a post that went out is not posted again, and one that failed is forgotten and posted by that session, so the report is never lost and its voice plays once.
 If the send is still unanswered after 2 minutes, its outcome is unknown: the session logs one warning, skips the text so it is never posted twice, and still speaks the report once, and a later answer of the old send posts and speaks nothing more.
+A send that fails after the wait ran out, once the session has spoken, is not tried again, so that match is voice only.
 A match is remembered for 12 minutes (`HANDLED_MS`) after it was last handled, or after the session holding it let go of it; that is the longest a kept baseline can be restored after its account's last read.
 At most 50 matches are remembered per guild, the oldest forgotten first, and like the kept baselines they live in memory only.
 
