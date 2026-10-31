@@ -8,7 +8,7 @@
 | `src/handlers/commandHandler.ts` | Loads every compiled command file and registers guild commands |
 | `src/events/ready.ts`, `voiceStateUpdate.ts`, `interactionCreate.ts` | Startup restore, voice membership, and `interactionCreate.ts` routing interactions to commands |
 | `src/events/reportScheduler.ts` | Starts the 马报 scheduler once the client is ready |
-| `src/events/guildAvailable.ts`, `guildDelete.ts` | Guild lifecycle: a guild becoming available and the bot being removed from one |
+| `src/events/guildAvailable.ts`, `guildDelete.ts` | Guild lifecycle: a guild becoming available, and the bot being removed from one, which logs once and stops that server's monitoring |
 | `src/services/gameMonitor.ts` | Match monitoring and announcement orchestration |
 | `src/services/monitorLifecycle.ts`, `shutdownState.ts`, `simulationLock.ts` | Monitor start and stop per guild, the shared stopping flag and the per-guild `/simulate` lock |
 | `src/services/gameStartWatcher.ts`, `pregameBrief.ts`, `pregameRecap.ts` | 军师赛前锦囊: detect a game on the loading screen, write the brief and recap it after the game |

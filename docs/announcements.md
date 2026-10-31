@@ -31,6 +31,7 @@ After the window, for an unbound member or an account that moved to another memb
 `/bind` and `/unbind` drop the member's kept baselines at once, so a reconciliation still queued behind them cannot bring an old one back.
 The session stops when no tracked member is left in voice, and a bot restart creates new baselines because the kept ones live in memory only, so offline matches are not replayed.
 Moving between channels does not touch the session or its baselines.
+When the bot is removed from a server, that server's session stops too (`src/events/guildDelete.ts` calls `stopPolling`), so the match poll and the game-start watcher stop calling Riot for it.
 
 Separately from the baselines, the guild remembers every match whose text report it posted or that it consumed, whichever session did it and whether or not anyone's baseline was kept.
 Any session of the guild, new or continuing, treats a remembered match that was consumed as already announced for every account that reports it.
