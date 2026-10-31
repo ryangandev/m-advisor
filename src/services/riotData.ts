@@ -334,7 +334,10 @@ export function getRiotPacer(): RiotPacer {
   return sharedPacer;
 }
 
-/** Replaces the shared pacer, for tests (an unpaced one or one on a fake clock); returns a function that restores the previous one. */
+/**
+ * Replaces the shared pacer: for tests, an unpaced one or one on a fake clock; for a one-shot script, one with
+ * `keepAlive`. Returns a function that restores the previous one.
+ */
 export function useRiotPacer(pacer: RiotPacer): () => void {
   const previous = sharedPacer;
   sharedPacer = pacer;
@@ -389,7 +392,7 @@ export function createRiotRequester(options: RiotRequesterOptions = {}): RiotReq
     const maxRetries = call.retry === false ? 0 : retries;
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       // Every attempt takes a turn: Riot counts each one against the host's limits.
-      await takeTurn(target, call);
+      const turn = await takeTurn(target, call);
       const signal = AbortSignal.timeout(timeoutMs);
       let response: Response;
       try {
@@ -400,7 +403,7 @@ export function createRiotRequester(options: RiotRequesterOptions = {}): RiotReq
         await sleep(Math.min(1000 * 2 ** attempt, maxRetryDelayMs));
         continue;
       }
-      (options.pacer ?? getRiotPacer()).observe(target.hostname, response.headers.get("X-App-Rate-Limit-Count"));
+      (options.pacer ?? getRiotPacer()).observe(target.hostname, response.headers.get("X-App-Rate-Limit-Count"), turn.sentAt);
       if (response.ok) {
         try { return await response.json() as T; }
         catch { throw new RiotApiError("Riot API returned an invalid response.", signal.aborted ? "timeout" : "invalid_response"); }

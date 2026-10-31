@@ -9,6 +9,10 @@ import { getAccountByRiotId, getRankedEntries } from "../src/utils/riotApi";
 import {
   createLeagueRequester, getLeagueEntries, LEAGUE_REQUESTER_OPTIONS, leagueRequester, LEAGUE_TIMEOUT_MS, parseLeagueEntries, rankedQueueFor,
 } from "../src/utils/riotLeagueApi";
+import { withoutRiotPacing } from "./helpers/unpacedRiot";
+
+// Some requesters here have a timeout of a few milliseconds, which is also their longest wait for a turn.
+withoutRiotPacing();
 
 const SOLO = "RANKED_SOLO_5x5";
 const FLEX = "RANKED_FLEX_SR";

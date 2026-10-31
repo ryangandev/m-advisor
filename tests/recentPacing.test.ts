@@ -5,6 +5,7 @@ import { after, afterEach, beforeEach, test } from "node:test";
 import { buildMockMatch, buildMockProfile } from "../src/fixtures/riotFixtures";
 import type { BotCommand, TrackedMember } from "../src/types";
 import { RiotPacer } from "../src/services/riotPacing";
+import type { AcquireOptions, PacingSlot } from "../src/services/riotPacing";
 import { useRiotPacer } from "../src/services/riotData";
 import { getLatestSRMatchId } from "../src/utils/riotMatchApi";
 import { fakeClock, settle } from "./helpers/fakeClock";
@@ -50,21 +51,48 @@ const RIOT_LIMITS = [{ count: 20, windowMs: 1_000 }, { count: 100, windowMs: 120
 
 interface FakeRiot { sent: Map<string, number[]>; rejected: number }
 
-/**
- * Riot on the fake clock. `before` requests were already counted on americas 5 s ago, as after a restart.
- * Match IDs carry `salt`, so one test's details are not in the cache for the next.
- */
-function fakeRiot(clock: FakeClock, salt: string, before = 0): FakeRiot {
+interface FakeRiotOptions {
+  /** Requests already counted on americas 5 s ago, as after a restart. */
+  before?: number;
+  /** How long a request takes to reach Riot, and its answer to come back. */
+  requestMs?: number;
+  responseMs?: number;
+  /**
+   * `sliding` counts every request in the last window, which is stricter than Riot. `fixed` is how Riot counts: a
+   * window starts at its first request and holds every request until it ends.
+   */
+  windows?: "sliding" | "fixed";
+}
+
+/** Riot on the fake clock. Match IDs carry `salt`, so one test's details are not in the cache for the next. */
+function fakeRiot(clock: FakeClock, salt: string, options: FakeRiotOptions = {}): FakeRiot {
+  const { before = 0, requestMs = 0, responseMs = 0, windows = "sliding" } = options;
   const riot: FakeRiot = { sent: new Map([["americas.api.riotgames.com", Array.from({ length: before }, () => clock.now() - 5_000)]]), rejected: 0 };
+  const fixed = new Map<string, Array<{ start: number; count: number }>>([["americas.api.riotgames.com",
+    [{ start: -Infinity, count: 0 }, { start: clock.now() - 5_000, count: before }]]]);
+  const wait = (ms: number) => ms > 0 ? new Promise<void>((resolve) => { clock.setTimer(resolve, ms); }) : Promise.resolve();
   globalThis.fetch = (async (input: URL | string) => {
     const url = new URL(String(input));
+    await wait(requestMs);
     const log = riot.sent.get(url.hostname) ?? [];
     riot.sent.set(url.hostname, log);
     const now = clock.now();
-    const counts = RIOT_LIMITS.map(({ windowMs }) => log.filter((at) => at > now - windowMs).length + 1);
     log.push(now);
+    let counts: number[];
+    if (windows === "sliding") {
+      counts = RIOT_LIMITS.map(({ windowMs }) => log.filter((at) => at > now - windowMs).length);
+    } else {
+      const state = fixed.get(url.hostname) ?? RIOT_LIMITS.map(() => ({ start: -Infinity, count: 0 }));
+      fixed.set(url.hostname, state);
+      counts = RIOT_LIMITS.map(({ windowMs }, index) => {
+        if (now >= state[index].start + windowMs) state[index] = { start: now, count: 0 };
+        return ++state[index].count;
+      });
+    }
     const headers = { "X-App-Rate-Limit-Count": `${counts[0]}:1,${counts[1]}:120` };
-    if (RIOT_LIMITS.some(({ count }, index) => counts[index] > count)) {
+    const limited = RIOT_LIMITS.some(({ count }, index) => counts[index] > count);
+    await wait(responseMs);
+    if (limited) {
       riot.rejected++;
       return new Response(null, { status: 429, headers: { ...headers, "Retry-After": "95" } });
     }
@@ -79,6 +107,20 @@ function fakeRiot(clock: FakeClock, salt: string, before = 0): FakeRiot {
     return Response.json(buildMockMatch(profile, matchId, "win", 1_700_000_000_000), { headers });
   }) as typeof fetch;
   return riot;
+}
+
+/** The pacer on the fake clock, recording how long each normal request waited for its turn. */
+class TimedPacer extends RiotPacer {
+  readonly normalWaits: number[] = [];
+  constructor(private readonly clock: FakeClock) {
+    super({ now: clock.now, setTimer: clock.setTimer, clearTimer: clock.clearTimer, stopping: () => false });
+  }
+  override async acquire(host: string, options: AcquireOptions = {}): Promise<PacingSlot> {
+    const asked = this.clock.now();
+    const slot = await super.acquire(host, options);
+    if (options.priority !== "bulk") this.normalWaits.push(this.clock.now() - asked);
+    return slot;
+  }
 }
 
 type Reply = { embeds: Array<{ toJSON: () => { fields?: Array<{ name: string; value: string }> } }> };
@@ -142,9 +184,51 @@ test("a cold /recent count:10 over 10 accounts waits for its turns, gets no 429 
 });
 
 test("after a restart the pacer learns Riot's count from the first answer, so the requests left in the window still get no 429", async () => {
-  const riot = fakeRiot(clock, "restart", 85);
+  const riot = fakeRiot(clock, "restart", { before: 85 });
   const replies: Reply[] = [];
   await settle(clock, recent.execute(interaction(replies)));
   assert.equal(riot.rejected, 0);
   for (const field of replies[0].embeds[0].toJSON().fields!) assert.doesNotMatch(field.value, /⚠️/);
+});
+
+test("with Riot's fixed windows and a slow round trip, polling never waits more than one short window behind a cold /recent", async () => {
+  // Riot's 1 s window is fixed from its first request, and a 600 ms round trip shifts it against the pacer's. Syncing
+  // that window from Riot's count once over-counted the long window and made polls wait 30 s or more.
+  restorePacer();
+  const pacer = new TimedPacer(clock);
+  restorePacer = useRiotPacer(pacer);
+  const riot = fakeRiot(clock, "latency", { requestMs: 100, responseMs: 500, windows: "fixed" });
+  const wait = (ms: number) => new Promise<void>((resolve) => { clock.setTimer(resolve, ms); });
+  const replies: Reply[] = [];
+  const command = recent.execute(interaction(replies));
+  // Ten accounts in voice, polled every 45 s for 6 minutes, each poll a little after the one before.
+  const polls = (async () => {
+    for (let round = 0; round < 8; round++) {
+      await Promise.all(Array.from({ length: ACCOUNTS }, async (_, index) => {
+        await wait(index * 50);
+        await getLatestSRMatchId(`poll-${index}`);
+      }));
+      await wait(45_000);
+    }
+  })();
+  await settle(clock, Promise.all([command, polls]));
+  assert.equal(riot.rejected, 0, "Riot never answers 429");
+  for (const field of replies[0].embeds[0].toJSON().fields!) assert.doesNotMatch(field.value, /⚠️/);
+  assert.ok(pacer.normalWaits.length >= ACCOUNTS * 8);
+  const longest = Math.max(...pacer.normalWaits);
+  assert.ok(longest <= 1_200, `a poll request waited ${longest} ms for its turn`);
+});
+
+test("two cold /recent runs at once share every match detail they both need", async () => {
+  const riot = fakeRiot(clock, "twice");
+  const first: Reply[] = [];
+  const second: Reply[] = [];
+  await settle(clock, Promise.all([recent.execute(interaction(first)), recent.execute(interaction(second))]));
+  assert.equal(riot.rejected, 0);
+  assert.equal(riot.sent.get("americas.api.riotgames.com")!.length, 2 * ACCOUNTS + ACCOUNTS * COUNT, "each run asks its own ID lists, and the details once");
+  for (const replies of [first, second]) {
+    const fields = replies[0].embeds[0].toJSON().fields!;
+    assert.equal(fields.length, ACCOUNTS);
+    for (const field of fields) assert.doesNotMatch(field.value, /⚠️/);
+  }
 });

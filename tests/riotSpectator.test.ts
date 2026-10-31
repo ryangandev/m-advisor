@@ -10,6 +10,10 @@ import {
   SPECTATOR_REQUESTER_OPTIONS, spectatorRequester,
 } from "../src/utils/riotSpectatorApi";
 import { resetMockData, RiotApiError, riotFetch, simulateMockGameStart, simulateMockMatch } from "../src/services/riotData";
+import { withoutRiotPacing } from "./helpers/unpacedRiot";
+
+// Some requesters here have a timeout of a few milliseconds, which is also their longest wait for a turn.
+withoutRiotPacing();
 
 // tests/fixtures/spectator-active-game.documented.json is built from Riot's DOCUMENTED CurrentGameInfo shape for
 // spectator-v5. It is NOT a capture of a real response, until the file is replaced or confirmed with one.

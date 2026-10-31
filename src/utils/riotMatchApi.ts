@@ -69,11 +69,42 @@ export async function getLatestSRMatchId(puuid: string, options: MatchRequestOpt
   return null;
 }
 
+/** Match detail requests still out, by cache key, with the options each was sent with. */
+const inFlightDetails = new Map<string, Array<{ options: MatchRequestOptions; detail: Promise<MatchDetail> }>>();
+
+/**
+ * Whether a caller can wait for a request already out instead of sending its own: only when that request is at least
+ * as good for it. A normal caller never waits behind a bulk request's turn, and a caller that retries never takes the
+ * answer of a request that does not.
+ */
+function serves(request: MatchRequestOptions, caller: MatchRequestOptions): boolean {
+  return (request.priority !== "bulk" || caller.priority === "bulk") && (request.retry !== false || caller.retry === false);
+}
+
+/**
+ * One match's detail, from the cache when it has been fetched before. A caller that asks for a match whose detail is
+ * already being fetched waits for that request (see `serves`), so concurrent `/recent` runs share their details.
+ */
 export async function getMatchDetail(matchId: string, options: MatchRequestOptions = {}): Promise<MatchDetail> {
   const mode = getRiotMode();
   const cacheKey = `${mode}:${matchId}`;
   const cached = touch(matchCache, cacheKey);
   if (cached) return structuredClone(cached);
+  const pending = inFlightDetails.get(cacheKey) ?? [];
+  const shared = pending.find((entry) => serves(entry.options, options));
+  if (shared) return structuredClone(await shared.detail);
+  const entry = { options, detail: fetchMatchDetail(matchId, cacheKey, options) };
+  inFlightDetails.set(cacheKey, [...pending, entry]);
+  try {
+    return structuredClone(await entry.detail);
+  } finally {
+    const left = (inFlightDetails.get(cacheKey) ?? []).filter((other) => other !== entry);
+    if (left.length > 0) inFlightDetails.set(cacheKey, left);
+    else inFlightDetails.delete(cacheKey);
+  }
+}
+
+async function fetchMatchDetail(matchId: string, cacheKey: string, options: MatchRequestOptions): Promise<MatchDetail> {
   const detailUrl = `${AMERICAS}/lol/match/v5/matches/${encodeURIComponent(matchId)}`;
   const detail = parseMatchDetail(await riotFetch<unknown>(detailUrl, options), matchId);
   remember(matchCache, cacheKey, structuredClone(detail), MATCH_CACHE_LIMIT);
