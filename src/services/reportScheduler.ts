@@ -3,6 +3,7 @@ import type { Client, EmbedBuilder } from "discord.js";
 import { RESTJSONErrorCodes } from "discord.js";
 import {
   getReportMark,
+  getReportSettings,
   listReportDestinations,
   markReportHandled,
   setReportRoleHolders,
@@ -13,6 +14,7 @@ import type { ReportKind, ReportSettings } from "../store/reportStore";
 import { logError, logInfo, logWarn } from "../utils/log";
 import { REPORT_ALLOWED_MENTIONS, buildReportEmbed, periodLabel } from "../utils/reportEmbed";
 import { isMockData } from "./riotData";
+import { runInGuildQueue } from "./guildQueue";
 import { discordErrorCode, rotateWeeklyRoles, roleGuildFrom } from "./reportRoles";
 import type { RoleGuild } from "./reportRoles";
 import { catchUpPeriods, latestDuePeriod, loadReport, nextReportDueAt } from "./reports";
@@ -269,6 +271,9 @@ export class ReportScheduler {
       if (giveUp) {
         this.firstFailure.delete(key);
         this.settle(guildId, mock, kind, latest.start, now);
+        // The report never went out, so nobody earns a role this week. The old holders still lose theirs, the same as
+        // for an older catch-up week: a channel that stays deleted must not freeze 本周特等马 on last week's winner.
+        if (kind === "week" && current && !this.stopping) await this.rotateRoles(settings, [], [], mock, { quiet: true });
       }
       return;
     }
@@ -286,34 +291,21 @@ export class ReportScheduler {
    * Rotates the weekly roles after the report. Whatever goes wrong is logged and, unless `quiet`, told to the admins once;
    * it never reaches the caller.
    */
-  private async rotateRoles(settings: ReportSettings, top: readonly string[], none: readonly string[], mock: boolean, options: { quiet: boolean }): Promise<void> {
-    if (!settings.rolesEnabled || !settings.topRoleId || !settings.noneRoleId) return;
-    // Nothing to take back from an empty week when nobody holds a role.
-    if (options.quiet && settings.topHolderIds.length === 0 && settings.noneHolderIds.length === 0) return;
+  private async rotateRoles(initial: ReportSettings, top: readonly string[], none: readonly string[], mock: boolean, options: { quiet: boolean }): Promise<void> {
+    const guildId = initial.guildId;
     // Roles reward real games. A mock rehearsal never changes who holds them.
     if (mock) {
-      if (!options.quiet) logInfo(`Weekly roles in server ${settings.guildId} were left alone because the bot runs on mock data.`);
+      if (!options.quiet && initial.rolesEnabled && initial.topRoleId && initial.noneRoleId) {
+        logInfo(`Weekly roles in server ${guildId} were left alone because the bot runs on mock data.`);
+      }
       return;
     }
-    const guildId = settings.guildId;
     let problems: string[];
     try {
-      const guild = this.deps.roleGuild(guildId);
-      if (!guild) {
-        logWarn(`Weekly roles in server ${guildId} were not updated: the bot is no longer in that server.`);
-        return;
-      }
-      const outcome = await rotateWeeklyRoles(guild, {
-        topRoleId: settings.topRoleId,
-        noneRoleId: settings.noneRoleId,
-        topHolderIds: settings.topHolderIds,
-        noneHolderIds: settings.noneHolderIds,
-      }, { top, none });
-      if (outcome.topRoleId !== settings.topRoleId || outcome.noneRoleId !== settings.noneRoleId) {
-        setReportRoles(guildId, { enabled: true, topRoleId: outcome.topRoleId, noneRoleId: outcome.noneRoleId });
-      }
-      setReportRoleHolders(guildId, { top: outcome.topHolderIds, none: outcome.noneHolderIds });
-      problems = outcome.problems;
+      // One change at a time per server, shared with /report-settings. The settings are read again once it is this
+      // run's turn: an admin may have switched the roles off or to other roles while the report was being sent, and
+      // acting on the row read before the send would hand out roles that nothing takes back.
+      problems = await runInGuildQueue(guildId, () => this.rotateRolesNow(guildId, top, none, options));
     } catch (error) {
       logError(`Weekly roles in server ${guildId} failed: ${errorName(error)}`);
       problems = ["身份组更新时出了意外错误，详情见机器人日志。"];
@@ -323,10 +315,34 @@ export class ReportScheduler {
     if (options.quiet || this.stopping) return;
     const content = `⚠️ 本周的「本周特等马」「本周没有马」身份组没有更新完整，周报本身已正常发出：\n${problems.map((problem) => `- ${problem}`).join("\n")}\n管理员处理好之后，下周会自动恢复；也可以用 \`/report-settings roles\` 关闭这个功能。`;
     try {
-      await this.deps.send(guildId, settings.channelId!, { content: content.slice(0, 1900), allowedMentions: REPORT_ALLOWED_MENTIONS });
+      await this.deps.send(guildId, initial.channelId!, { content: content.slice(0, 1900), allowedMentions: REPORT_ALLOWED_MENTIONS });
     } catch (error) {
       logWarn(`Could not tell server ${guildId} about the weekly role problem (${errorName(error)}).`);
     }
+  }
+
+  /** The rotation itself, run inside the server's queue on freshly read settings. Returns what could not be done. */
+  private async rotateRolesNow(guildId: string, top: readonly string[], none: readonly string[], options: { quiet: boolean }): Promise<string[]> {
+    const settings = getReportSettings(guildId);
+    if (!settings?.rolesEnabled || !settings.topRoleId || !settings.noneRoleId) return [];
+    // Nothing to take back from an empty week when nobody holds a role.
+    if (options.quiet && settings.topHolderIds.length === 0 && settings.noneHolderIds.length === 0) return [];
+    const guild = this.deps.roleGuild(guildId);
+    if (!guild) {
+      logWarn(`Weekly roles in server ${guildId} were not updated: the bot is no longer in that server.`);
+      return [];
+    }
+    const outcome = await rotateWeeklyRoles(guild, {
+      topRoleId: settings.topRoleId,
+      noneRoleId: settings.noneRoleId,
+      topHolderIds: settings.topHolderIds,
+      noneHolderIds: settings.noneHolderIds,
+    }, { top, none });
+    if (outcome.topRoleId !== settings.topRoleId || outcome.noneRoleId !== settings.noneRoleId) {
+      setReportRoles(guildId, { enabled: true, topRoleId: outcome.topRoleId, noneRoleId: outcome.noneRoleId });
+    }
+    setReportRoleHolders(guildId, { top: outcome.topHolderIds, none: outcome.noneHolderIds });
+    return outcome.problems;
   }
 }
 

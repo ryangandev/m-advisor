@@ -10,7 +10,8 @@ import type { HorseTier } from "../src/services/horseRanking";
 import { FAILURE_GAP_RESET_MS, GIVE_UP_AFTER_MS, ReportChannelError, ReportScheduler, REPORT_TICK_MS, reportNonce } from "../src/services/reportScheduler";
 import type { ReportPayload, ReportSchedulerDeps } from "../src/services/reportScheduler";
 import { REPORT_GRACE_MS } from "../src/services/reports";
-import { NONE_ROLE_NAME, TOP_ROLE_NAME } from "../src/services/reportRoles";
+import { runInGuildQueue } from "../src/services/guildQueue";
+import { NONE_ROLE_NAME, TOP_ROLE_NAME, releaseWeeklyRoles } from "../src/services/reportRoles";
 import {
   getReportMark,
   getReportSettings,
@@ -562,6 +563,126 @@ test("a failed weekly post does not touch the roles", async () => {
   await scheduler.runDue();
   assert.deepEqual(guild.changes, []);
   assert.equal(getReportMark(GUILD, false, "week"), undefined);
+});
+
+test("a deleted report channel gives up the current week and releases last week's holders, with nobody gaining a role", async () => {
+  seedGames(DUE_WEEK.start + 5 * HOUR);
+  setReportKindEnabled(GUILD, "day", false);
+  const guild = enableRoles();
+  guild.members.get("carol")!.add("role-top");
+  guild.members.get("carol")!.add("role-none");
+  setReportRoleHolders(GUILD, { top: ["carol"], none: ["carol"] });
+  const { state, scheduler } = harness();
+  state.roleGuild = guild;
+  state.failures.push(discordError(10003, "Unknown Channel"));
+  await scheduler.runDue();
+  assert.deepEqual(state.sent, [], "nothing was posted, and no role note either");
+  assert.equal(getReportMark(GUILD, false, "week"), DUE_WEEK.start, "the period was given up");
+  assert.deepEqual(guild.changes, ["remove:role-top:carol", "remove:role-none:carol"]);
+  assert.deepEqual([getReportSettings(GUILD)!.topHolderIds, getReportSettings(GUILD)!.noneHolderIds], [[], []]);
+  assert.ok(!guild.members.get("alice")!.has("role-top"), "the champion of a report nobody saw earns nothing");
+});
+
+test("a week given up after six hours of failing also releases the holders, but a retry in between does not", async () => {
+  seedGames(DUE_WEEK.start + 5 * HOUR);
+  setReportKindEnabled(GUILD, "day", false);
+  const guild = enableRoles();
+  guild.members.get("carol")!.add("role-top");
+  setReportRoleHolders(GUILD, { top: ["carol"], none: [] });
+  const { state, scheduler } = harness();
+  state.roleGuild = guild;
+  for (let offset = 0; offset < GIVE_UP_AFTER_MS; offset += REPORT_TICK_MS) {
+    state.failures.push(new Error("still down"));
+    state.now = NOW + offset;
+    await scheduler.runDue();
+    assert.deepEqual(guild.changes, [], "still retrying: the roles are untouched");
+  }
+  state.failures.push(new Error("still down"));
+  state.now = NOW + GIVE_UP_AFTER_MS;
+  await scheduler.runDue();
+  assert.equal(getReportMark(GUILD, false, "week"), DUE_WEEK.start);
+  assert.deepEqual(guild.changes, ["remove:role-top:carol"]);
+  assert.deepEqual(getReportSettings(GUILD)!.topHolderIds, []);
+});
+
+test("giving up a daily report does not touch the weekly roles", async () => {
+  seedGames(DUE_DAY.start + HOUR);
+  setReportKindEnabled(GUILD, "week", false);
+  const guild = enableRoles();
+  guild.members.get("carol")!.add("role-top");
+  setReportRoleHolders(GUILD, { top: ["carol"], none: [] });
+  const { state, scheduler } = harness();
+  state.roleGuild = guild;
+  state.failures.push(discordError(10003, "Unknown Channel"));
+  await scheduler.runDue();
+  assert.equal(getReportMark(GUILD, false, "day"), DUE_DAY.start);
+  assert.deepEqual(guild.changes, []);
+});
+
+test("an admin turning roles off while the weekly send is in flight is respected: the rotation does nothing", async () => {
+  seedGames(DUE_WEEK.start + 5 * HOUR);
+  setReportKindEnabled(GUILD, "day", false);
+  const guild = enableRoles();
+  guild.members.get("carol")!.add("role-top");
+  setReportRoleHolders(GUILD, { top: ["carol"], none: [] });
+  const { state, deps, scheduler } = harness();
+  state.roleGuild = guild;
+  const send = deps.send;
+  deps.send = async (...args) => {
+    // What /report-settings roles enabled:false does while the post is in flight.
+    const current = getReportSettings(GUILD)!;
+    const released = await releaseWeeklyRoles(guild, { topRoleId: current.topRoleId!, noneRoleId: current.noneRoleId!, topHolderIds: current.topHolderIds, noneHolderIds: current.noneHolderIds });
+    setReportRoleHolders(GUILD, { top: released.topHolderIds, none: released.noneHolderIds });
+    setReportRoles(GUILD, { enabled: false });
+    await send(...args);
+  };
+  await scheduler.runDue();
+  assert.equal(state.sent.length, 1, "the report itself still went out");
+  assert.deepEqual(guild.changes, ["remove:role-top:carol"], "only the admin's release, no role handed out afterwards");
+  const after = getReportSettings(GUILD)!;
+  assert.equal(after.rolesEnabled, false);
+  assert.deepEqual([after.topHolderIds, after.noneHolderIds], [[], []]);
+  assert.ok(!guild.members.get("alice")!.has("role-top"));
+});
+
+test("roles switched to other roles while the weekly send is in flight: the rotation uses the new roles and holders", async () => {
+  seedGames(DUE_WEEK.start + 5 * HOUR);
+  setReportKindEnabled(GUILD, "day", false);
+  const guild = enableRoles();
+  guild.addRole("role-top-2", TOP_ROLE_NAME, 3);
+  guild.addRole("role-none-2", NONE_ROLE_NAME, 2);
+  const { state, deps, scheduler } = harness();
+  state.roleGuild = guild;
+  const send = deps.send;
+  deps.send = async (...args) => {
+    setReportRoles(GUILD, { enabled: true, topRoleId: "role-top-2", noneRoleId: "role-none-2" });
+    await send(...args);
+  };
+  await scheduler.runDue();
+  assert.deepEqual(guild.changes, ["add:role-top-2:alice", "add:role-none-2:bob"]);
+  const after = getReportSettings(GUILD)!;
+  assert.equal(after.topRoleId, "role-top-2");
+  assert.deepEqual([after.topHolderIds, after.noneHolderIds], [["alice"], ["bob"]]);
+});
+
+test("the rotation waits for an admin's role change that is already running in the same server queue", async () => {
+  seedGames(DUE_WEEK.start + 5 * HOUR);
+  setReportKindEnabled(GUILD, "day", false);
+  const guild = enableRoles();
+  const { state, scheduler } = harness();
+  state.roleGuild = guild;
+  let open!: () => void;
+  const admin = runInGuildQueue(GUILD, async () => {
+    await new Promise<void>((resolve) => { open = resolve; });
+    setReportRoles(GUILD, { enabled: false });
+  });
+  const run = scheduler.runDue();
+  await settle();
+  assert.deepEqual(guild.changes, [], "the rotation has not started while the admin's change is running");
+  open();
+  await admin;
+  await run;
+  assert.deepEqual(guild.changes, [], "and when it runs it sees roles off");
 });
 
 test("mock mode never changes who holds the weekly roles", async () => {
