@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, mkdir, mkdtemp, readFile, rm, symlink, utimes, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, realpath, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -246,7 +246,9 @@ test("local speech subprocess does not inherit service credentials", async () =>
 });
 
 test("sweeping removes only stale speech directories of this user and keeps running owners, the new directory and symlinks", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "tts-sweep-"));
+  const real = await mkdtemp(path.join(os.tmpdir(), "tts-sweep-"));
+  const root = `${real}-link`;
+  await symlink(real, root);
   try {
     const dead = spawnSync(process.execPath, ["-e", ""]).pid;
     const make = async (name: string, ageMs = 0) => {
@@ -267,14 +269,14 @@ test("sweeping removes only stale speech directories of this user and keeps runn
     const outside = await mkdtemp(path.join(os.tmpdir(), "tts-outside-"));
     await writeFile(path.join(outside, "precious"), "x");
     await symlink(outside, path.join(root, `m-advisor-tts-${dead}-link12`));
-    await sweepStaleTtsDirectories(root, keep);
+    await sweepStaleTtsDirectories(root, await realpath(keep));
     await assert.rejects(access(stale));
     await assert.rejects(access(oldLegacy));
     for (const survivor of [running, fresh, keep, lookalike, other, path.join(root, `m-advisor-tts-${dead}-link12`), path.join(outside, "precious")]) {
       await access(survivor);
     }
     await rm(outside, { recursive: true, force: true });
-  } finally { await rm(root, { recursive: true, force: true }); }
+  } finally { await rm(root, { force: true }); await rm(real, { recursive: true, force: true }); }
 });
 
 test("starting the worker sweeps stale speech directories but keeps its own", async () => {

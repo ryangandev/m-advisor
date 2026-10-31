@@ -67,7 +67,9 @@ Closing the launcher window sends SIGHUP, which runs the same shutdown (see [run
 The temporary directory is named `m-advisor-tts-<pid>-<random>`.
 When the worker first starts, the service also removes stale `m-advisor-tts-*` directories in the system temp directory left by a bot that was killed without cleanup.
 It touches only real directories (never symlinks) owned by the current user whose names match that exact pattern, and skips its own directory and any whose recorded process is still running.
-An older directory without a recorded process is removed only after 24 hours.
+An older directory without a recorded process is removed only after 24 hours, even if its bot is somehow still running.
+If a dead bot's process ID has been reused by another process, its directory stays until that process ends.
+Both edge cases are accepted.
 The bot must call it when stopping so model memory is released.
 Once application shutdown begins, the public speech boundary rejects new requests and deletes late completions.
 
