@@ -18,3 +18,5 @@ if (!configured || configured === process.env[AUTO]) {
   process.on("exit", () => rmSync(directory, { recursive: true, force: true }));
 }
 delete process.env.DATABASE_PATH;
+// Never inherited from the host's shell: a test that needs one sets it, and none may reach the real Discord or Riot with it.
+for (const name of ["DISCORD_TOKEN", "CLIENT_ID", "RIOT_API_KEY", "RIOT_MODE"]) delete process.env[name];

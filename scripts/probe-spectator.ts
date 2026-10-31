@@ -6,8 +6,6 @@ import { RiotApiError } from "../src/services/riotData";
 import type { ActiveGame } from "../src/types";
 import { createSpectatorRequester, getActiveGame, isLoading } from "../src/utils/riotSpectatorApi";
 
-dotenv.config({ quiet: true });
-
 const RATE_HEADERS = ["x-app-rate-limit", "x-app-rate-limit-count", "x-method-rate-limit", "x-method-rate-limit-count"] as const;
 
 /** The account named by a `name#tag` argument, or the first account of the first tracked member; read from the database without writing to it. */
@@ -119,7 +117,9 @@ async function probe(): Promise<void> {
   process.exitCode = await runProbe(choosePuuid(), fetch, console.log);
 }
 
+// Only the command line loads .env, so importing this module (the tests do) never merges the repo's .env into the process.
 if (require.main === module) {
+  dotenv.config({ quiet: true });
   probe().catch((error: unknown) => {
     console.error(error instanceof Error ? error.message : "The spectator probe failed.");
     process.exitCode = 1;
