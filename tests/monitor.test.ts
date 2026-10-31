@@ -3368,8 +3368,8 @@ test("no channel at all for the text keeps the match waiting", async () => {
   assert.equal(bot.sent.length, 0);
 });
 
-test("the production resolvers: a full channel and the AFK channel take the text but not the voice, and the text needs View and Send", () => {
-  const resolve = (traits: { joinable?: boolean; afk?: boolean; send?: boolean }) => {
+test("the production resolvers: a full channel and the AFK channel take the text but not the voice, and the text needs View, Send and Embed Links", () => {
+  const resolve = (traits: { joinable?: boolean; afk?: boolean; send?: boolean; embed?: boolean }) => {
     const voiceChannel = Object.create(VoiceChannel.prototype) as VoiceChannel;
     Object.defineProperties(voiceChannel, {
       id: { value: "voice" },
@@ -3380,8 +3380,10 @@ test("the production resolvers: a full channel and the AFK channel take the text
       speakable: { value: true },
       viewable: { value: true },
       permissionsFor: { value: () => ({ has: (flags: unknown) => {
-        assert.deepEqual(flags, [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages]);
-        return traits.send !== false;
+        assert.deepEqual(flags, [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.EmbedLinks]);
+        // Models the real check: every flag asked for must be granted.
+        const granted = [PermissionFlagsBits.ViewChannel, ...(traits.send === false ? [] : [PermissionFlagsBits.SendMessages]), ...(traits.embed === false ? [] : [PermissionFlagsBits.EmbedLinks])];
+        return (flags as bigint[]).every((flag) => granted.includes(flag));
       } }) },
     });
     const client = {
@@ -3400,4 +3402,7 @@ test("the production resolvers: a full channel and the AFK channel take the text
   assert.equal(afk.voice, null);
   assert.equal(afk.text?.id, "voice");
   assert.equal(resolve({ send: false }).text, null, "without Send Messages there is nowhere to post");
+  const noEmbeds = resolve({ embed: false });
+  assert.equal(noEmbeds.voice?.id, "voice", "the voice does not need Embed Links");
+  assert.equal(noEmbeds.text, null, "the reports are embeds, so a channel that allows sending but not Embed Links is no target");
 });
