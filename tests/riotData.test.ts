@@ -125,7 +125,6 @@ test("real timelines use the Americas match-v5 timeline endpoint", async () => {
   assert.deepEqual(timeline, { matchId: "NA1_42", participants: new Map([[1, "p1"]]), events: [] });
 });
 
-// Runs after the endpoint test: the timeline requester's own 60 second cooldown lasts for the rest of this file.
 test("a timeline 429 stays on the timeline requester and never blocks match requests", async () => {
   process.env.RIOT_MODE = "real";
   process.env.RIOT_API_KEY = "test-key";
@@ -136,8 +135,10 @@ test("a timeline 429 stays on the timeline requester and never blocks match requ
     if (pathname.endsWith("/timeline")) return new Response(null, { status: 429, headers: { "Retry-After": "60" } });
     return Response.json({ metadata: { matchId: "NA1_COOLDOWN" }, info: { queueId: 420, participants: [{ puuid: "p", teamId: 100, win: true }] } });
   };
-  await assert.rejects(getMatchTimeline("NA1_COOLDOWN"), { code: "rate_limited", retryAfterMs: 60_000 });
-  await assert.rejects(getMatchTimeline("NA1_COOLDOWN"), { code: "rate_limited" }, "fails fast during its own cooldown");
+  // Its own requester, so the 60 second cooldown never leaks into the default timeline requester other tests use.
+  const requester = createRiotRequester({ ...TIMELINE_REQUESTER_OPTIONS, apiKey: () => "test-key", sleep: async () => assert.fail("timelines never wait or retry") });
+  await assert.rejects(getMatchTimeline("NA1_COOLDOWN", requester), { code: "rate_limited", retryAfterMs: 60_000 });
+  await assert.rejects(getMatchTimeline("NA1_COOLDOWN", requester), { code: "rate_limited" }, "fails fast during its own cooldown");
   assert.equal((await getMatchDetail("NA1_COOLDOWN")).metadata.matchId, "NA1_COOLDOWN");
   assert.deepEqual(paths, ["/lol/match/v5/matches/NA1_COOLDOWN/timeline", "/lol/match/v5/matches/NA1_COOLDOWN"]);
 });
