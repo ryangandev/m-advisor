@@ -80,11 +80,14 @@ function topRemark(data: ReportData, members: readonly MemberReport[], final: bo
   const when = whenWord(data, final);
   const seed = `${data.kind}:${data.range.start}:top:${members.map((member) => member.discordUserId).join(",")}`;
   if (members.length > 1) {
-    const closing = pick(["并驾齐驱，军师一碗水端平。", "谁也不让谁，马厩里难得的双雄并立。"], seed);
+    // 双雄 means exactly two, so a bigger tie only gets the closing that fits any number.
+    const closing = members.length === 2
+      ? pick(["并驾齐驱，军师一碗水端平。", "谁也不让谁，马厩里难得的双雄并立。"], seed)
+      : "并驾齐驱，军师一碗水端平。";
     return `${mentions(members)} 并列：${when}各自均分都是 ${formatScore(members[0].averageScore)}。${closing}`;
   }
   const member = members[0];
-  const detail = `${when} ${member.games} 局均分 ${formatScore(member.averageScore)}，最亮眼的是${championLabel(member.best)}那把 ${kda(member.best)}，拿下 ${formatScore(member.best.score)} 分`;
+  const detail = `${when} ${member.games} 局均分 ${formatScore(member.averageScore)}，${member.games === 1 ? `那一把是${championLabel(member.best)}` : `最亮眼的是${championLabel(member.best)}那把`} ${kda(member.best)}，拿下 ${formatScore(member.best.score)} 分`;
   const closing = pick(data.kind === "day"
     ? ["这一天的头牌非此马莫属。", "别的马只配看着它的尾灯。", "军师的羽扇都为它摇了三下。"]
     : ["这一周的马厩，它说了算。", "别的马见了都得让道，军师记下一笔。", "一周下来稳稳压着全场，军师服气。"], seed);
@@ -144,6 +147,7 @@ function noWinnerNote(data: ReportData, final: boolean): string {
   const ranked = data.members.filter((member) => member.qualified);
   if (ranked.length >= 2) return "大家的均分一模一样，军师分不出高下，这次不评。";
   const when = whenWord(data, final);
+  if (ranked.length === 0) return `${when}还没有人满 ${data.minGames} 局，这次不评。`;
   const who = data.kind === "day" ? `${when}只有` : `${when}满 ${data.minGames} 局的只有`;
   return `${who} ${ranked.length} 位参评，至少要两位才分得出高下，这次不评。`;
 }

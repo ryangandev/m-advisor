@@ -246,3 +246,55 @@ test("a single game in the period is listed once, not as both the best and the w
   const both = buildReportEmbed(two, { final: true }).toJSON().fields!.find((entry) => entry.name === "单局之最")!;
   assert.equal(both.value.split("\n").length, 2);
 });
+
+function topField(data: ReturnType<typeof buildReportData>): string {
+  return buildReportEmbed(data, { final: true }).toJSON().fields!.find((field) => field.name.startsWith("👑"))!.value;
+}
+
+test("a one-game 特等马 is talked about as that one game, not as the brightest of several", () => {
+  const data = buildReportData({
+    kind: "day", range: DAY, mock: false, memberIds: ["alice", "bob"],
+    records: [game("alice", "特等马", 9, DAY.start + HOUR), game("bob", "下等马", 3, DAY.start + 2 * HOUR)],
+  });
+  const text = topField(data);
+  assert.match(text, /^<@alice>：当日 1 局均分 9\.0，那一把是.+ \d+\/\d+\/\d+，拿下 9\.0 分/);
+  assert.doesNotMatch(text, /最亮眼/);
+  assert.equal(topField(data), text, "deterministic");
+  const many = buildReportData({
+    kind: "day", range: DAY, mock: false, memberIds: ["alice", "bob"],
+    records: [...games("alice", "特等马", 9, 2, DAY.start + HOUR), game("bob", "下等马", 3, DAY.start + 6 * HOUR)],
+  });
+  assert.match(topField(many), /^<@alice>：当日 2 局均分 9\.0，最亮眼的是.+那把/);
+});
+
+test("双雄 is only said of exactly two tied members", () => {
+  const closings = new Set<string>();
+  for (let index = 0; index < 20; index += 1) {
+    const [a, b, c] = [`a${index}`, "b", "c"];
+    const trio = buildReportData({
+      kind: "week", range: WEEK, mock: false, memberIds: [a, b, c, "z"],
+      records: [...games(a, "特等马", 8, 3, WEEK.start + HOUR), ...games(b, "特等马", 8, 3, WEEK.start + 5 * HOUR), ...games(c, "特等马", 8, 3, WEEK.start + 9 * HOUR), ...games("z", "没有马", 1, 3, WEEK.start + 13 * HOUR)],
+    });
+    assert.equal(trio.topHorses.length, 3);
+    assert.doesNotMatch(topField(trio), /双雄/, `trio ${index}`);
+    const duo = buildReportData({
+      kind: "week", range: WEEK, mock: false, memberIds: [a, b, "z"],
+      records: [...games(a, "特等马", 8, 3, WEEK.start + HOUR), ...games(b, "特等马", 8, 3, WEEK.start + 5 * HOUR), ...games("z", "没有马", 1, 3, WEEK.start + 13 * HOUR)],
+    });
+    assert.equal(duo.topHorses.length, 2);
+    closings.add(topField(duo).includes("双雄") ? "双雄" : "plain");
+  }
+  assert.deepEqual([...closings].sort(), ["plain", "双雄"], "a pair can still draw either closing");
+});
+
+test("a week or day where nobody reached the game bar says so plainly instead of counting zero", () => {
+  const week = buildReportData({ kind: "week", range: WEEK, mock: false, memberIds: ["a", "b"], records: [...games("a", "特等马", 9, 2, WEEK.start + HOUR), ...games("b", "没有马", 1, 1, WEEK.start + 9 * HOUR)] });
+  assert.equal(week.members.filter((member) => member.qualified).length, 0);
+  const weekText = allText(buildReportEmbed(week, { final: true }));
+  assert.match(weekText, /当周还没有人满 3 局，这次不评。/);
+  assert.doesNotMatch(weekText, /0 位参评/);
+  assert.match(allText(buildReportEmbed(week, { final: false })), /本周还没有人满 3 局，这次不评。/);
+  // Exactly one qualified member keeps the existing sentence.
+  const one = buildReportData({ kind: "week", range: WEEK, mock: false, memberIds: ["a", "b"], records: [...games("a", "特等马", 9, 3, WEEK.start + HOUR), ...games("b", "没有马", 1, 1, WEEK.start + 9 * HOUR)] });
+  assert.match(allText(buildReportEmbed(one, { final: true })), /当周满 3 局的只有 1 位参评，至少要两位才分得出高下，这次不评。/);
+});
