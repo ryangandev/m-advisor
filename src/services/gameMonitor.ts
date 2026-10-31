@@ -67,6 +67,11 @@ export const HANDLED_MS = KEEP_FRESH_BUSY_MS + KEEP_BASELINES_MS;
 const HANDLED_LIMIT = 50;
 /** The monitor's own limit on the timeline, above its request timeout, so a stuck timeline never holds a report. */
 const TIMELINE_WAIT_MS = 8_000;
+/**
+ * How long a session that resumes a match waits for another session's text send to settle. Discord requests time out
+ * and retry well within it; past it the post is unknown, and the session speaks without posting the text again.
+ */
+export const IN_FLIGHT_WAIT_MS = 120_000;
 export interface PollResult { announced: number; errors: number }
 
 /** What /recent shows about a guild's monitoring; the last error survives the session that raised it. */
@@ -99,6 +104,8 @@ export interface MonitorDependencies {
   record: (records: readonly HorseRecord[]) => number;
   /** How long a report waits for its timeline; TIMELINE_WAIT_MS by default. */
   timelineWaitMs?: number;
+  /** How long a resuming session waits for another session's text send; IN_FLIGHT_WAIT_MS by default. */
+  inFlightWaitMs?: number;
   /**
    * Riot spectator, 马厩 records and the pregame settings for the game start watcher (军师赛前锦囊).
    * Without it a session watches finished matches only.
@@ -254,6 +261,11 @@ interface MatchProgress {
    * A session that resumes the report meanwhile waits for it instead of posting again.
    */
   posting?: Promise<void>;
+  /**
+   * A session stopped waiting for `posting` because Discord had not answered in IN_FLIGHT_WAIT_MS: the text may or may not
+   * be out, so it is not posted again and the voice goes on. Cleared if that send fails after all.
+   */
+  postUnknown?: boolean;
   /** The posted report, kept so a late 段位变化 can edit it once. */
   reportMessage?: Message;
   /** The match's 段位播报, kept across voice retries so it is sent once. */
@@ -952,10 +964,17 @@ export class GameMonitor {
   ): Promise<boolean> {
     const detail = match.detail!;
     const participantIds = () => this.liveParticipantIds(guildId, boundParticipants);
-    if (progress.posting) {
+    const inFlight = progress.posting;
+    if (inFlight && !progress.postUnknown) {
       // An earlier session stopped while its text post was in flight: whether to post again depends on how that went.
-      await this.untilSettled(progress.posting, session.controller.signal);
+      const settled = await this.untilSettled(inFlight, session.controller.signal, this.dependencies.inFlightWaitMs ?? IN_FLIGHT_WAIT_MS);
       if (!this.current(guildId, session)) throw new AnnouncementCancelledError();
+      if (!settled && progress.posting === inFlight) {
+        // Never post twice: the old send may still land, so the text is skipped and only the voice is spoken.
+        progress.postUnknown = true;
+        this.dependencies.log(new Error(`Warning: the text report of match ${match.matchId} is still in flight after `
+          + `${((this.dependencies.inFlightWaitMs ?? IN_FLIGHT_WAIT_MS) / 1000).toFixed(0)} s; it is not posted again and the voice goes on.`));
+      }
     }
     if (progress.events === undefined) {
       // The first LP reads wait inside the timeline's wait, never longer, so they add nothing to the worst case.
@@ -1021,7 +1040,7 @@ export class GameMonitor {
         requiredTargets: new Set(requiredTargets), announced: new Set(), pendingLines: [], reportVoice: "pending",
       };
     }
-    if (!progress.textPosted) {
+    if (!progress.textPosted && !progress.postUnknown) {
       await this.postReport(guildId, initial, boundParticipants, progress, announcement, speaker.puuid, result,
         this.pregameRecap(guildId, match.matchId, announcement), { matchId: match.matchId, party, cast: progress.rankCast });
       if (!this.current(guildId, session)) throw new AnnouncementCancelledError();
@@ -1052,7 +1071,7 @@ export class GameMonitor {
    */
   private finishTextOnly(guildId: string, session: MonitorSession, match: PendingMatch, progress: MatchProgress, channel: VoiceChannel): boolean {
     const name = (channel as { name?: string }).name ?? channel.id;
-    if (!progress.textPosted) {
+    if (!progress.textPosted && !progress.postUnknown) {
       if (++progress.voiceFailures >= MAX_VOICE_ATTEMPTS) {
         this.consume(guildId, session, match, progress);
         if (progress.rankCast) this.finishRankVoice(progress.rankCast, "dropped");
@@ -1062,7 +1081,8 @@ export class GameMonitor {
     }
     this.consume(guildId, session, match, progress);
     if (progress.rankCast) this.finishRankVoice(progress.rankCast, "given_up");
-    this.dependencies.info(`Announced match ${match.matchId} as text only in ${name}: no player is in a voice channel the bot can join and speak in.`);
+    this.dependencies.info(`Announced match ${match.matchId} as text only in ${name}${progress.textPosted ? "" : " (its post is unconfirmed)"}: `
+      + "no player is in a voice channel the bot can join and speak in.");
     return true;
   }
 
@@ -1092,17 +1112,28 @@ export class GameMonitor {
     return progress;
   }
 
-  /** Waits for a promise that never rejects; stopping the session ends the wait at once, so a stuck send never holds a poll. */
-  private async untilSettled(pending: Promise<void>, signal: AbortSignal): Promise<void> {
-    if (signal.aborted) return;
+  /**
+   * Waits for a promise that never rejects, at most `limitMs`; stopping the session ends the wait at once, so a stuck send
+   * never holds a poll. Resolves false only when the limit ran out first. The timer is cleared however the wait ends and never
+   * keeps the process alive.
+   */
+  private async untilSettled(pending: Promise<void>, signal: AbortSignal, limitMs: number): Promise<boolean> {
+    if (signal.aborted) return true;
     let onAbort: (() => void) | undefined;
+    let timer: NodeJS.Timeout | undefined;
     try {
-      await Promise.race([pending, new Promise<void>((resolve) => {
-        onAbort = resolve;
-        signal.addEventListener("abort", onAbort, { once: true });
-      })]);
+      return await Promise.race([
+        pending.then(() => true),
+        new Promise<boolean>((resolve) => {
+          onAbort = () => resolve(true);
+          signal.addEventListener("abort", onAbort, { once: true });
+          timer = setTimeout(() => resolve(false), limitMs);
+          timer.unref();
+        }),
+      ]);
     } finally {
       if (onAbort) signal.removeEventListener("abort", onAbort);
+      clearTimeout(timer);
     }
   }
 
@@ -1176,6 +1207,8 @@ export class GameMonitor {
       // Not posted, so not remembered: tried again if the voice also fails and the match is retried, or by the next
       // session that sees the match.
       progress.posting = undefined;
+      // A session that gave up waiting may post it after all if it retries; one that already spoke does not.
+      progress.postUnknown = false;
       this.forgetPost(guildId, matchId, progress);
       settle();
       result.errors++;
