@@ -157,8 +157,14 @@ function leaders(data: ReportData, value: (member: MemberReport) => number, mini
   return { members, value: best };
 }
 
+/** How many horses were appraised: one per member per match, so a shared match adds one for each friend. */
+function appraisalCount(data: ReportData): number {
+  return HORSE_TIERS.reduce((sum, tier) => sum + data.tierTotals[tier], 0);
+}
+
 function summaryLines(data: ReportData): string[] {
-  const lines = [`共鉴定 ${data.totalGames} 局：${tierCounts(data.tierTotals)}`];
+  // The tier totals count horses, one per member per match, so this line says 匹 and leaves 局 to the distinct games.
+  const lines = [`共鉴定 ${appraisalCount(data)} 匹马：${tierCounts(data.tierTotals)}`];
   if (data.kind !== "week") return lines;
   const busiest = leaders(data, (member) => member.games, 1, true);
   if (busiest) lines.push(`出勤最多：${mentions(busiest.members)}（${busiest.value} 局）`);
@@ -172,7 +178,9 @@ function summaryLines(data: ReportData): string[] {
 /** The 军师's closing remark on the whole period. */
 function overallRemark(data: ReportData): string {
   const seed = `${data.kind}:${data.range.start}:all`;
-  const rate = (tier: (typeof HORSE_TIERS)[number]) => data.tierTotals[tier] / data.totalGames;
+  // The sample bar counts distinct games, so a match shared by three friends is one game and not three; the tier
+  // rates read the horses themselves, which is what the remarks talk about.
+  const rate = (tier: (typeof HORSE_TIERS)[number]) => data.tierTotals[tier] / appraisalCount(data);
   if (data.totalGames < 3) return pick(["才鉴定了几局，军师还看不出成色。", "样本太少，军师的羽扇还没摇起来。"], seed);
   if (rate("没有马") >= 0.4) return pick(["没有马扎堆出现，军师建议全员回营整训。", "马厩里冷清得很，好马都躲起来了。"], seed);
   if (rate("特等马") >= 0.4) return pick(["好马成群，军师脸上有光。", "马厩里群雄并起，军师甚慰。"], seed);
