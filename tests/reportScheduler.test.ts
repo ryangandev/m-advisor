@@ -838,3 +838,73 @@ test("a server the bot was removed from is skipped with no send, no give-up warn
   await scheduler.runDue();
   assert.deepEqual(titles(state.sent), ["每日马报 · 2026-10-27 周二"]);
 });
+
+test("when the database refuses marks, a catch-up post is not repeated the next day", async () => {
+  seedGames(MONDAY_EVENING, 3);
+  setReportKindEnabled(GUILD, "week", false);
+  markReportHandled(GUILD, false, "day", dayStart("2026-10-25T20:00:00Z"), utc("2026-10-26T07:30:00Z"));
+  getDatabase().exec("CREATE TRIGGER refuse_marks BEFORE INSERT ON report_marks BEGIN SELECT RAISE(ABORT, 'marks are read-only'); END;");
+  const { state, scheduler } = harness({ now: WEDNESDAY_EVENING });
+  await scheduler.runDue();
+  assert.deepEqual(titles(state.sent), ["每日马报 · 2026-10-26 周一"]);
+  // Thursday evening: Wednesday is the latest due day, and the walk back must not reach Monday again.
+  state.now = WEDNESDAY_EVENING + 24 * HOUR;
+  await scheduler.runDue();
+  state.now += 24 * HOUR;
+  await scheduler.runDue();
+  assert.equal(state.sent.length, 1, "Monday is not posted again");
+});
+
+test("an older week posted because the latest week was empty still takes the roles back when the send is given up", async () => {
+  seedGames(utc("2026-10-13T20:00:00Z"), 3);
+  setReportKindEnabled(GUILD, "day", false);
+  markReportHandled(GUILD, false, "week", weekStart("2026-10-06T20:00:00Z"), utc("2026-10-12T07:30:00Z"));
+  const guild = enableRoles();
+  guild.members.get("alice")!.add("role-top");
+  guild.members.get("bob")!.add("role-none");
+  setReportRoleHolders(GUILD, { top: ["alice"], none: ["bob"] });
+  const { state, scheduler } = harness();
+  state.roleGuild = guild;
+  state.failures.push(discordError(50013, "Missing Permissions"));
+  await scheduler.runDue();
+  assert.deepEqual(state.sent, []);
+  assert.equal(getReportMark(GUILD, false, "week"), DUE_WEEK.start, "the period was given up");
+  assert.deepEqual(guild.changes, ["remove:role-top:alice", "remove:role-none:bob"]);
+  assert.deepEqual([getReportSettings(GUILD)!.topHolderIds, getReportSettings(GUILD)!.noneHolderIds], [[], []]);
+});
+
+test("an older week that keeps failing to send has already taken the roles back, once", async () => {
+  seedGames(utc("2026-10-13T20:00:00Z"), 3);
+  setReportKindEnabled(GUILD, "day", false);
+  markReportHandled(GUILD, false, "week", weekStart("2026-10-06T20:00:00Z"), utc("2026-10-12T07:30:00Z"));
+  const guild = enableRoles();
+  guild.members.get("alice")!.add("role-top");
+  setReportRoleHolders(GUILD, { top: ["alice"], none: [] });
+  const { state, scheduler } = harness();
+  state.roleGuild = guild;
+  state.failures.push(new Error("network down"));
+  await scheduler.runDue();
+  assert.equal(getReportMark(GUILD, false, "week"), weekStart("2026-10-06T20:00:00Z"), "still retrying: the mark has not moved");
+  assert.deepEqual(guild.changes, ["remove:role-top:alice"]);
+  state.now += 60_000;
+  await scheduler.runDue();
+  assert.equal(state.sent.length, 1);
+  assert.deepEqual(guild.changes, ["remove:role-top:alice"], "the retry does not touch the roles again");
+});
+
+test("a send that takes minutes before failing does not look like a sleep", async () => {
+  seedGames(DUE_DAY.start + HOUR);
+  setReportKindEnabled(GUILD, "week", false);
+  const { state, deps, scheduler } = harness();
+  // Every attempt hangs for 6 minutes and then fails, and a new check starts a minute later.
+  deps.send = async () => {
+    state.now += 6 * 60_000;
+    throw new Error("The operation was aborted due to timeout");
+  };
+  for (let attempt = 0; attempt < 80 && getReportMark(GUILD, false, "day") === undefined; attempt += 1) {
+    await scheduler.runDue();
+    state.now += REPORT_TICK_MS;
+  }
+  assert.equal(getReportMark(GUILD, false, "day"), DUE_DAY.start, "given up after about six hours of failing");
+  assert.ok(output.some((line) => line.includes("giving up")));
+});
