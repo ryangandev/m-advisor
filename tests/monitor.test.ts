@@ -12,9 +12,10 @@ import type { MatchEvent } from "../src/services/matchEvents";
 import { getAnnouncerState, getLastMatchId } from "../src/store/announcerStore";
 import { removeTrackedMember, setMemberAccounts } from "../src/store/bindingStore";
 import { closeDatabase } from "../src/store/database";
+import { resetEraseCutoffs } from "../src/store/eraseCutoff";
 import { listRankResults, recordRankResults, type RankResult } from "../src/store/rankStore";
 import { recordTrackedRanks } from "./helpers/rankResults";
-import { listMatchHorseRecords, recordHorseRecords, type HorseRecord } from "../src/store/horseRecordStore";
+import { eraseMemberHorseRecords, listMatchHorseRecords, recordHorseRecords, type HorseRecord } from "../src/store/horseRecordStore";
 import { getLatestSRMatchId, getMatchDetail } from "../src/utils/riotMatchApi";
 import { RankTracker, type RankTracking } from "../src/services/rankTracker";
 import { buildRankVoiceLine } from "../src/services/rankText";
@@ -31,6 +32,7 @@ beforeEach(() => {
 afterEach(() => {
   for (const monitor of monitors.splice(0)) monitor.stopAll();
   closeDatabase();
+  resetEraseCutoffs();
   if (originalDatabasePath === undefined) delete process.env.DATABASE_PATH;
   else process.env.DATABASE_PATH = originalDatabasePath;
   for (const [key, value] of Object.entries(savedEnvironment)) {
@@ -1498,6 +1500,35 @@ test("without Send Messages the voice still plays and the 马厩 records are wri
   assert.ok(bot.infos.includes("Saved 1 马厩 record for match silent-text-match."));
 });
 
+test("without Send Messages, a member erased during the voice gets no 马厩 record back, and a later match is recorded", async () => {
+  const bot = harness("no-send-erased-guild");
+  setMemberAccounts(bot.guildId, "member-1", [{ puuid: "tracked", gameName: "tracked", tagLine: "NA1" }]);
+  bot.dependencies.record = recordHorseRecords;
+  bot.channel("first-channel").send = async () => { throw new Error("Missing Permissions"); };
+  const announce = bot.dependencies.announce;
+  let erased = false;
+  // The member is erased while the report is being spoken, then the voice ends and the records are written.
+  bot.dependencies.announce = async (...args) => {
+    const result = await announce(...args);
+    if (!erased) {
+      erased = true;
+      eraseMemberHorseRecords(bot.guildId, "member-1");
+    }
+    return result;
+  };
+  await bot.start();
+  bot.latestIds.set("tracked", "erased-voice-match");
+  assert.deepEqual(await bot.poll(), { announced: 1, errors: 1 });
+  assert.equal(erased, true);
+  assert.deepEqual(bot.played, ["first-channel"], "the voice was heard");
+  assert.deepEqual(listMatchHorseRecords(bot.guildId, "erased-voice-match", true), [], "the erased member's record did not come back");
+
+  await delay(5);
+  bot.latestIds.set("tracked", "after-erase-match");
+  await bot.poll();
+  assert.deepEqual(listMatchHorseRecords(bot.guildId, "after-erase-match", true).map((record) => record.discordUserId), ["member-1"]);
+});
+
 test("stopping the session ends a stuck timeline wait at once without a fallback report", async () => {
   const bot = harness("timeline-stop-guild");
   await bot.start();
@@ -2439,6 +2470,66 @@ test("a member unbound while their LP is pending gets no row from the late write
   await delay(100);
   assert.deepEqual(listRankResults(guildId, { mock: true }).map((result) => result.discordUserId), ["alice-id"], "no row comes back for the unbound member");
   assert.deepEqual([...new Set(calls.flat().map((result) => result.discordUserId))], ["alice-id"], "and the unbound member is not even offered to the store");
+  assert.deepEqual(bot.errors, []);
+});
+
+/** Both members of the team bound in the real store, and the monitor writing LP results and 马厩 records into it. */
+async function erasableTrio(guildId: string) {
+  const trio = await rankedTrio(guildId, { retryFloorMs: 30 });
+  setMemberAccounts(guildId, "alice-id", [{ puuid: "alice", gameName: "alice", tagLine: "NA1" }]);
+  setMemberAccounts(guildId, "bob-id", [{ puuid: "bob", gameName: "bob", tagLine: "NA1" }]);
+  setMemberAccounts(guildId, "zed-id", [{ puuid: "zed", gameName: "zed", tagLine: "NA1" }]);
+  trio.bot.dependencies.recordRank = recordRankResults;
+  trio.bot.dependencies.record = recordHorseRecords;
+  return trio;
+}
+
+const lpOwners = (guildId: string) => listRankResults(guildId, { mock: true }).map((result) => result.discordUserId);
+
+test("a member erased, not unbound, while their LP is pending gets no row from the late write, and the others keep theirs", async () => {
+  const guildId = "rank-store-erased-guild";
+  const { bot, rank } = await erasableTrio(guildId);
+  rank.league.set("alice", [ranked("GOLD", "II", 86, 11, 10)]);
+  assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
+  await delay(10);
+  assert.deepEqual(lpOwners(guildId), ["alice-id"]);
+
+  // Bob still owns his account, so the store's ownership check passes: only the erase cutoff can stop the row.
+  eraseMemberHorseRecords(guildId, "bob-id");
+  rank.league.set("bob", [ranked("SILVER", "I", 12, 10, 11)]);
+  await until(() => bot.edits.length === 1, "the late edit");
+  await delay(100);
+  assert.deepEqual(lpOwners(guildId), ["alice-id"], "no row comes back for the erased member");
+  assert.deepEqual(bot.errors, []);
+});
+
+test("the late write does not bring back the row an erase removed, and the other member's late row is still stored", async () => {
+  const guildId = "rank-store-erased-own-guild";
+  const { bot, rank } = await erasableTrio(guildId);
+  rank.league.set("alice", [ranked("GOLD", "II", 86, 11, 10)]);
+  assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
+  await delay(10);
+  assert.equal(eraseMemberHorseRecords(guildId, "alice-id") >= 0, true);
+  assert.deepEqual(lpOwners(guildId), [], "the erase removed Alice's row");
+  // The late write offers the whole party again, Alice's still-final row included.
+  rank.league.set("bob", [ranked("SILVER", "I", 12, 10, 11)]);
+  await until(() => bot.edits.length === 1, "the late edit");
+  await delay(100);
+  assert.deepEqual(lpOwners(guildId), ["bob-id"], "only Bob's row, never Alice's");
+});
+
+test("a match detected after a member's erase is recorded normally", async () => {
+  const guildId = "rank-store-after-erase-guild";
+  const { bot, rank } = await erasableTrio(guildId);
+  eraseMemberHorseRecords(guildId, "alice-id");
+  // The cutoff is the erase's millisecond, and a match detected in it counts as before.
+  await delay(5);
+  rank.league.set("alice", [ranked("GOLD", "II", 86, 11, 10)]);
+  rank.league.set("bob", [ranked("SILVER", "I", 12, 10, 11)]);
+  assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
+  await delay(10);
+  assert.deepEqual(lpOwners(guildId), ["alice-id", "bob-id"]);
+  assert.deepEqual(listMatchHorseRecords(guildId, "ranked-trio", true).map((record) => record.discordUserId).sort(), ["alice-id", "bob-id", "zed-id"]);
   assert.deepEqual(bot.errors, []);
 });
 

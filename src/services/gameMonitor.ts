@@ -22,6 +22,7 @@ import type { MatchEvent } from "./matchEvents";
 import { buildHorseRecords } from "./horseRecords";
 import { listHorseRecords, recordHorseRecords } from "../store/horseRecordStore";
 import { recordRankResults } from "../store/rankStore";
+import { erasedSince } from "../store/eraseCutoff";
 import type { RankResult } from "../store/rankStore";
 import type { HorseRecord } from "../store/horseRecordStore";
 import { buildHorseReportEmbed, buildPartyEmbed, buildRankAnnouncementEmbed, NO_MENTIONS } from "../utils/embeds";
@@ -1241,17 +1242,17 @@ export class GameMonitor {
     if (cast) void this.castRank(cast);
     if (rows.pending) this.editRankLater(guildId, progress, matchId, party, message, cast);
     this.recordHorses(guildId, progress, announcement, perspectivePuuid);
-    this.recordRanks(guildId, progress.detail, matchId, party);
+    this.recordRanks(guildId, progress, matchId, party);
   }
 
   /**
    * Stores the final rows of the reported team's bound members: a change, promotion, demotion, placement or an
    * unattributable change. Pending, stale and unavailable rows are not stored. Each member is stored once per match, however
    * often the rows are read, because the key ignores a repeat. Only members who still own the account they played on
-   * are stored, read live each time, so /unbind and /stable-erase are never undone by a late write. A failure is logged and
+   * are stored, read live each time, so /unbind is never undone by a late write; a member erased with /stable-erase after the match was detected gets nothing for it, see eraseCutoff. A failure is logged and
    * never affects the report.
    */
-  private recordRanks(guildId: string, detail: MatchDetail, matchId: string, party: readonly RankMember[]): void {
+  private recordRanks(guildId: string, progress: MatchProgress, matchId: string, party: readonly RankMember[]): void {
     const rank = this.dependencies.rank;
     const record = this.dependencies.recordRank;
     // After shutdown the database is closed, and a store call would open it again.
@@ -1263,9 +1264,11 @@ export class GameMonitor {
       for (const { memberId, puuid } of party) {
         // The late write runs minutes after the report: a member unbound or erased meanwhile gets no row back.
         if (this.ownerOf(guildId, puuid) !== memberId) continue;
+        // /stable-erase leaves the member bound, so ownership alone does not stop a match reported before the erase.
+        if (erasedSince(guildId, memberId, progress.detectedAt)) continue;
         const row = rank.row(matchId, puuid);
         const result = row && buildRankResult(row, {
-          guildId, discordUserId: memberId, matchId, mock, puuid, gameEndTimestamp: detail.info.gameEndTimestamp, recordedAt,
+          guildId, discordUserId: memberId, matchId, mock, puuid, gameEndTimestamp: progress.detail.info.gameEndTimestamp, recordedAt,
         });
         if (result) results.push(result);
       }
@@ -1381,7 +1384,7 @@ export class GameMonitor {
         const posted = progress.reportMessage;
         if (this.closed || !posted) return;
         // The rows have settled: the ones that became final since the report went out are stored, whether or not the edit succeeds.
-        this.recordRanks(guildId, progress.detail, matchId, party);
+        this.recordRanks(guildId, progress, matchId, party);
         try {
           const { content, embeds, allowedMentions } = message(this.rankRows(matchId, party).lines);
           await posted.edit({ ...(content === undefined ? {} : { content }), embeds, allowedMentions });
@@ -1548,8 +1551,11 @@ export class GameMonitor {
     const matchId = progress.detail.metadata.matchId;
     try {
       // Read just before the write, so a member unbound during the report is simply absent.
-      const tracked = this.dependencies.members(guildId).flatMap((member) =>
-        member.accounts.map((account) => ({ discordUserId: member.discordUserId, puuid: account.puuid })));
+      // A member erased since this match was detected is left out too: an erase keeps them bound, and this write can
+      // run well after the report (after the voice, when the text post failed).
+      const tracked = this.dependencies.members(guildId)
+        .filter((member) => !erasedSince(guildId, member.discordUserId, progress.detectedAt))
+        .flatMap((member) => member.accounts.map((account) => ({ discordUserId: member.discordUserId, puuid: account.puuid })));
       const saved = this.dependencies.record(buildHorseRecords({
         guildId,
         detail: progress.detail,

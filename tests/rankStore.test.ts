@@ -339,7 +339,7 @@ test("apex tiers store no division, and a missing game end falls back to the rec
   assert.equal(recordTrackedRanks([result!]), 1, "the table accepts it");
 });
 
-test("a result is refused unless its member owns the account when the write runs, so an unbind or erase is never undone", () => {
+test("a result is refused unless its member owns the account when the write runs, so an unbind is never undone", () => {
   assert.equal(recordTrackedRanks([RESULT]), 1);
   assert.equal(eraseMemberRankResults("guild-one", "laowang"), 1);
   // The member unbinds before a late write arrives with the party captured earlier.

@@ -4,6 +4,7 @@ import { POSITIONS } from "../types";
 import type { Position } from "../types";
 import { logWarn } from "../utils/log";
 import { eraseMemberAppeals } from "./appealStore";
+import { markMemberErased } from "./eraseCutoff";
 import { getDatabase, truncateWal } from "./database";
 import { eraseMemberRankResults } from "./rankStore";
 import { UntrackedMemberError } from "./storeErrors";
@@ -324,6 +325,8 @@ export function countMemberHorseRecords(guildId: string, discordUserId: string):
  * This is the only way history is erased: removing a tracked member never touches it.
  * The connection overwrites deleted content (`secure_delete`), and the WAL is checkpointed and truncated afterwards (without waiting for other processes) so the old page images do not linger in it.
  * Backups made before schema upgrades and log files are separate copies that this never touches.
+ * The erase time is also remembered in memory (see eraseCutoff), because the member stays bound and a report that was
+ * already under way would otherwise write its rows back when its late writes arrive.
  */
 export function eraseMemberHorseRecords(guildId: string, discordUserId: string): number {
   requireString(guildId, "Guild ID");
@@ -334,6 +337,7 @@ export function eraseMemberHorseRecords(guildId: string, discordUserId: string):
     eraseMemberRankResults(guildId, discordUserId);
     return database.prepare("DELETE FROM horse_records WHERE guild_id = ? AND discord_user_id = ?").run(guildId, discordUserId).changes;
   })();
+  markMemberErased(guildId, discordUserId);
   // The erase is already committed, so a checkpoint that cannot finish is reported but never fails the command.
   // The checkpoint never waits for another process, so a busy database cannot stall the reply.
   try {
