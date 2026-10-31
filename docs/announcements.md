@@ -34,6 +34,8 @@ Separately from the baselines, the guild remembers every match whose text report
 Any session of the guild, new or continuing, treats a remembered match that was consumed as already announced for every account that reports it.
 That covers a member who returns after a teammate's session announced the match, and a player whose Riot match list shows the game later than a teammate's.
 A remembered match whose text went out but whose voice did not finish is carried on by whichever session sees it next: the text is never posted again, its voice attempts keep counting toward the cap of three, and its 段位播报 voice line follows the new session.
+A text post is remembered as soon as it is sent, before Discord answers, so a session that stops during the send and a quick return never post it twice.
+The session that carries such a match on waits for that send to settle, or for its own stop, before it decides anything: a post that went out is not posted again, and one that failed is forgotten and posted by that session, so the report is never lost and its voice plays once.
 A match is remembered for 12 minutes (`HANDLED_MS`) after it was last handled, or after the session holding it let go of it; that is the longest a kept baseline can be restored after its account's last read.
 At most 50 matches are remembered per guild, the oldest forgotten first, and like the kept baselines they live in memory only.
 
@@ -509,6 +511,7 @@ Before fixing the old monitor, a reproduction through the then-public `startPoll
 
 `tests/monitor.test.ts` exercises complete sessions using the real state store and shared queue with fake external I/O, for one member and for several members across channels.
 It also pins the text-first order, the once-only text and 马厩 write across voice retries, the timeline fallback and its prompt end on a stop, the sticky speaker, records written after the voice when the text fails, the three-attempt cap for voice and report-building failures but not a full queue, and the silent mock baseline after a restart.
+It also pins a leave and quick return while the text is being sent: one post and one voice when the send succeeds, a repost by the new session when it fails, and a stop or shutdown during the wait that ends it at once.
 It also pins the `段位变化` rows of the reported team only, a stuck LP read that still posts within the timeline wait, LP failures that never fail the report, an LP 403 that turns off only LP, and the single late edit with the same mentions.
 It also pins the `段位播报`: the separate mock-labeled message right after the report, the voice line queued only after the report's voice finished, no announcement for a move among the apex tiers, text only when nobody of the team is in voice, a single announcement per member with a follow-up for a late move, lines queued behind the report's voice, a rank failure that never replays the report, and a failed line that is neither retried nor counted against the report.
 `tests/simulateRank.test.ts` runs `/simulate` 晋级 twice and 掉段 through the real command, monitor and tracker.

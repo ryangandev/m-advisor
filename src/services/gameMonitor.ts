@@ -210,13 +210,13 @@ interface KeptBaseline {
 }
 
 /**
- * A match this guild posted the text of or consumed, whichever session did it and whoever has left since.
+ * A match this guild posted the text of, is posting it, or consumed, whichever session did it and whoever has left since.
  * Every session of the guild treats it as announced, or carries its report on, for HANDLED_MS.
  */
 interface HandledMatch {
   /** The match's progress: the same object a session works on, so its voice failures and 段位播报 carry over. */
   progress: MatchProgress;
-  /** Announced, given up or posted as text only: never announced again. Otherwise only its text is out. */
+  /** Announced, given up or posted as text only: never announced again. Otherwise only its text is out, or on its way. */
   consumed: boolean;
   /** When it was last handled, or last held by a session that let go of it. */
   at: number;
@@ -249,6 +249,11 @@ interface MatchProgress {
   speakerPuuid?: string;
   /** The text report was posted, and the 马厩 records were written with it. */
   textPosted: boolean;
+  /**
+   * The text post Discord has not answered yet; it settles, never rejecting, once `textPosted` says how it went.
+   * A session that resumes the report meanwhile waits for it instead of posting again.
+   */
+  posting?: Promise<void>;
   /** The posted report, kept so a late 段位变化 can edit it once. */
   reportMessage?: Message;
   /** The match's 段位播报, kept across voice retries so it is sent once. */
@@ -474,8 +479,9 @@ export class GameMonitor {
   }
 
   /**
-   * Notes a match whose text was posted or that was consumed, or refreshes one a session lets go of, for HANDLED_MS.
-   * It is written whether or not anyone's baseline is kept, so no session of the guild posts or announces it again.
+   * Notes a match whose text is being posted, was posted or that was consumed, or refreshes one a session lets go of,
+   * for HANDLED_MS. It is written whether or not anyone's baseline is kept, so no session of the guild posts or announces
+   * it again.
    */
   private remember(guildId: string, matchId: string, progress: MatchProgress, consumed = false): void {
     const handled = this.handled.get(guildId) ?? new Map<string, HandledMatch>();
@@ -484,6 +490,15 @@ export class GameMonitor {
     handled.set(matchId, { progress, consumed: consumed || Boolean(previous?.consumed), at: Date.now() });
     if (handled.size > HANDLED_LIMIT) handled.delete(handled.keys().next().value!);
     this.handled.set(guildId, handled);
+  }
+
+  /** A post of this progress failed: the guild no longer remembers it, so whichever session sees the match next posts it. */
+  private forgetPost(guildId: string, matchId: string, progress: MatchProgress): void {
+    const handled = this.handled.get(guildId);
+    const entry = handled?.get(matchId);
+    if (!handled || entry?.progress !== progress || entry.consumed) return;
+    handled.delete(matchId);
+    if (handled.size === 0) this.handled.delete(guildId);
   }
 
   /** The guild's record of a recently handled match, if any. */
@@ -498,8 +513,8 @@ export class GameMonitor {
   }
 
   /**
-   * A report this guild posted but has not finished, from an earlier session or from before every account reporting it
-   * left: this session carries it on, so its text is never posted again and its voice attempts keep counting.
+   * A report this guild posted, or is posting, but has not finished, from an earlier session or from before every account
+   * reporting it left: this session carries it on, so its text is never posted again and its voice attempts keep counting.
    * Its 段位播报 follows this session, so the voice line is not dropped with the old one.
    */
   private resume(client: Client, guildId: string, session: MonitorSession, matchId: string): MatchProgress | undefined {
@@ -524,8 +539,11 @@ export class GameMonitor {
     session?.watcher?.stop();
     if (session) {
       this.keepBaselines(guildId, session, session.accounts);
-      // A posted report outlives the session for HANDLED_MS from now, so a return carries it on.
-      for (const [matchId, progress] of session.progress) if (progress.textPosted) this.remember(guildId, matchId, progress);
+      // A posted report, or one whose post is in flight, outlives the session for HANDLED_MS from now, so a return carries
+      // it on.
+      for (const [matchId, progress] of session.progress) {
+        if (progress.textPosted || progress.posting) this.remember(guildId, matchId, progress);
+      }
     }
     this.sessions.delete(guildId);
     resetAnnouncerRuntime(guildId);
@@ -647,8 +665,8 @@ export class GameMonitor {
       for (const puuid of dropped) entry.reporters.delete(puuid);
       if (entry.reporters.size > 0) continue;
       session.progress.delete(matchId);
-      // A posted report is not forgotten with its last reporter: whoever returns in time carries it on.
-      if (entry.textPosted) this.remember(guildId, matchId, entry);
+      // A posted report, or one being posted, is not forgotten with its last reporter: whoever returns in time carries it on.
+      if (entry.textPosted || entry.posting) this.remember(guildId, matchId, entry);
     }
   }
 
@@ -925,6 +943,11 @@ export class GameMonitor {
   ): Promise<boolean> {
     const detail = match.detail!;
     const participantIds = () => this.liveParticipantIds(guildId, boundParticipants);
+    if (progress.posting) {
+      // An earlier session stopped while its text post was in flight: whether to post again depends on how that went.
+      await this.untilSettled(progress.posting, session.controller.signal);
+      if (!this.current(guildId, session)) throw new AnnouncementCancelledError();
+    }
     if (progress.events === undefined) {
       // The first LP reads wait inside the timeline's wait, never longer, so they add nothing to the worst case.
       const [events] = await Promise.all([
@@ -1060,6 +1083,20 @@ export class GameMonitor {
     return progress;
   }
 
+  /** Waits for a promise that never rejects; stopping the session ends the wait at once, so a stuck send never holds a poll. */
+  private async untilSettled(pending: Promise<void>, signal: AbortSignal): Promise<void> {
+    if (signal.aborted) return;
+    let onAbort: (() => void) | undefined;
+    try {
+      await Promise.race([pending, new Promise<void>((resolve) => {
+        onAbort = resolve;
+        signal.addEventListener("abort", onAbort, { once: true });
+      })]);
+    } finally {
+      if (onAbort) signal.removeEventListener("abort", onAbort);
+    }
+  }
+
   /**
    * Timeline moments, or null when they fail or take too long; the report then uses statistics only.
    * Stopping the session ends the wait at once with a cancellation, leaving the timeline unfetched.
@@ -1118,19 +1155,30 @@ export class GameMonitor {
       allowedMentions: { parse: [], roles: [], users: mentions, repliedUser: false },
     });
     const rows = this.rankRows(matchId, party);
+    // Remembered before Discord answers: a session that starts while the post is in flight waits for it instead of
+    // posting again, and settle tells it how the post went.
+    let settle!: () => void;
+    progress.posting = new Promise<void>((resolve) => { settle = resolve; });
+    this.remember(guildId, matchId, progress);
     let posted: Message;
     try {
       posted = await channel.send(message(rows.lines));
     } catch (error) {
-      // Tried again only if the voice also fails and the match is retried.
+      // Not posted, so not remembered: tried again if the voice also fails and the match is retried, or by the next
+      // session that sees the match.
+      progress.posting = undefined;
+      this.forgetPost(guildId, matchId, progress);
+      settle();
       result.errors++;
       this.report(guildId, error);
       return;
     }
     progress.textPosted = true;
     progress.reportMessage = posted;
+    progress.posting = undefined;
     // Posted, so no session of this guild posts it again, whoever leaves and returns.
     this.remember(guildId, matchId, progress);
+    settle();
     // A retry may post in another channel, or for another team: the 段位播报 follows the report that was actually posted.
     if (cast) {
       cast.channel = channel;
