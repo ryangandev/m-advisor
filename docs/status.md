@@ -112,14 +112,14 @@ Each PR had an independent review before merge, and the final `npm run check` on
 - A Chinese user site at madvisor.rystudio.app ([#25](https://github.com/ryangandev/m-advisor/pull/25), [#32](https://github.com/ryangandev/m-advisor/pull/32)); see [Site](site.md).
 
 The schema is now at v7.
-Ryan's local database is still at v5 and upgrades on the next start, after writing a `.v5.bak` backup; a dry run on a copy of it kept every existing table unchanged.
+Ryan's local database is at v7: a test run on 2026-10-31 upgraded it before the tests were isolated from `.data` (see [Audit round 2](#audit-round-2)).
 The 13 slash commands were registered again in Ry的四合院 after #30.
 
 This round's evidence is compilation and mock tests only.
 Live Discord posting and playback of the new cards, human listening of the 锦囊 and 段位播报 lines, and real Riot acceptance of these features are pending.
 A demotion row shows the new LP without a change until real games confirm the LP Riot reports after a demotion.
 The bot logs how long league-v4 takes to catch up after each game, and about 10 real ranked games are needed to tune the report's later edit.
-[#24](https://github.com/ryangandev/m-advisor/issues/24) waits for a spectator-v5 capture during a real game, and [#20](https://github.com/ryangandev/m-advisor/issues/20) waits for the undici release window after 2026-10-29.
+[#24](https://github.com/ryangandev/m-advisor/issues/24) waits for a spectator-v5 capture during a real game.
 
 ## Audit round
 
@@ -137,6 +137,28 @@ All 32 are fixed; each fix PR had an independent review before merge, and the fi
 The schema stays at v7.
 This round's evidence is compilation, mock tests and CI only; it adds no live Discord or real Riot acceptance, so B5 to B7 still cover it.
 [#73](https://github.com/ryangandev/m-advisor/issues/73) tracks a lifecycle test that failed once under parallel load.
+
+## Audit round 2
+
+From 2026-10-31 an autonomous round audited the areas the first round covered least, then reviewed how its own fixes combine.
+It closed 25 issues ([#73](https://github.com/ryangandev/m-advisor/issues/73), [#77](https://github.com/ryangandev/m-advisor/issues/77) to [#83](https://github.com/ryangandev/m-advisor/issues/83), [#87](https://github.com/ryangandev/m-advisor/issues/87), [#89](https://github.com/ryangandev/m-advisor/issues/89) to [#95](https://github.com/ryangandev/m-advisor/issues/95), [#100](https://github.com/ryangandev/m-advisor/issues/100), [#103](https://github.com/ryangandev/m-advisor/issues/103) to [#106](https://github.com/ryangandev/m-advisor/issues/106), [#109](https://github.com/ryangandev/m-advisor/issues/109) to [#112](https://github.com/ryangandev/m-advisor/issues/112)) and [#20](https://github.com/ryangandev/m-advisor/issues/20).
+Each logic fix had an independent review before merge, and `npm run check` on main passes 954 tests.
+
+- Dependencies and tests: undici is bumped past the audit advisory ([#75](https://github.com/ryangandev/m-advisor/pull/75)), and the lifecycle and timeline 429 tests are stable under parallel load ([#76](https://github.com/ryangandev/m-advisor/pull/76), [#107](https://github.com/ryangandev/m-advisor/pull/107)).
+- 马报: after a day or more off the newest missed period that has games is posted, Mac sleep no longer counts toward the 6-hour give-up, and a server the bot was removed from, even mid-send, is skipped without losing its period ([#84](https://github.com/ryangandev/m-advisor/pull/84), [#113](https://github.com/ryangandev/m-advisor/pull/113)).
+- Shutdown: closing the launcher's Terminal window (SIGHUP) runs the normal shutdown, and stale speech temp folders are swept at start ([#85](https://github.com/ryangandev/m-advisor/pull/85)).
+- Monitoring: a session that stops while its report send is in flight never posts it twice, a brief leave right after a long report keeps the baseline, the wait on another session's send is bounded, and a report whose earlier send hung and then failed is still posted ([#86](https://github.com/ryangandev/m-advisor/pull/86), [#88](https://github.com/ryangandev/m-advisor/pull/88), [#115](https://github.com/ryangandev/m-advisor/pull/115)).
+- Server removal: removing the bot stops that server's monitoring through the per-server chain, and inviting it back resumes monitoring for members already in voice ([#114](https://github.com/ryangandev/m-advisor/pull/114)).
+- 军师赛前锦囊: the 打野 label needs Smite, the trend labels its earlier window by the real game count, and a new game ID at the in-game recheck counts as a fresh start that is rechecked every tick once the old match is finished ([#97](https://github.com/ryangandev/m-advisor/pull/97), [#98](https://github.com/ryangandev/m-advisor/pull/98), [#101](https://github.com/ryangandev/m-advisor/pull/101)).
+- Diagnostics: `npm run doctor` exits non-zero when the configuration cannot start the bot, and `npm run probe:spectator` prints raw spectator-v5 fields and exits non-zero on a Riot error ([#99](https://github.com/ryangandev/m-advisor/pull/99)).
+- Docs: drift between the docs, the site and the code is corrected ([#96](https://github.com/ryangandev/m-advisor/pull/96)).
+- Test isolation: every test process gets its own temporary data directory and `TMPDIR`, never inherits Discord or Riot credentials, and the next run removes folders an interrupted run left behind ([#102](https://github.com/ryangandev/m-advisor/pull/102), [#108](https://github.com/ryangandev/m-advisor/pull/108)).
+
+Before #102, running `npm run check` in the main checkout opened Ryan's real `.data/bot.sqlite3` through the GuildDelete test and upgraded it from v5 to v7, writing `.data/bot.sqlite3.v5.bak`.
+A read-only comparison of copies found every row unchanged: the tracked member, the `not ry#tan90` binding and the Old Man voice preference; `.data/logs` was not touched.
+
+The schema stays at v7.
+This round's evidence is compilation, mock tests and CI only; it adds no live Discord or real Riot acceptance, so B5 to B7 still cover it.
 
 ## User-only blockers
 
@@ -156,7 +178,7 @@ Discord Portal or server-permission changes become a blocker only if the actual 
 ## Next
 
 The approved engineering delivery, mock-to-real-Discord workflow and real Riot acceptance are complete.
-The feature round and its audit fixes are merged and wait on B5 to B7.
+The feature round and both audit rounds are merged and wait on B5 to B7.
 The local bot is configured with `RIOT_MODE=real`, the 13 registered commands, Ryan's real `not ry#tan90` binding and the Old Man voice preference; it is started on demand.
 For later on-demand use, run `npm start` or double-click `scripts/launch.command`; see [Runtime](runtime.md).
 Run `/recent` once in the live channel to close the remaining diagnostics check.
