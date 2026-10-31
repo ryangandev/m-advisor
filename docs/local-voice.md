@@ -63,6 +63,11 @@ See [Announcements](announcements.md#shared-voice-queue) for how chunks are play
 The playback caller removes that file after playback, including when playback fails.
 `shutdownTTS()` stops the Python worker, rejects pending requests and removes remaining temporary files.
 Shutdown is idempotent.
+Closing the launcher window sends SIGHUP, which runs the same shutdown (see [runtime](runtime.md#configuration-and-launch)).
+The temporary directory is named `m-advisor-tts-<pid>-<random>`.
+When the worker first starts, the service also removes stale `m-advisor-tts-*` directories in the system temp directory left by a bot that was killed without cleanup.
+It touches only real directories (never symlinks) owned by the current user whose names match that exact pattern, and skips its own directory and any whose recorded process is still running.
+An older directory without a recorded process is removed only after 24 hours.
 The bot must call it when stopping so model memory is released.
 Once application shutdown begins, the public speech boundary rejects new requests and deletes late completions.
 
