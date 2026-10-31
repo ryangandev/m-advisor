@@ -83,7 +83,8 @@ Without `confirm:true` the command only counts the records and erases nothing.
 The member's closed `/why` appeal cases and stored [LP results](storage.md#lp-results) are deleted in the same transaction as the records.
 The count and the confirmation include all three: a member who has only appeal cases or LP results is told what will go, and the command never says there is nothing to erase while any of them remains.
 The reply is private and the erase is not reversible, so restore the migration backup if one is needed.
-An erase does not unbind the member, so a bound member is recorded again from the next report on, including a match that ended before the erase but was first reported after it.
+An erase does not unbind the member, so a bound member is recorded again for every match the monitor detects after the erase, including one that ended before it; a match detected before the erase and reported later is not recorded (see [storage](storage.md#马厩-horse-records)).
+A confirmed erase of a member with nothing stored yet sets the same cutoff.
 Nothing erases history automatically.
 
 ## The profile
