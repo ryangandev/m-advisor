@@ -517,3 +517,20 @@ test("without Smite the position is never jungle, only the most common other pos
   assert.equal(fallback.lines[0].position, "TOP", "the most common non-jungle position wins over a more common jungle one");
   assert.equal(brief([mate(ID.b, "Bravo", AHRI, mixed, true)]).lines[0].position, "JUNGLE");
 });
+
+test("the trend label names the real size of the earlier window", () => {
+  const trendLine = (games: number) => {
+    const tiers: HorseTier[] = [...Array(games - 5).fill("下等马"), ...Array(5).fill("特等马")];
+    const result = brief([mate(ID.a, "Alpha", AHRI, history(ID.a, tiers))]);
+    return { line: result.lines[0], text: buildPregameEmbed(result).toJSON().description! };
+  };
+  const eight = trendLine(8);
+  assert.equal(eight.line.previousGames, 3);
+  assert.ok(eight.text.includes("（前3局 3.0）"), eight.text);
+  assert.ok(!eight.text.includes("前5局"), eight.text);
+  assert.ok(trendLine(9).text.includes("（前4局 3.0）"));
+  assert.ok(trendLine(10).text.includes("（前5局 3.0）"));
+  const seven = trendLine(7);
+  assert.equal(seven.line.previousGames, 0, "two earlier games are not enough to compare");
+  assert.ok(!seven.text.includes("（前"), seven.text);
+});

@@ -85,6 +85,8 @@ export interface PregameLine {
   recentAverage: number | null;
   /** Average of the five before those, or null without enough games to compare. */
   previousAverage: number | null;
+  /** How many games that earlier average covers (3 to 5), or 0 when there is no comparison. */
+  previousGames: number;
   trend: PregameTrend | null;
   /** Games on the champion in the game, and how many of them were 特等马 and 没有马. Null below two games. */
   championRecord: { games: number; top: number; none: number } | null;
@@ -166,7 +168,8 @@ function analyze(teammate: PregameTeammate, mock: boolean): Analysis {
   const last = form.slice(0, FORM_WINDOW);
   const before = form.slice(FORM_WINDOW, FORM_WINDOW * 2);
   const recentAverage = average(last);
-  const previousAverage = last.length >= MIN_TREND_GAMES && before.length >= MIN_TREND_GAMES ? average(before) : null;
+  const comparable = last.length >= MIN_TREND_GAMES && before.length >= MIN_TREND_GAMES;
+  const previousAverage = comparable ? average(before) : null;
   let trend: PregameTrend | null = null;
   if (recentAverage !== null && previousAverage !== null) {
     const change = recentAverage - previousAverage;
@@ -196,6 +199,7 @@ function analyze(teammate: PregameTeammate, mock: boolean): Analysis {
       recentTiers: last.map((record) => record.tier),
       recentAverage,
       previousAverage,
+      previousGames: comparable ? before.length : 0,
       trend,
       championRecord: onChampion.length >= MIN_CHAMPION_LINE_GAMES ? { games: onChampion.length, top, none } : null,
       position,
