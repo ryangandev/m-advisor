@@ -9,6 +9,7 @@ Install the locked dependency graph with `npm ci`.
 `npm start` runs that compiled entry point.
 `npm run dev` runs TypeScript through tsx.
 `npm test` runs deterministic node:test suites through tsx.
+It preloads `tests/setup/isolateData.ts`, which points each test process's default data directory at a temporary directory, so no test can open the real `.data/bot.sqlite3` or write to `.data/logs`; `tests/isolateData.test.ts` fails if that preload is missing.
 `npm run typecheck` also type-checks the scripts and tests, which the build does not compile.
 `.github/workflows/check.yml` runs `npm ci` and `npm run check` on every pull request and push to `main` on Node 24.
 `npm run check` builds the bot, runs that type check and runs those suites.

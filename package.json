@@ -7,7 +7,7 @@
     "node": ">=24"
   },
   "scripts": {
-    "test": "node --import tsx --test tests/*.test.ts",
+    "test": "node --import tsx --import ./tests/setup/isolateData.ts --test tests/*.test.ts",
     "dev": "node --import tsx src/index.ts",
     "build": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && tsc",
     "probe:spectator": "node --import tsx scripts/probe-spectator.ts",
