@@ -141,8 +141,8 @@ This round's evidence is compilation, mock tests and CI only; it adds no live Di
 ## Audit round 2
 
 From 2026-10-31 an autonomous round audited the areas the first round covered least, then reviewed how its own fixes combine.
-It closed 25 issues ([#73](https://github.com/ryangandev/m-advisor/issues/73), [#77](https://github.com/ryangandev/m-advisor/issues/77) to [#83](https://github.com/ryangandev/m-advisor/issues/83), [#87](https://github.com/ryangandev/m-advisor/issues/87), [#89](https://github.com/ryangandev/m-advisor/issues/89) to [#95](https://github.com/ryangandev/m-advisor/issues/95), [#100](https://github.com/ryangandev/m-advisor/issues/100), [#103](https://github.com/ryangandev/m-advisor/issues/103) to [#106](https://github.com/ryangandev/m-advisor/issues/106), [#109](https://github.com/ryangandev/m-advisor/issues/109) to [#112](https://github.com/ryangandev/m-advisor/issues/112)) and [#20](https://github.com/ryangandev/m-advisor/issues/20).
-Each logic fix had an independent review before merge, and `npm run check` on main passes 954 tests.
+It closed 40 issues ([#73](https://github.com/ryangandev/m-advisor/issues/73), [#77](https://github.com/ryangandev/m-advisor/issues/77) to [#83](https://github.com/ryangandev/m-advisor/issues/83), [#87](https://github.com/ryangandev/m-advisor/issues/87), [#89](https://github.com/ryangandev/m-advisor/issues/89) to [#95](https://github.com/ryangandev/m-advisor/issues/95), [#100](https://github.com/ryangandev/m-advisor/issues/100), [#103](https://github.com/ryangandev/m-advisor/issues/103) to [#106](https://github.com/ryangandev/m-advisor/issues/106), [#109](https://github.com/ryangandev/m-advisor/issues/109) to [#112](https://github.com/ryangandev/m-advisor/issues/112), [#117](https://github.com/ryangandev/m-advisor/issues/117) to [#124](https://github.com/ryangandev/m-advisor/issues/124), [#131](https://github.com/ryangandev/m-advisor/issues/131) to [#133](https://github.com/ryangandev/m-advisor/issues/133), [#135](https://github.com/ryangandev/m-advisor/issues/135), [#137](https://github.com/ryangandev/m-advisor/issues/137), [#139](https://github.com/ryangandev/m-advisor/issues/139) and [#140](https://github.com/ryangandev/m-advisor/issues/140)) and [#20](https://github.com/ryangandev/m-advisor/issues/20).
+Each logic fix had an independent review or a mutation-checked self-review before merge, and `npm run check` on main passes 981 tests.
 
 - Dependencies and tests: undici is bumped past the audit advisory ([#75](https://github.com/ryangandev/m-advisor/pull/75)), and the lifecycle and timeline 429 tests are stable under parallel load ([#76](https://github.com/ryangandev/m-advisor/pull/76), [#107](https://github.com/ryangandev/m-advisor/pull/107)).
 - 马报: after a day or more off the newest missed period that has games is posted, Mac sleep no longer counts toward the 6-hour give-up, and a server the bot was removed from, even mid-send, is skipped without losing its period ([#84](https://github.com/ryangandev/m-advisor/pull/84), [#113](https://github.com/ryangandev/m-advisor/pull/113)).
@@ -153,12 +153,22 @@ Each logic fix had an independent review before merge, and `npm run check` on ma
 - Diagnostics: `npm run doctor` exits non-zero when the configuration cannot start the bot, and `npm run probe:spectator` prints raw spectator-v5 fields and exits non-zero on a Riot error ([#99](https://github.com/ryangandev/m-advisor/pull/99)).
 - Docs: drift between the docs, the site and the code is corrected ([#96](https://github.com/ryangandev/m-advisor/pull/96)).
 - Test isolation: every test process gets its own temporary data directory and `TMPDIR`, never inherits Discord or Riot credentials, and the next run removes folders an interrupted run left behind ([#102](https://github.com/ryangandev/m-advisor/pull/102), [#108](https://github.com/ryangandev/m-advisor/pull/108)).
+- Commands: changes to the 马报 roles and channel run in the per-server queue, so two admins cannot interleave them, and their replies match what was saved ([#127](https://github.com/ryangandev/m-advisor/pull/127)).
+- 马厩 and privacy: a confirmed `/stable-erase` also stops a game already in progress from writing rows afterwards, even when it erased nothing, and the privacy page states which games are still recorded after an erase, the retention of closed appeals and what logs contain ([#128](https://github.com/ryangandev/m-advisor/pull/128), [#134](https://github.com/ryangandev/m-advisor/pull/134)).
+- 马报 counts: a match shared by several members counts once in the 总评 line ([#129](https://github.com/ryangandev/m-advisor/pull/129)).
+- Rank text: `/profile` prints no division for 大师, 宗师 and 王者, and the 段位播报 voice keeps two members with the same game name distinct ([#126](https://github.com/ryangandev/m-advisor/pull/126), [#130](https://github.com/ryangandev/m-advisor/pull/130)).
+- Voice playback: a brief voice reconnect pauses the announcement and resumes it within 5 seconds instead of aborting and replaying it, and audio never continues in a channel the bot was moved to ([#141](https://github.com/ryangandev/m-advisor/pull/141)).
+- Shutdown: one Ctrl+C under `npm start` no longer kills the bot before cleanup (npm delivers the signal twice), `scripts/launch.command` runs Node directly, closing the window during a stop joins the running shutdown, and SQLite is never reopened after shutdown closed it ([#142](https://github.com/ryangandev/m-advisor/pull/142)).
+- User site: the 段位播报 page says the voice speaks one sentence each for at most two members ([#136](https://github.com/ryangandev/m-advisor/pull/136)).
+- A sweep of the repo rules (mock labels, `allowedMentions`, enemies never named, deterministic phrases, no secrets in logs, live-script guards) found no violations.
 
 Before #102, running `npm run check` in the main checkout opened Ryan's real `.data/bot.sqlite3` through the GuildDelete test and upgraded it from v5 to v7, writing `.data/bot.sqlite3.v5.bak`.
 A read-only comparison of copies found every row unchanged: the tracked member, the `not ry#tan90` binding and the Old Man voice preference; `.data/logs` was not touched.
 
 The schema stays at v7.
 This round's evidence is compilation, mock tests and CI only; it adds no live Discord or real Riot acceptance, so B5 to B7 still cover it.
+The shutdown and voice reconnect fixes are proven by tests only; a real Ctrl+C of the bot and a real voice reconnect have not been observed.
+Two questions wait for Ryan: the wording of the 推塔拿龙全程缺席 roast ([#125](https://github.com/ryangandev/m-advisor/issues/125)), and whether a member disconnecting the bot mid-report should stop the replay ([#138](https://github.com/ryangandev/m-advisor/issues/138)).
 
 ## User-only blockers
 
