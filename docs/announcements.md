@@ -12,6 +12,7 @@ Those reconciliations run one after another per guild, so a slow lookup cannot a
 Voice updates that do not change the channel, such as mute or deafen, and updates from untracked members are ignored.
 After a gateway re-identify, for example after the Mac slept, discord.js reloads a guild's voice states without any voice event, so `src/events/guildAvailable.ts` reconciles the guild again when it becomes available.
 It does nothing before the client is ready, because at startup every guild becomes available first and `restoreMonitoring` on ClientReady is the startup path.
+When the bot is invited back to a server it was removed from, discord.js emits GuildCreate with the members' voice states and no voice event, so `src/events/guildCreate.ts` reconciles the guild the same way and monitoring resumes for members already in voice, again only once the client is ready.
 
 The first tracked member in voice starts the session, which immediately reads each of their accounts' latest match as its baseline.
 The baseline is recorded without speaking, including a valid empty history.

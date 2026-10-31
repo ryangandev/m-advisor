@@ -5,6 +5,7 @@ import type { TrackedMember } from "../src/types";
 import { GameMonitor } from "../src/services/gameMonitor";
 import { MonitorLifecycle } from "../src/services/monitorLifecycle";
 import { handleGuildRemoved } from "../src/events/guildDelete";
+import { handleGuildCreated } from "../src/events/guildCreate";
 import { closeDatabase } from "../src/store/database";
 import { testMatch } from "./helpers/matches";
 
@@ -98,7 +99,12 @@ function presence(guildId: string) {
     cache.delete(guildId);
     return handleGuildRemoved({ id: guildId, name: "Test Server", client: client as Client<true> }, (reconcileClient, id) => lifecycle.reconcile(reconcileClient, id));
   };
-  return { monitor, lifecycle, client, available, removeGuild, actions, location, syncs, lookups, slowFetch, state, voice, status: () => monitor.status(guildId) };
+  const addGuild = () => {
+    const created = { ...guild };
+    cache.set(guildId, created);
+    return handleGuildCreated({ id: guildId, client } as unknown as Guild, (added) => lifecycle.guildAvailable(added));
+  };
+  return { monitor, lifecycle, client, available, removeGuild, addGuild, actions, location, syncs, lookups, slowFetch, state, voice, status: () => monitor.status(guildId) };
 }
 
 test("an untracked member and a mute toggle do nothing", async () => {
@@ -194,6 +200,31 @@ test("the guild available event reconciles through the lifecycle", async () => {
   const { default: event } = await import("../src/events/guildAvailable");
   assert.equal(event.name, "guildAvailable");
   assert.equal(typeof event.execute, "function");
+});
+
+test("a server the bot is added back to resumes monitoring for members already in voice, without any voice event", async () => {
+  const bot = presence("readd-guild");
+  await bot.voice("alice-id", "x");
+  assert.equal(bot.status().active, true);
+  await bot.removeGuild();
+  assert.equal(bot.status().active, false, "the removal stops the session");
+  // The friends keep playing while an admin re-invites the bot; discord.js emits GuildCreate and no VoiceStateUpdate.
+  await bot.addGuild();
+  assert.equal(bot.actions.at(-1), "sync readd-guild alice-id");
+  assert.equal(bot.status().active, true);
+  assert.deepEqual(bot.status().presentMemberIds, ["alice-id"]);
+});
+
+test("the guild create event does nothing before the client is ready, so startup still goes through restoreMonitoring", async () => {
+  const { default: event } = await import("../src/events/guildCreate");
+  assert.equal(event.name, "guildCreate");
+  let touched = false;
+  const guild = {
+    client: { isReady: () => false },
+    get id() { touched = true; return "starting-guild"; },
+  } as unknown as Guild;
+  await event.execute(guild);
+  assert.equal(touched, false, "the guild was not even read");
 });
 
 test("a reconcile still reading voice states when the bot is removed cannot restart the session", async () => {
