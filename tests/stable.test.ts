@@ -10,6 +10,7 @@ import { closeAppeal, isAppealClosed } from "../src/store/appealStore";
 import { removeTrackedMember, setMemberAccounts } from "../src/store/bindingStore";
 import { closeDatabase } from "../src/store/database";
 import { countMemberHorseRecords } from "../src/store/horseRecordStore";
+import { erasedSince, nextStamp, resetEraseCutoffs } from "../src/store/eraseCutoff";
 import type { HorseRecord } from "../src/store/horseRecordStore";
 import { listRankResults } from "../src/store/rankStore";
 import { recordTrackedRanks } from "./helpers/rankResults";
@@ -260,6 +261,23 @@ test("/stable-erase counts first and erases only on confirmation", async () => {
   const profile = interaction({ target: "friend" });
   await stableCommand.execute(profile.stub);
   assert.match(embedOf(profile.replies[0]).description!, /还是空的/);
+});
+
+test("a confirmed /stable-erase with nothing stored still stops a match already in flight from writing rows", async () => {
+  resetEraseCutoffs();
+  const inFlight = nextStamp();
+  const dry = interaction({ target: "friend" });
+  await stableEraseCommand.execute(dry.stub);
+  assert.match(dry.replies[0].content!, /没有马厩档案/);
+  assert.equal(erasedSince(GUILD, "friend", inFlight), false, "a count without confirm must not set the cutoff");
+
+  const real = interaction({ target: "friend", confirm: true });
+  await stableEraseCommand.execute(real.stub);
+  assert.match(real.replies[0].content!, /没有马厩档案/);
+  assert.equal(erasedSince(GUILD, "friend", inFlight), true);
+  assert.equal(erasedSince(GUILD, "friend", nextStamp()), false, "a match detected afterwards still records");
+  assert.equal(erasedSince(GUILD, "someone-else", inFlight), false);
+  resetEraseCutoffs();
 });
 
 test("a profile prints scores with the announcement's rounding", async () => {
