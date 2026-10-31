@@ -667,3 +667,110 @@ test("halting stops everything at once, and stopping gives up waiting on a send 
   assert.ok(Date.now() - started < 1_000, "a hung send cannot hold shutdown for long");
   assert.equal(getReportMark(GUILD, false, "day"), undefined, "the unfinished post was not marked");
 });
+
+// Monday 2026-10-26 20:00 Pacific. The bot is started on demand, so it is often off the next day.
+const MONDAY_EVENING = utc("2026-10-27T03:00:00Z");
+const WEDNESDAY_EVENING = utc("2026-10-29T02:00:00Z");
+const dayStart = (iso: string) => pacificDay(utc(iso)).start;
+const weekStart = (iso: string) => pacificWeek(utc(iso)).start;
+
+test("a day off: Monday's games are still posted on Wednesday, once, and the day is marked up to Tuesday", async () => {
+  seedGames(MONDAY_EVENING, 3);
+  setReportKindEnabled(GUILD, "week", false);
+  markReportHandled(GUILD, false, "day", dayStart("2026-10-25T20:00:00Z"), utc("2026-10-26T07:30:00Z"));
+  const { state, scheduler } = harness({ now: WEDNESDAY_EVENING });
+  await scheduler.runDue();
+  assert.deepEqual(titles(state.sent), ["每日马报 · 2026-10-26 周一"]);
+  assert.equal(getReportMark(GUILD, false, "day"), DUE_DAY.start, "the latest due day, Tuesday, is marked");
+  await scheduler.runDue();
+  assert.equal(state.sent.length, 1, "never posted twice");
+});
+
+test("a catch-up posts only the newest missed day that has games, one post per check", async () => {
+  seedGames(utc("2026-10-25T20:00:00Z"), 3);
+  seedGames(MONDAY_EVENING, 3);
+  setReportKindEnabled(GUILD, "week", false);
+  markReportHandled(GUILD, false, "day", dayStart("2026-10-24T20:00:00Z"), utc("2026-10-25T07:30:00Z"));
+  const { state, scheduler } = harness({ now: WEDNESDAY_EVENING });
+  await scheduler.runDue();
+  assert.deepEqual(titles(state.sent), ["每日马报 · 2026-10-26 周一"], "Sunday is older than Monday and is dropped, as before");
+  assert.equal(getReportMark(GUILD, false, "day"), DUE_DAY.start);
+});
+
+test("a day catch-up reaches back 7 days: the oldest day in reach posts", async () => {
+  setReportKindEnabled(GUILD, "week", false);
+  markReportHandled(GUILD, false, "day", dayStart("2026-10-05T20:00:00Z"), utc("2026-10-06T07:30:00Z"));
+  // The latest due day is Tuesday 10-27, so the 7 days in reach run back to Wednesday 10-21.
+  seedGames(utc("2026-10-21T20:00:00Z"), 3);
+  const { state, scheduler } = harness();
+  await scheduler.runDue();
+  assert.deepEqual(titles(state.sent), ["每日马报 · 2026-10-21 周三"]);
+  assert.equal(getReportMark(GUILD, false, "day"), DUE_DAY.start);
+});
+
+test("a day catch-up does not reach past 7 days: older games are dropped and the day is marked", async () => {
+  setReportKindEnabled(GUILD, "week", false);
+  markReportHandled(GUILD, false, "day", dayStart("2026-10-05T20:00:00Z"), utc("2026-10-06T07:30:00Z"));
+  seedGames(utc("2026-10-20T20:00:00Z"), 3);
+  const { state, scheduler } = harness();
+  await scheduler.runDue();
+  assert.deepEqual(state.sent, []);
+  assert.equal(getReportMark(GUILD, false, "day"), DUE_DAY.start);
+});
+
+test("a week off: last week's games are posted as that week, and the roles still rotate to nobody", async () => {
+  // The week of 10-12 had games; the week of 10-19, the latest due week, had none.
+  seedGames(utc("2026-10-13T20:00:00Z"), 3);
+  setReportKindEnabled(GUILD, "day", false);
+  markReportHandled(GUILD, false, "week", weekStart("2026-10-06T20:00:00Z"), utc("2026-10-12T07:30:00Z"));
+  const guild = enableRoles();
+  guild.members.get("alice")!.add("role-top");
+  guild.members.get("bob")!.add("role-none");
+  setReportRoleHolders(GUILD, { top: ["alice"], none: ["bob"] });
+  const { state, scheduler } = harness();
+  state.roleGuild = guild;
+  await scheduler.runDue();
+  assert.deepEqual(titles(state.sent), ["每周马报 · 2026-10-12 至 2026-10-18"], "the report and no role note");
+  assert.equal(getReportMark(GUILD, false, "week"), DUE_WEEK.start);
+  // Roles follow the latest due week, which was empty: the old holders lose them and nobody gains any.
+  assert.deepEqual(guild.changes, ["remove:role-top:alice", "remove:role-none:bob"]);
+  assert.doesNotMatch(JSON.stringify(state.sent[0].payload.embeds![0].toJSON()), /身份组|<@&/, "the report says nothing about roles");
+});
+
+test("a week catch-up reaches back 2 weeks and no further", async () => {
+  setReportKindEnabled(GUILD, "day", false);
+  markReportHandled(GUILD, false, "week", weekStart("2026-09-20T20:00:00Z"), utc("2026-09-28T07:30:00Z"));
+  seedGames(utc("2026-10-06T20:00:00Z"), 3); // the week of 10-05, two weeks behind the latest due week
+  const { state, scheduler } = harness();
+  await scheduler.runDue();
+  assert.deepEqual(state.sent, []);
+  assert.equal(getReportMark(GUILD, false, "week"), DUE_WEEK.start);
+});
+
+test("when the latest due week has games it is the one posted and the one the roles follow", async () => {
+  seedGames(DUE_WEEK.start + 5 * HOUR);
+  seedGames(utc("2026-10-13T20:00:00Z"), 3);
+  setReportKindEnabled(GUILD, "day", false);
+  markReportHandled(GUILD, false, "week", weekStart("2026-10-06T20:00:00Z"), utc("2026-10-12T07:30:00Z"));
+  const guild = enableRoles();
+  const { state, scheduler } = harness();
+  state.roleGuild = guild;
+  await scheduler.runDue();
+  assert.deepEqual(titles(state.sent), ["每周马报 · 2026-10-19 至 2026-10-25"]);
+  assert.deepEqual(guild.changes, ["add:role-top:alice", "add:role-none:bob"]);
+});
+
+test("a failed send of an older missed day is retried as that same day", async () => {
+  seedGames(MONDAY_EVENING, 3);
+  setReportKindEnabled(GUILD, "week", false);
+  markReportHandled(GUILD, false, "day", dayStart("2026-10-25T20:00:00Z"), utc("2026-10-26T07:30:00Z"));
+  const { state, scheduler } = harness({ now: WEDNESDAY_EVENING });
+  state.failures.push(new Error("network down"));
+  await scheduler.runDue();
+  assert.equal(getReportMark(GUILD, false, "day"), dayStart("2026-10-25T20:00:00Z"), "not marked, so it is tried again");
+  state.now += 60_000;
+  await scheduler.runDue();
+  assert.deepEqual(titles(state.sent), ["每日马报 · 2026-10-26 周一"]);
+  assert.equal(state.sent[0].payload.nonce, reportNonce(GUILD, false, "day", dayStart("2026-10-26T20:00:00Z")));
+  assert.equal(getReportMark(GUILD, false, "day"), DUE_DAY.start);
+});

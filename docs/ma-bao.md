@@ -54,14 +54,19 @@ A finished period is worded as that period: the daily post says 当日 and the w
 Only `/report` on the period in progress says 今日 and 本周, and no closing line promises a tomorrow or a next week.
 Members are written as `<@id>`, and every send passes `allowedMentions` that pings nobody.
 A mock-mode report has the title prefix 模拟数据 and a mock footer.
-A period with no recorded games is not posted; it is marked as handled silently.
+A period with no recorded games is not posted; when no period in the catch-up reach has games, the latest one is marked as handled silently.
 
 ## Posting and catch-up
 
 `src/services/reportScheduler.ts` checks for due reports when the bot connects and then keeps checking.
 The wait until the next check is the time until the next report is due, but never more than a minute, because a timer does not count the time the computer slept and a short tick notices the wake-up.
-Each check posts, per server with a channel, only the most recent finished day and the most recent finished week that have not been handled.
-After an outage this means the latest missed day and week and never a flood of older reports.
+Each check posts, per server with a channel, at most one day and at most one week.
+The post is the newest missed period that has recorded games, looking back from the latest finished period to the period after the stored mark, at most 7 days for a day and 2 weeks for a week.
+Because the bot runs on demand and nothing is recorded while it is off, the latest finished period is often empty after a day or more off, and the older period that had the games is the one posted.
+Periods older than the newest one with games are dropped, and games more than 7 days or 2 weeks behind are not caught up.
+Whatever is posted, the mark then moves to the latest finished period, so everything before it counts as handled.
+Without a stored mark only the latest finished period is considered.
+The report names its own period in the title, so a late post is clearly the earlier day or week.
 Each handled period is stored in `report_marks`, kept apart for mock and real data, and a mark only moves forward, so a period is posted at most once even across restarts.
 The mark is written right after the send, so a crash between the two could post one period twice, which is accepted over losing a report.
 
@@ -116,6 +121,8 @@ A role that was deleted is created again, and a champion who left the server is 
 When creating the two roles fails after the first one was made, that role is kept and reused on the next try instead of being created twice.
 When nobody was named, the old holders lose the roles and nobody gains them.
 A week with no games posts nothing, but the roles still rotate silently to nobody, so a stale 本周特等马 never lingers; a failure there is only logged.
+Roles always follow the latest finished week.
+When that week was empty and a catch-up posts an older week instead, the roles rotate silently to nobody as for an empty week, and the older report does not mention roles, so it never claims that anyone holds one.
 Roles are only changed for real data: in mock mode the report is posted and the roles are left alone.
 
 Any Discord failure is logged and collected, never thrown, so it cannot block the report, which is posted first.
