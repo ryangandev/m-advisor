@@ -2,7 +2,7 @@
 
 The default TTS provider is the installed Qwen CustomVoice model running offline through MLX-Audio.
 The bot launches one Python worker on first use or during `prewarmTTS()` and keeps its model loaded until shutdown.
-Announcements from all servers share a bounded queue and run one at a time.
+Speech requests from all servers share one bounded worker queue and are generated one at a time; announcements from different servers interleave chunk by chunk.
 `sweet` selects Serena and `old` selects Uncle_Fu.
 A server without a saved `/announcer` choice uses `old`.
 Both voices speak Chinese.
