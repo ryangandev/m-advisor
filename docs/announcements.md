@@ -22,6 +22,7 @@ That first lookup can wait behind a long report, so for a member who joined a ru
 A latest match that ended after the member joined is announced instead of becoming the baseline; one that ended before they joined, or without an end time, is the baseline.
 An account added to a member who is already in voice also gets a fresh baseline before anything is announced, counted from when it was added.
 Accounts present when the session starts, at the first join or after a bot restart, take their latest match as the baseline without that check, so nothing is replayed.
+If such an account's first lookup fails, for example during a Riot outage, it counts from when the session started, like a joiner: the first lookup that works announces a latest match that ended after the session started, and a match that ended before it is the baseline.
 A member who leaves voice or is unbound drops out of the session, and their accounts' baselines are cleared with `clearLastMatchIds`.
 A member who leaves voice and still owns their accounts has those baselines kept in memory for 2 minutes (`KEEP_BASELINES_MS`), also when their leaving stops the session.
 If the same member returns within the window, their accounts take the kept baselines back instead of a new one, so a match they finished meanwhile is announced once.
@@ -61,6 +62,11 @@ Concurrent timer and command requests share that one poll instead of overlapping
 Manual simulation passes its authorized channel ID, and that restriction also applies when joining an existing automatic poll.
 A move outside the required channel cancels the simulation instead of following the member.
 A stopped guild returns zero counts.
+A failed Riot read in the match poll, of an account's latest match or of a match's detail, is logged once per kind of failure until a poll reads Riot again without one.
+Then one line says that match polling works again and which kinds of failure it had.
+Every failed read still counts in `errors` and in the last error that `getMonitorStatus` reports, and each poll still retries it, so no match is consumed or skipped because of the quieter log.
+A Riot credential or configuration failure is always logged and still stops the session.
+The shared Riot requester still retries a failed read twice before it gives up, so each poll of an account can send up to three requests while Riot is down.
 `stopPolling(guildId)` cancels the session, timer, and match baselines.
 `stopAllPolling()` performs the same cancellation for every active guild during shutdown.
 `getMonitorStatus(guildId)` reports `presentMemberIds`, the members the session covers in bind order, along with the activity, last check and last error.
@@ -437,6 +443,7 @@ The bot logs to the terminal and its daily log file, described in [Runtime](runt
 It logs when monitoring starts, with each present member's Riot IDs and voice channel, and when it stops, with the reason.
 It logs when a member joins or leaves an existing session.
 It logs each account's baseline match, after which finished matches are announced, or that a joining member's latest match ended after they joined and is announced.
+It logs a Riot outage in the match poll once per kind of failure, then one line when polling works again.
 It logs each newly detected match with the reporting Riot IDs, how many seconds have passed since the game ended, the queue and the length.
 It logs once when a match waits because none of its players is in a usable voice channel.
 It logs when a match's timeline is unavailable and the report falls back to statistics.

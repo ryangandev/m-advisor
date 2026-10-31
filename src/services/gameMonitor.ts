@@ -202,6 +202,7 @@ interface AccountState {
    * When the account joined a running session, because its member joined voice or it was added to a member in voice.
    * Its first lookup may wait behind a long poll, so a latest match that ended after this is announced instead of becoming the baseline.
    * Unset for accounts present when the session started, whose first lookup runs straight away.
+   * If that first lookup fails it is set to the session start, so the first lookup that works treats them like a joiner.
    */
   since?: number;
   /** The first lookup has run: the baseline is recorded, or the latest match was kept as pending. */
@@ -310,6 +311,8 @@ interface MonitorSession {
   pollAgain?: boolean;
   /** Watches for games on their loading screen with its own timer; absent without spectator dependencies. */
   watcher?: GameStartWatcher;
+  /** The kinds of Riot read failures already logged, until a poll reads again without one; see `logOnce`. */
+  loggedReadErrors: Set<string>;
 }
 
 function riotIds(accounts: RiotAccount[]): string {
@@ -322,6 +325,11 @@ function secondsSince(start: number): string {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Unknown error";
+}
+
+/** The kind of a Riot failure: its code and status, so a 503 and a timeout are logged separately but one 503 once. */
+function errorKind(error: unknown): string {
+  return error instanceof RiotApiError ? `${error.code}:${error.status ?? ""}` : "other";
 }
 
 function isCredentialFailure(error: unknown): boolean {
@@ -381,6 +389,7 @@ export class GameMonitor {
         skippedMockAccounts: new Set(),
         waiting: new Map(),
         progress: new Map(),
+        loggedReadErrors: new Set(),
       };
       this.track(guildId, session, members);
       this.sessions.set(guildId, session);
@@ -703,6 +712,27 @@ export class GameMonitor {
     this.dependencies.log(error);
   }
 
+  /**
+   * A failed Riot read of the match poll. The status still shows the latest one, but the log gets one line per error kind
+   * until a poll reads again without failing, so an outage does not repeat for every account on every poll.
+   */
+  private reportRead(guildId: string, session: MonitorSession, error: unknown): void {
+    this.lastErrors.set(guildId, { message: errorMessage(error), at: Date.now() });
+    const kind = errorKind(error);
+    if (session.loggedReadErrors.has(kind)) return;
+    session.loggedReadErrors.add(kind);
+    this.dependencies.log(error instanceof Error
+      ? new Error(`${error.message} (match polling failed; logged once until a poll works again)`, { cause: error })
+      : error);
+  }
+
+  /** A poll read Riot without a failure after failures were logged: say so once, so an outage and its end look different. */
+  private readRecovered(session: MonitorSession): void {
+    if (session.loggedReadErrors.size === 0) return;
+    this.dependencies.info(`Match polling works again after ${[...session.loggedReadErrors].join(", ")} failures.`);
+    session.loggedReadErrors.clear();
+  }
+
   private current(guildId: string, session: MonitorSession): boolean {
     return this.sessions.get(guildId) === session && !session.controller.signal.aborted;
   }
@@ -752,9 +782,15 @@ export class GameMonitor {
   private async run(client: Client, guildId: string, session: MonitorSession, requiredTargets: Set<string>): Promise<PollResult> {
     const result = { announced: 0, errors: 0 };
     session.lastPollStartedAt = Date.now();
-    const fail = (error: unknown): boolean => {
+    // A failed match or match list read, which the next poll retries anyway.
+    let readFailed = false;
+    let readWorked = false;
+    const fail = (error: unknown, read = false): boolean => {
       result.errors++;
-      this.report(guildId, error);
+      if (read) readFailed = true;
+      // Credential failures stop the session and are always logged; a Riot outage is logged once per kind.
+      if (read && !isCredentialFailure(error)) this.reportRead(guildId, session, error);
+      else this.report(guildId, error);
       if (!isCredentialFailure(error)) return false;
       // Credential/configuration failures need a deliberate restart, not a timer retry loop.
       this.stop(guildId, "Riot rejected the credentials or configuration; fix .env and restart the bot");
@@ -804,13 +840,17 @@ export class GameMonitor {
           matchId = await this.dependencies.latest(account.puuid);
         } catch (error) {
           if (!this.current(guildId, session)) return result;
-          if (fail(error)) return result;
+          // An account present at the session start has no baseline yet; the failed read must not turn a game that ends
+          // during the outage into the baseline, so the next successful read counts from the session start like a joiner's.
+          if (!state.baselined) state.since ??= session.startedAt;
+          if (fail(error, true)) return result;
           continue;
         }
         if (!this.current(guildId, session)) return result;
         // The member may have left, rejoined or been unbound while Riot answered.
         if (!this.stillTracked(guildId, session, account.puuid, state) || this.ownerOf(guildId, account.puuid) !== state.owner) continue;
         state.readAt = Date.now();
+        readWorked = true;
         if (!state.baselined) {
           if (matchId && state.since !== undefined && !this.isDone(guildId, session, matchId)) {
             // This lookup may have waited behind a long poll; a match that ended after the account joined is new, not history.
@@ -819,7 +859,7 @@ export class GameMonitor {
               detail = session.waiting.get(matchId)?.detail ?? await this.dependencies.detail(matchId);
             } catch (error) {
               if (!this.current(guildId, session)) return result;
-              if (fail(error)) return result;
+              if (fail(error, true)) return result;
               continue;
             }
             if (!this.stillTracked(guildId, session, account.puuid, state)) continue;
@@ -870,7 +910,7 @@ export class GameMonitor {
             match.detail = await this.dependencies.detail(match.matchId);
           } catch (error) {
             if (!this.current(guildId, session)) return result;
-            if (fail(error)) return result;
+            if (fail(error, true)) return result;
             continue;
           }
           if (!this.current(guildId, session)) return result;
@@ -885,6 +925,7 @@ export class GameMonitor {
         ready.push(match);
       }
       ready.sort(byGameEnd);
+      if (readWorked && !readFailed) this.readRecovered(session);
 
       // Phase C: announce one at a time through the guild's voice queue.
       for (const match of ready) {

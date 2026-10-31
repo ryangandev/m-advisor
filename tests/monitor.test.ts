@@ -668,6 +668,120 @@ test("credential failures stop polling without a retry loop", async () => {
   assert.equal(calls, 1);
 });
 
+test("a Riot error at the first baseline read does not swallow a game that ends after monitoring started", async () => {
+  const bot = harness("first-read-error-guild");
+  const latest = bot.dependencies.latest;
+  bot.dependencies.latest = async () => { throw new RiotApiError("Riot API error 503", "unavailable", 503); };
+  assert.deepEqual(await bot.start(), { announced: 0, errors: 1 });
+  assert.equal(getLastMatchId(bot.guildId, "tracked"), undefined, "no baseline yet");
+  await delay(5);
+  bot.dependencies.latest = latest;
+  bot.matches.set("new-match", match("new-match", ["tracked"]));
+  bot.latestIds.set("tracked", "new-match");
+  assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
+  assert.match(bot.infos.join("\n"), /Baseline for tracked#NA1: none; new-match ended after they joined, so it is announced\./);
+  assert.equal(bot.played.length, 1);
+  assert.equal(getLastMatchId(bot.guildId, "tracked"), "new-match");
+});
+
+test("after a failed first baseline read, a match that ended before the session started is still the baseline", async () => {
+  const bot = harness("first-read-error-history-guild");
+  const latest = bot.dependencies.latest;
+  bot.dependencies.latest = async () => { throw new RiotApiError("Riot API request failed: network down.", "network"); };
+  assert.deepEqual(await bot.start(), { announced: 0, errors: 1 });
+  bot.dependencies.latest = latest;
+  assert.deepEqual(await bot.poll(), { announced: 0, errors: 0 });
+  assert.equal(getLastMatchId(bot.guildId, "tracked"), "historical-match");
+  assert.deepEqual(bot.generated, []);
+  assert.match(bot.infos.join("\n"), /Baseline for tracked#NA1: historical-match; only matches that finish after this are announced\./);
+  bot.latestIds.set("tracked", "later-match");
+  bot.matches.set("later-match", match("later-match", ["tracked"]));
+  assert.equal((await bot.poll()).announced, 1);
+});
+
+test("a successful first baseline read keeps the latest match as the baseline even if it ended after the session started", async () => {
+  const bot = harness("first-read-ok-guild");
+  bot.matches.set("historical-match", match("historical-match", ["tracked"], [], Date.now() + 60_000));
+  assert.deepEqual(await bot.start(), { announced: 0, errors: 0 });
+  assert.equal(getLastMatchId(bot.guildId, "tracked"), "historical-match");
+  assert.deepEqual(bot.generated, []);
+});
+
+test("a first baseline read that failed does not make a kept baseline replay a match after a quick leave and return", async () => {
+  const bot = harness("first-read-error-kept-guild");
+  const latest = bot.dependencies.latest;
+  bot.dependencies.latest = async () => { throw new RiotApiError("Riot API error 503", "unavailable", 503); };
+  await bot.start();
+  bot.dependencies.latest = latest;
+  assert.deepEqual(await bot.poll(), { announced: 0, errors: 0 });
+  bot.move("member-1", null);
+  bot.sync();
+  bot.move("member-1", "first-channel");
+  bot.sync();
+  assert.deepEqual(await bot.poll(), { announced: 0, errors: 0 });
+  assert.match(bot.infos.join("\n"), /Baseline for tracked#NA1 kept from before they left voice/);
+  assert.deepEqual(bot.generated, []);
+  assert.equal(getLastMatchId(bot.guildId, "tracked"), "historical-match");
+});
+
+test("a Riot outage is logged once per error kind with one recovery line, and still counts every failed read", async () => {
+  const bot = harness("outage-log-guild", [
+    { id: "member-1", puuids: ["alice"], channel: "first-channel" },
+    { id: "member-2", puuids: ["bob"], channel: "first-channel" },
+  ]);
+  await bot.start();
+  bot.errors.length = 0;
+  const latest = bot.dependencies.latest;
+  bot.dependencies.latest = async () => { throw new RiotApiError("Riot API error 503", "unavailable", 503); };
+  assert.deepEqual(await bot.poll(), { announced: 0, errors: 2 });
+  assert.deepEqual(await bot.poll(), { announced: 0, errors: 2 });
+  assert.equal(bot.errors.length, 1, "one line for two accounts and two polls");
+  assert.match(String(bot.errors[0]), /Riot API error 503/);
+  assert.equal(bot.status().lastError?.message, "Riot API error 503");
+  // Another kind is a new line.
+  bot.dependencies.latest = async () => { throw new RiotApiError("Riot API request failed: network down.", "network"); };
+  await bot.poll();
+  await bot.poll();
+  assert.equal(bot.errors.length, 2);
+  // The 503 is back: it is already logged for this outage.
+  bot.dependencies.latest = async () => { throw new RiotApiError("Riot API error 503", "unavailable", 503); };
+  await bot.poll();
+  assert.equal(bot.errors.length, 2);
+  assert.equal(bot.infos.filter((line) => line.startsWith("Match polling works again")).length, 0);
+  bot.dependencies.latest = latest;
+  assert.deepEqual(await bot.poll(), { announced: 0, errors: 0 });
+  const recovered = bot.infos.filter((line) => line.startsWith("Match polling works again"));
+  assert.equal(recovered.length, 1);
+  assert.match(recovered[0], /unavailable:503/);
+  assert.match(recovered[0], /network:/);
+  await bot.poll();
+  assert.equal(bot.infos.filter((line) => line.startsWith("Match polling works again")).length, 1, "only once");
+  // A later outage logs again.
+  bot.dependencies.latest = async () => { throw new RiotApiError("Riot API error 503", "unavailable", 503); };
+  await bot.poll();
+  assert.equal(bot.errors.length, 3);
+});
+
+test("a failed match detail read in a poll is logged once too, and a credential failure is always logged and stops the session", async () => {
+  const bot = harness("outage-detail-guild");
+  await bot.start();
+  bot.errors.length = 0;
+  bot.latestIds.set("tracked", "new-match");
+  const detail = bot.dependencies.detail;
+  bot.dependencies.detail = async () => { throw new RiotApiError("Riot API error 503", "unavailable", 503); };
+  await bot.poll();
+  await bot.poll();
+  assert.equal(bot.errors.length, 1);
+  assert.equal(getLastMatchId(bot.guildId, "tracked"), "historical-match", "the match is still unconsumed");
+  bot.dependencies.detail = detail;
+  assert.equal((await bot.poll()).announced, 1);
+  assert.equal(bot.infos.filter((line) => line.startsWith("Match polling works again")).length, 1);
+  bot.dependencies.latest = async () => { throw new RiotApiError("Update RIOT_API_KEY", "unauthorized", 401); };
+  await bot.poll();
+  assert.match(String(bot.errors.at(-1)), /Update RIOT_API_KEY/);
+  assert.equal(bot.status().active, false);
+});
+
 test("real monitoring skips saved mock accounts while allowing real accounts", async () => {
   const bot = harness("mixed-real-guild", ["MOCK-fixture", "real-account"]);
   bot.dependencies.mock = () => false;
