@@ -5,7 +5,10 @@ import os from "node:os";
 import path from "node:path";
 import { PassThrough, type Readable } from "node:stream";
 import { test } from "node:test";
-import { AudioPlayerStatus, StreamType, VoiceConnectionStatus, entersState, type AudioResource, type CreateAudioPlayerOptions } from "@discordjs/voice";
+import {
+  AudioPlayerStatus, NoSubscriberBehavior, StreamType, VoiceConnectionStatus, createAudioPlayer, createAudioResource, entersState,
+  type AudioResource, type CreateAudioPlayerOptions,
+} from "@discordjs/voice";
 import type { VoiceChannel } from "discord.js";
 import {
   PCM_FRAME_BYTES, SENTENCE_PAUSE_MS, createVoicePlayback, decodeSpeechFile, prepareSpeechPcm, type VoicePlaybackDependencies,
@@ -42,8 +45,9 @@ async function* chunks(...paths: string[]) {
 
 function transport() {
   const connection = new FakeStateMachine(VoiceConnectionStatus.Signalling) as FakeStateMachine & {
-    subscribe: () => unknown; destroy: () => void;
+    subscribe: () => unknown; destroy: () => void; joinConfig: { channelId: string };
   };
+  connection.joinConfig = { channelId: "voice" };
   let connectionDestroyed = 0;
   let playerStopped = 0;
   let joins = 0;
@@ -299,6 +303,133 @@ test("audio that never starts times out and cleans its transport", async () => {
   }
   assert.equal(voice.connectionDestroyed, 1);
   assert.equal(voice.playerStopped, 1);
+});
+
+/** A Ready -> Connecting -> Ready blip while playback runs, like a voice WebSocket resume. */
+test("a brief reconnect mid-playback keeps the announcement and plays it to the end", async () => {
+  const voice = transport();
+  voice.dependencies.reconnectGraceMs = 100;
+  voice.onPlay = () => {
+    queueMicrotask(() => {
+      voice.player.transition(AudioPlayerStatus.Playing);
+      voice.connection.transition(VoiceConnectionStatus.Signalling);
+      setTimeout(() => voice.connection.transition(VoiceConnectionStatus.Connecting), 5);
+      setTimeout(() => voice.connection.transition(VoiceConnectionStatus.Ready), 30);
+      // Playback outlasts the grace, so a grace timer left running after Ready would fail it.
+      setTimeout(() => voice.player.transition(AudioPlayerStatus.Idle), 180);
+    });
+  };
+  await voice.play();
+  assert.equal(voice.playerOptions?.behaviors?.noSubscriber, NoSubscriberBehavior.Pause, "a blip pauses the player instead of stopping it");
+  assert.equal(voice.connectionDestroyed, 1);
+  assert.equal(voice.playerStopped, 1);
+});
+
+/** Minimal connection surface the real AudioPlayer drives, counting the Opus packets it dispatches. */
+class PacketConnection extends FakeStateMachine {
+  joinConfig = { channelId: "voice" };
+  sent = 0;
+  private prepared = false;
+  constructor() { super(VoiceConnectionStatus.Signalling); }
+  subscribe(player: unknown) { return (player as { subscribe: (connection: unknown) => unknown }).subscribe(this); }
+  prepareAudioPacket() { if (this.state.status === VoiceConnectionStatus.Ready) this.prepared = true; }
+  dispatchAudio() { if (this.state.status === VoiceConnectionStatus.Ready && this.prepared) { this.prepared = false; this.sent++; } return true; }
+  setSpeaking() { return true; }
+  destroy() { this.transition(VoiceConnectionStatus.Destroyed); }
+}
+
+const pendingTimers = () => process.getActiveResourcesInfo().filter((name) => name === "Timeout").length;
+
+function realPlayerPlayback(connection: PacketConnection) {
+  const dependencies = {
+    join: () => { setTimeout(() => connection.transition(VoiceConnectionStatus.Ready), 5); return connection; },
+    createPlayer: createAudioPlayer,
+    createResource: createAudioResource,
+    enter: entersState,
+    decode: async () => pcm(24_000, 3000),
+    reconnectGraceMs: 2000,
+  } as unknown as VoicePlaybackDependencies;
+  const channel = { id: "voice", guild: { id: "guild", voiceAdapterCreator: () => undefined } } as unknown as VoiceChannel;
+  return createVoicePlayback(dependencies)(channel, chunks("a.wav", "b.wav"), 30_000);
+}
+
+test("the real audio player plays every packet through a Ready -> Connecting -> Ready blip", async () => {
+  const connection = new PacketConnection();
+  setTimeout(() => connection.transition(VoiceConnectionStatus.Connecting), 150);
+  setTimeout(() => connection.transition(VoiceConnectionStatus.Ready), 300);
+  await realPlayerPlayback(connection);
+  // Two 0.5 s chunks plus the 350 ms sentence pause is about 67 frames of 20 ms.
+  const expected = Math.round((1000 + SENTENCE_PAUSE_MS) / 20);
+  assert.ok(connection.sent >= expected - 5, `only ${connection.sent} of about ${expected} packets were sent`);
+});
+
+test("a reconnect that outlasts the grace fails with a clear error and cleans the transport", async () => {
+  const voice = transport();
+  voice.dependencies.reconnectGraceMs = 40;
+  voice.onPlay = () => {
+    queueMicrotask(() => {
+      voice.player.transition(AudioPlayerStatus.Playing);
+      voice.connection.transition(VoiceConnectionStatus.Signalling);
+      setTimeout(() => voice.connection.transition(VoiceConnectionStatus.Connecting), 5);
+    });
+  };
+  const started = Date.now();
+  await assert.rejects(voice.play(chunks("test.wav"), undefined, 10_000), /did not recover in time/);
+  assert.ok(Date.now() - started < 2000, "the grace, not the playback timeout, ends the wait");
+  assert.equal(voice.connectionDestroyed, 1);
+  assert.equal(voice.playerStopped, 1);
+  assert.equal(voice.input!.destroyed, true);
+  assert.equal(voice.encoder.destroyed, true);
+});
+
+test("Ready again in another channel fails instead of continuing there", async () => {
+  const voice = transport();
+  voice.dependencies.reconnectGraceMs = 500;
+  voice.onPlay = () => {
+    queueMicrotask(() => {
+      voice.player.transition(AudioPlayerStatus.Playing);
+      voice.connection.transition(VoiceConnectionStatus.Signalling);
+      setTimeout(() => {
+        voice.connection.joinConfig.channelId = "somewhere-else";
+        voice.connection.transition(VoiceConnectionStatus.Ready);
+      }, 10);
+    });
+  };
+  await assert.rejects(voice.play(chunks("test.wav"), undefined, 10_000), /moved to another channel/);
+  assert.equal(voice.connectionDestroyed, 1);
+  assert.equal(voice.playerStopped, 1);
+});
+
+test("a paused player still ends at the playback timeout and an abort, and never leaves the grace timer running", async () => {
+  const timedOut = transport();
+  timedOut.dependencies.reconnectGraceMs = 60_000;
+  timedOut.onPlay = () => {
+    queueMicrotask(() => {
+      timedOut.player.transition(AudioPlayerStatus.Playing);
+      timedOut.connection.transition(VoiceConnectionStatus.Signalling);
+    });
+  };
+  const started = Date.now();
+  await assert.rejects(timedOut.play(chunks("test.wav"), undefined, 50), /aborted/);
+  assert.ok(Date.now() - started < 2000);
+  assert.equal(timedOut.connectionDestroyed, 1);
+  assert.equal(timedOut.playerStopped, 1);
+
+  const timersBefore = pendingTimers();
+  const aborted = transport();
+  aborted.dependencies.reconnectGraceMs = 60_000;
+  const controller = new AbortController();
+  aborted.onPlay = () => {
+    queueMicrotask(() => {
+      aborted.player.transition(AudioPlayerStatus.Playing);
+      aborted.connection.transition(VoiceConnectionStatus.Connecting);
+      setTimeout(() => controller.abort(new Error("session stopped")), 10);
+    });
+  };
+  await assert.rejects(aborted.play(chunks("test.wav"), controller.signal, 10_000), /session stopped|aborted/);
+  assert.equal(aborted.connectionDestroyed, 1);
+  assert.equal(aborted.playerStopped, 1);
+  assert.equal(pendingTimers(), timersBefore, "the 60 second grace timer is cleared on exit");
 });
 
 test("chunk PCM gets a leading pause, faded edges and whole 20 ms frames", () => {

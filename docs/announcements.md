@@ -514,6 +514,12 @@ The transport attaches connection, player, source-stream, and encoder error hand
 It waits for the connection to become Ready, observes the player become Playing, then waits for Idle.
 The player's initial Idle state cannot count as successful playback, and neither can an Idle state before the last chunk was written.
 Timeouts, aborts, stream errors, chunk failures, and connection disconnects reject the operation.
+A voice WebSocket resume or server change briefly moves the connection from Ready to Signalling or Connecting, and the player uses `NoSubscriberBehavior.Pause` so that blip pauses the stream instead of stopping it.
+Playback continues from the same place when the connection is Ready again.
+The connection gets a 5 second grace to recover, and an announcement that is still not Ready after that fails with "Discord voice connection did not recover in time.".
+If the connection is Ready again in a different channel than the target, the announcement fails instead of speaking there.
+Disconnected and Destroyed still fail at once with no grace.
+The pause stays bounded by the grace, the playback timeout, and the abort signal, and every exit clears the grace timer, stops the player, and destroys the streams.
 The 240 second playback timeout covers the whole stream, including any wait for later chunks, inside the announcement's overall deadline.
 Every exit stops the player, destroys the streams, and destroys the voice connection.
 The bot self-deafens because listening to Discord speech is outside this feature's scope.
