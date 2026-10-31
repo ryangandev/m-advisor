@@ -3121,6 +3121,8 @@ test("a voice report whose earlier post fails after the wait logs the dropped цо
   for (const id of ["alice-id", "bob-id", "zed-id"]) bot.move(id, "x");
   assert.deepEqual(await Promise.race([bot.start(), delay(1_000).then(() => "stuck")]), { announced: 1, errors: 0 });
   assert.equal(bot.played.length, 1, "the report was spoken");
+  // The guild's memory of the match may be purged or evicted by now: the drop does not depend on it.
+  (bot.monitor as unknown as { handled: Map<string, unknown> }).handled.clear();
   post.fail(new Error("Fake Discord outage"));
   await oldPoll;
   await delay(30);
