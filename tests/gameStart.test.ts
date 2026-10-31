@@ -1459,21 +1459,40 @@ test("a different game at the in-game recheck is a fresh start: a requeue 30 s i
   assert.equal(bot.sent.length, 2);
 });
 
-test("an in-game account is rechecked as soon as its old match is finished, and only once while the old game lingers", async () => {
+test("an in-game account is rechecked every tick while its old match is finished and Riot still lists the old game, within the 20 s budget", async () => {
   const bot = harness([{ id: A, puuids: ["acct-a"], channel: "voice-1" }]);
   const first = spectatorGame(5111, [{ puuid: "acct-a", teamId: 100, championId: AHRI }]);
   bot.enter(first);
   assert.equal((await bot.start()).started, 1);
   await bot.tick();
   assert.equal(bot.requests.length, 1, "a running game is not asked again before the sixth tick");
-  // The match poll announces the finished match, and Riot still lists the old game for a moment.
+  // The match poll announces the finished match, and Riot still lists the old game.
   await finishGame(bot, "NA1_5111", ["acct-a"]);
-  assert.equal((await bot.tick()).started, 0);
-  assert.equal(bot.requests.length, 2, "the finished match makes the account due at once");
-  await bot.tick();
-  await bot.tick();
-  assert.equal(bot.requests.length, 2, "a lingering old game is asked again only on the normal cadence");
+  for (let tick = 1; tick <= 4; tick++) {
+    assert.equal((await bot.tick()).started, 0);
+    assert.equal(bot.requests.length, 1 + tick, "a finished old match makes the account due on every tick, one request each");
+  }
+  // The budget still holds: a check inside the same 20 seconds asks nobody.
+  await bot.monitor.pollGameStart(GUILD);
+  assert.equal(bot.requests.length, 5, "no account is asked twice within 20 seconds");
   assert.equal(bot.sent.filter((entry) => !isReport(entry.message)).length, 1, "the old game is never announced twice");
+});
+
+test("a requeue found on a later tick, after the old game lingered at the first early recheck, is announced", async () => {
+  const bot = harness([{ id: A, puuids: ["acct-a"], channel: "voice-1" }]);
+  const first = spectatorGame(5112, [{ puuid: "acct-a", teamId: 100, championId: AHRI }]);
+  bot.enter(first);
+  assert.equal((await bot.start()).started, 1);
+  await finishGame(bot, "NA1_5112", ["acct-a"]);
+  // The first early recheck still lists the old game.
+  assert.equal((await bot.tick()).started, 0);
+  assert.equal(bot.requests.length, 2);
+  // The player requeues; the next game is found on the following tick, well within a minute.
+  bot.leaveGame(first);
+  bot.enter(spectatorGame(5113, [{ puuid: "acct-a", teamId: 100, championId: AHRI }], { start: 1_899_999_990_000, length: 30 }));
+  assert.equal((await bot.tick()).started, 1, "the following tick finds and announces the requeue");
+  assert.equal(bot.requests.length, 3);
+  assert.ok(bot.infos.some((line) => line.includes("Detected game start NA1_5113: 30 s in")));
 });
 
 test("an account whose old match finished finds the loading requeue on the very next tick", async () => {
