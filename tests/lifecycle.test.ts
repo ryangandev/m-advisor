@@ -78,7 +78,9 @@ if (scenario === "crash") {
   process.emitWarning("offline test warning");
   setTimeout(() => { throw new Error("offline crash quoting offline-test-token"); }, 50);
 }
-setTimeout(() => console.log(JSON.stringify({ trace })), 150);
+// The trace is reported when the process exits on its own (the entry point has finished shutting down),
+// never on a fixed timer, so a slow or starved machine cannot cut the run short.
+process.on("exit", () => console.log(JSON.stringify({ trace })));
 `;
   try {
     const child = spawnSync(process.execPath, ["--import", "tsx", "-e", code],
