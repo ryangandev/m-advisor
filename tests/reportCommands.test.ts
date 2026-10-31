@@ -522,3 +522,11 @@ test("a failed run does not block the next one for the same server", async () =>
   const third = await run("roles", { enabled: true }, { roles });
   assert.match(third.replies[0].content!, /已开启每周身份组/);
 });
+
+test("the summary describes catch-up the way the 马报 docs do", async () => {
+  const { replies } = await run("show");
+  const text = replies[0].content!;
+  assert.match(text, /机器人没开或电脑睡眠时错过的/);
+  assert.match(text, /日报最多往回 7 天，周报最多往回 2 周/);
+  assert.doesNotMatch(text, /最近的一天和一周/);
+});
