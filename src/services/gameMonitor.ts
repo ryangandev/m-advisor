@@ -22,7 +22,7 @@ import type { MatchEvent } from "./matchEvents";
 import { buildHorseRecords } from "./horseRecords";
 import { listHorseRecords, recordHorseRecords } from "../store/horseRecordStore";
 import { recordRankResults } from "../store/rankStore";
-import { erasedSince } from "../store/eraseCutoff";
+import { erasedSince, nextStamp } from "../store/eraseCutoff";
 import type { RankResult } from "../store/rankStore";
 import type { HorseRecord } from "../store/horseRecordStore";
 import { buildHorseReportEmbed, buildPartyEmbed, buildRankAnnouncementEmbed, NO_MENTIONS } from "../utils/embeds";
@@ -184,6 +184,8 @@ interface PendingMatch {
   reporters: RiotAccount[];
   detail?: MatchDetail;
   detectedAt?: number;
+  /** The detection's place in the erase cutoff's counter; see eraseCutoff. */
+  detectedStamp?: number;
 }
 
 interface PresentMember {
@@ -236,6 +238,7 @@ interface HandledMatch {
 interface WaitingMatch {
   detail: MatchDetail;
   detectedAt: number;
+  detectedStamp: number;
   /** Accounts that reported it; the entry is dropped once none of them is tracked any more. */
   reporters: Set<string>;
 }
@@ -251,6 +254,8 @@ const WAITING_LIMIT = 20;
 interface MatchProgress {
   detail: MatchDetail;
   detectedAt: number;
+  /** Orders the detection against a /stable-erase of a bound member; wall-clock time cannot, see eraseCutoff. */
+  detectedStamp: number;
   /** Accounts that reported it; the entry is dropped once none of them is tracked any more. */
   reporters: Set<string>;
   /** Timeline moments, fetched once; null when unavailable, undefined until fetched. */
@@ -855,6 +860,7 @@ export class GameMonitor {
         if (known) {
           match.detail = known.detail;
           match.detectedAt = known.detectedAt;
+          match.detectedStamp = known.detectedStamp;
           for (const account of match.reporters) known.reporters.add(account.puuid);
           ready.push(match);
           continue;
@@ -870,6 +876,7 @@ export class GameMonitor {
           if (!this.current(guildId, session)) return result;
         }
         match.detectedAt = Date.now();
+        match.detectedStamp = nextStamp();
         const ended = match.detail.info.gameEndTimestamp === null
           ? "end time unknown" : `ended ${Math.round((match.detectedAt - match.detail.info.gameEndTimestamp) / 1000)} s ago`;
         this.dependencies.info(`Detected finished match ${match.matchId} for ${riotIds(match.reporters)}: ${ended}, `
@@ -926,7 +933,7 @@ export class GameMonitor {
       // Not an error: the match waits, unconsumed, until a participant is in an allowed channel or its accounts stop being tracked.
       if (!session.waiting.has(match.matchId)) {
         session.waiting.set(match.matchId, {
-          detail, detectedAt: match.detectedAt!, reporters: new Set(match.reporters.map((account) => account.puuid)),
+          detail, detectedAt: match.detectedAt!, detectedStamp: match.detectedStamp!, reporters: new Set(match.reporters.map((account) => account.puuid)),
         });
         if (session.waiting.size > WAITING_LIMIT) session.waiting.delete(session.waiting.keys().next().value!);
         this.dependencies.info(`Match ${match.matchId} is waiting: no tracked player of it is in a voice channel announcements can use.`);
@@ -1112,7 +1119,7 @@ export class GameMonitor {
   private progressOf(session: MonitorSession, match: PendingMatch): MatchProgress {
     let progress = session.progress.get(match.matchId);
     if (!progress) {
-      progress = { detail: match.detail!, detectedAt: match.detectedAt!, reporters: new Set(), textPosted: false, voiceFailures: 0 };
+      progress = { detail: match.detail!, detectedAt: match.detectedAt!, detectedStamp: match.detectedStamp!, reporters: new Set(), textPosted: false, voiceFailures: 0 };
       session.progress.set(match.matchId, progress);
       if (session.progress.size > PROGRESS_LIMIT) session.progress.delete(session.progress.keys().next().value!);
     }
@@ -1265,7 +1272,7 @@ export class GameMonitor {
         // The late write runs minutes after the report: a member unbound or erased meanwhile gets no row back.
         if (this.ownerOf(guildId, puuid) !== memberId) continue;
         // /stable-erase leaves the member bound, so ownership alone does not stop a match reported before the erase.
-        if (erasedSince(guildId, memberId, progress.detectedAt)) continue;
+        if (erasedSince(guildId, memberId, progress.detectedStamp)) continue;
         const row = rank.row(matchId, puuid);
         const result = row && buildRankResult(row, {
           guildId, discordUserId: memberId, matchId, mock, puuid, gameEndTimestamp: progress.detail.info.gameEndTimestamp, recordedAt,
@@ -1554,7 +1561,7 @@ export class GameMonitor {
       // A member erased since this match was detected is left out too: an erase keeps them bound, and this write can
       // run well after the report (after the voice, when the text post failed).
       const tracked = this.dependencies.members(guildId)
-        .filter((member) => !erasedSince(guildId, member.discordUserId, progress.detectedAt))
+        .filter((member) => !erasedSince(guildId, member.discordUserId, progress.detectedStamp))
         .flatMap((member) => member.accounts.map((account) => ({ discordUserId: member.discordUserId, puuid: account.puuid })));
       const saved = this.dependencies.record(buildHorseRecords({
         guildId,

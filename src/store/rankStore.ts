@@ -117,7 +117,8 @@ function fromRow(row: RankResultRow): RankResult {
  * when the late update edits the report, never makes a second row or changes the first.
  * Only a repeated key is skipped: a row that breaks the table's rules throws, instead of vanishing as INSERT OR IGNORE would.
  * Every member must own the account of their row when the transaction runs; otherwise UntrackedMemberError is thrown and
- * nothing in the batch is saved, so a result that settles after /unbind or /stable-erase never brings the erased data back.
+ * nothing in the batch is saved, so a result that settles after /unbind never brings the erased data back.
+ * /stable-erase leaves the member bound, so this check cannot catch it: the caller must check erasedSince (see eraseCutoff).
  */
 export function recordRankResults(results: readonly RankResult[]): number {
   results.forEach(validate);
