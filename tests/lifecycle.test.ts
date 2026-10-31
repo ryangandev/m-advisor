@@ -9,7 +9,7 @@ import { test } from "node:test";
 // is stubbed before it loads. No tokens, network calls or GPU imports are used.
 // Log files go to a temporary data directory and are returned as one string.
 function spawnEntryPoint(
-  scenario: "before-commands" | "during-commands" | "during-login" | "crash",
+  scenario: "before-commands" | "during-commands" | "during-login" | "crash" | "hangup",
   failures: { client?: boolean; connection?: boolean } = {},
 ) {
   const root = path.resolve(__dirname, "..");
@@ -74,6 +74,8 @@ Module._load = function(request, parent, ...args) {
 };
 require(root + "/src/index.ts");
 if (scenario === "before-commands") process.emit("SIGTERM");
+// A real signal, as closing the launcher Terminal window sends.
+if (scenario === "hangup") process.kill(process.pid, "SIGHUP");
 if (scenario === "crash") {
   process.emitWarning("offline test warning");
   setTimeout(() => { throw new Error("offline crash quoting offline-test-token"); }, 50);
@@ -117,6 +119,20 @@ for (const scenario of ["before-commands", "during-commands"] as const) {
     assert.equal(trace.filter((entry) => entry === "stop-monitoring").length, 1);
   });
 }
+
+test("SIGHUP from closing the terminal window runs the same graceful shutdown as SIGTERM", () => {
+  const { child } = spawnEntryPoint("hangup");
+  assert.equal(child.error, undefined);
+  assert.equal(child.status, 0, child.stderr);
+  const result = child.stdout.trim().split("\n").map((line) => {
+    try { return JSON.parse(line); } catch { return undefined; }
+  }).find((item) => item?.trace);
+  assert.ok(result, child.stdout);
+  const trace: string[] = result.trace;
+  assert.ok(trace.indexOf("destroy-end") < trace.indexOf("stop-speech"), trace.join(", "));
+  assert.ok(trace.indexOf("stop-speech") < trace.indexOf("close-database"), trace.join(", "));
+  assert.equal(trace.filter((entry) => entry === "stop-monitoring").length, 1);
+});
 
 test("SIGTERM during login destroys the client again if login completes after stopping", () => {
   const trace = runStartupScenario("during-login");

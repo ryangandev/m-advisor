@@ -113,7 +113,8 @@ function shutdown(): Promise<void> {
   return shutdownPromise;
 }
 
-for (const signal of ["SIGINT", "SIGTERM"] as const) {
+// SIGHUP is what closing the launcher's Terminal window sends; its default would exit without any cleanup.
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
   process.once(signal, () => {
     const deadline = setTimeout(() => process.exit(1), 15_000).unref();
     void shutdown().then(() => { clearTimeout(deadline); }).catch(() => { process.exitCode = 1; });

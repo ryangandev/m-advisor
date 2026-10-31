@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { access, mkdtemp, open, realpath, rm } from "node:fs/promises";
+import { access, lstat, mkdtemp, open, readdir, realpath, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createInterface, type Interface } from "node:readline";
@@ -63,6 +63,43 @@ export function localTtsOptions(env = process.env): LocalTtsOptions {
 }
 
 /** One offline worker shared by all guilds, with bounded, serialized requests. */
+export const TTS_DIRECTORY_PREFIX = "m-advisor-tts-";
+// New directories are `<prefix><pid>-<6 random chars>`; the older `<prefix><6 random chars>` has no owner recorded.
+const TTS_DIRECTORY_NAME = /^m-advisor-tts-(?:(\d+)-)?[A-Za-z0-9]{6}$/;
+const LEGACY_DIRECTORY_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+function processIsRunning(pid: number): boolean {
+  try { process.kill(pid, 0); return true; }
+  catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
+}
+
+/**
+ * Removes speech directories a crashed or hung-up bot left in the temp directory.
+ * Only real directories (never symlinks) owned by this user whose name matches the exact pattern are touched.
+ * A directory whose recorded process is still running, and the one just created, are kept.
+ * A legacy directory without a recorded process is removed only after a day, since its owner is unknown.
+ */
+export async function sweepStaleTtsDirectories(root: string, keep: string, now = Date.now()): Promise<void> {
+  try {
+    const uid = process.getuid?.();
+    for (const name of await readdir(root)) {
+      const match = TTS_DIRECTORY_NAME.exec(name);
+      if (!match) continue;
+      const target = path.join(root, name);
+      try {
+        if (path.resolve(target) === path.resolve(keep)) continue;
+        const info = await lstat(target);
+        if (!info.isDirectory() || info.isSymbolicLink()) continue;
+        if (uid !== undefined && info.uid !== uid) continue;
+        if (match[1] !== undefined) {
+          if (Number(match[1]) === process.pid || processIsRunning(Number(match[1]))) continue;
+        } else if (now - info.mtimeMs < LEGACY_DIRECTORY_MAX_AGE_MS) continue;
+        await rm(target, { recursive: true, force: true });
+      } catch { /* best effort: one unreadable entry never blocks speech */ }
+    }
+  } catch { /* the temp directory itself is unreadable: nothing to sweep */ }
+}
+
 export class LocalTtsService {
   private worker?: ChildProcessWithoutNullStreams;
   private readonly workers = new Set<ChildProcessWithoutNullStreams>();
@@ -177,7 +214,12 @@ export class LocalTtsService {
   }
 
   private async directory(): Promise<string> {
-    this.outputDirectory ??= mkdtemp(path.join(os.tmpdir(), "m-advisor-tts-")).then((directory) => realpath(directory));
+    this.outputDirectory ??= mkdtemp(path.join(os.tmpdir(), `${TTS_DIRECTORY_PREFIX}${process.pid}-`))
+      .then(async (directory) => {
+        const own = await realpath(directory);
+        await sweepStaleTtsDirectories(os.tmpdir(), own);
+        return own;
+      });
     return this.outputDirectory;
   }
 

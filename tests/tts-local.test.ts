@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import { test } from "node:test";
-import { LOCAL_TTS_MODEL, LocalTtsService, localTtsOptions } from "../src/services/localTts";
+import { LOCAL_TTS_MODEL, LocalTtsService, localTtsOptions, sweepStaleTtsDirectories } from "../src/services/localTts";
 
 const FAKE_WORKER = String.raw`
 const fs = require("node:fs");
@@ -242,4 +243,48 @@ test("local speech subprocess does not inherit service credentials", async () =>
     else process.env.DISCORD_TOKEN = before;
     await f.cleanup();
   }
+});
+
+test("sweeping removes only stale speech directories of this user and keeps running owners, the new directory and symlinks", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "tts-sweep-"));
+  try {
+    const dead = spawnSync(process.execPath, ["-e", ""]).pid;
+    const make = async (name: string, ageMs = 0) => {
+      const dir = path.join(root, name);
+      await mkdir(dir);
+      await writeFile(path.join(dir, "a.wav"), "RIFF");
+      const when = new Date(Date.now() - ageMs);
+      await utimes(dir, when, when);
+      return dir;
+    };
+    const stale = await make(`m-advisor-tts-${dead}-abc123`);
+    const running = await make(`m-advisor-tts-${process.pid}-abc123`);
+    const fresh = await make("m-advisor-tts-xyz789");
+    const keep = await make(`m-advisor-tts-${dead}-keep12`);
+    const oldLegacy = await make("m-advisor-tts-old123", 2 * 24 * 3_600_000);
+    const lookalike = await make(`m-advisor-tts-extra-${dead}-abc123`);
+    const other = await make("other-dir");
+    const outside = await mkdtemp(path.join(os.tmpdir(), "tts-outside-"));
+    await writeFile(path.join(outside, "precious"), "x");
+    await symlink(outside, path.join(root, `m-advisor-tts-${dead}-link12`));
+    await sweepStaleTtsDirectories(root, keep);
+    await assert.rejects(access(stale));
+    await assert.rejects(access(oldLegacy));
+    for (const survivor of [running, fresh, keep, lookalike, other, path.join(root, `m-advisor-tts-${dead}-link12`), path.join(outside, "precious")]) {
+      await access(survivor);
+    }
+    await rm(outside, { recursive: true, force: true });
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("starting the worker sweeps stale speech directories but keeps its own", async () => {
+  const f = await fixture();
+  const dead = spawnSync(process.execPath, ["-e", ""]).pid;
+  const stale = path.join(os.tmpdir(), `m-advisor-tts-${dead}-zzzzzz`);
+  await mkdir(stale);
+  try {
+    const wav = await f.service.generate("你好", "old");
+    await assert.rejects(access(stale));
+    await access(wav);
+  } finally { await rm(stale, { recursive: true, force: true }); await f.cleanup(); }
 });
