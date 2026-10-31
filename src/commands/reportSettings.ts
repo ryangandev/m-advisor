@@ -176,12 +176,13 @@ const reportSettingsCommand: BotCommand = {
 
         const top = interaction.options.getRole("top-role");
         const none = interaction.options.getRole("none-role");
-        if (top && none && top.id === none.id) {
-          await reply("「本周特等马」和「本周没有马」必须是两个不同的身份组。");
-          return;
-        }
         const wantedTop = top?.id ?? settings?.topRoleId ?? null;
         const wantedNone = none?.id ?? settings?.noneRoleId ?? null;
+        // Checked on the resolved roles, so a role that only clashes with the saved other one is caught too.
+        if (wantedTop && wantedTop === wantedNone) {
+          await reply(`「本周特等马」和「本周没有马」必须是两个不同的身份组，但现在两个都是 <@&${wantedTop}>。请换一个身份组，或者两个都指定。`);
+          return;
+        }
         // A dry run first: nothing is created or changed unless the bot is actually allowed to do it.
         const check = await checkRoleSetup(roleGuild, [top?.id, none?.id].filter((id): id is string => id !== undefined));
         if (!check.ok) {
