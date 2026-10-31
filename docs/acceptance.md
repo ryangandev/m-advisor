@@ -15,7 +15,7 @@ npm run doctor
 The behavioral tests exercise Riot response parsing and errors, persistence across processes, baseline handling, tracked-account results, retries, duplicate prevention, voice queue cancellation, command permissions and shutdown races.
 External Discord, Riot and speech boundaries are stubbed in the deterministic test suite.
 The doctor executes the installed FFmpeg binary, opens SQLite in memory and reports codec/encryption dependencies.
-Configuration flags show presence only; they do not validate credentials.
+Configuration flags show presence only; they do not validate credentials, but a missing required variable or cipher makes the doctor exit non-zero (see [runtime](runtime.md)).
 
 ## Real offline speech and codec check
 

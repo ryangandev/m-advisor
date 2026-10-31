@@ -14,6 +14,8 @@ Install the locked dependency graph with `npm ci`.
 `npm run check` builds the bot, runs that type check and runs those suites.
 `npm run doctor` checks the executable codec, SQLite, encryption and configuration without contacting Discord or loading the model.
 It also counts the saved bindings and, in real mode, warns about each saved mock account that monitoring would skip; it never creates a missing database, but opening an older existing one upgrades it like starting the bot does (see [storage](storage.md#schema-versions-and-migration)).
+It exits non-zero, naming only the variable and never a value, when `RIOT_MODE=real` has no `RIOT_API_KEY` that is non-blank after trimming, when `DISCORD_TOKEN` or `CLIENT_ID` is missing, or when `aes-256-gcm` is unavailable.
+Mock mode without a Riot key still passes.
 `npm run doctor -- --voice` also prewarms the selected speech provider and closes it afterward.
 `npm run register` explicitly replaces this application's guild command definitions in `TEST_GUILD_ID`.
 `npm run verify:local` exercises isolated mock match monitoring with real local speech and Opus conversion; see [Acceptance](acceptance.md).

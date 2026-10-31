@@ -33,12 +33,12 @@ function seedBinding(databasePath: string): void {
 }
 
 // Runs the real doctor from an empty working directory so the repository's .env is never loaded.
-function doctor(mode: "mock" | "real", databasePath: string) {
+function doctor(mode: "mock" | "real", databasePath: string, extra: Record<string, string> = {}) {
   const child = spawnSync(process.execPath, ["--import", pathToFileURL(require.resolve("tsx")).href, path.join(root, "src/cli/doctor.ts")], {
     cwd: directory,
     encoding: "utf8",
     timeout: 30_000,
-    env: { PATH: process.env.PATH, HOME: process.env.HOME, RIOT_MODE: mode, DATABASE_PATH: databasePath, BOT_DATA_DIR: path.join(directory, "data") },
+    env: { PATH: process.env.PATH, HOME: process.env.HOME, RIOT_MODE: mode, DISCORD_TOKEN: "test-token-value", CLIENT_ID: "test-client-id", RIOT_API_KEY: "test-riot-key-value", ...extra, DATABASE_PATH: databasePath, BOT_DATA_DIR: path.join(directory, "data") },
   });
   assert.equal(child.error, undefined);
   const report = JSON.parse(child.stdout.slice(0, child.stdout.indexOf("\n}") + 2)) as Record<string, unknown>;
@@ -71,4 +71,31 @@ test("doctor never creates a missing database", () => {
   assert.equal(child.status, 0, child.stderr);
   assert.equal(report.savedBindings, 0);
   assert.equal(existsSync(path.dirname(databasePath)), false);
+});
+
+test("doctor passes in mock mode without a Riot key", () => {
+  const { child } = doctor("mock", path.join(directory, "bot.sqlite3"), { RIOT_API_KEY: "" });
+  assert.equal(child.status, 0, child.stderr);
+  assert.equal(child.stderr, "");
+});
+
+test("doctor fails in real mode when the Riot key is missing or blank after trimming", () => {
+  for (const key of ["", "   "]) {
+    const { child, report } = doctor("real", path.join(directory, "bot.sqlite3"), { RIOT_API_KEY: key });
+    assert.equal(child.status, 1);
+    assert.equal(report.riotKeyPresent, false);
+    assert.match(child.stderr, /Error: RIOT_MODE=real requires RIOT_API_KEY/);
+  }
+});
+
+test("doctor fails when DISCORD_TOKEN or CLIENT_ID is missing, naming the variable only", () => {
+  const token = doctor("mock", path.join(directory, "bot.sqlite3"), { DISCORD_TOKEN: "" });
+  assert.equal(token.child.status, 1);
+  assert.match(token.child.stderr, /Error: Missing DISCORD_TOKEN/);
+  const client = doctor("mock", path.join(directory, "bot.sqlite3"), { CLIENT_ID: "" });
+  assert.equal(client.child.status, 1);
+  assert.match(client.child.stderr, /Error: Missing CLIENT_ID/);
+  for (const text of [token.child.stdout, token.child.stderr, client.child.stdout, client.child.stderr]) {
+    assert.equal(text.includes("test-token-value") || text.includes("test-riot-key-value"), false);
+  }
 });
