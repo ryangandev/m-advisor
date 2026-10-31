@@ -117,7 +117,10 @@ Detecting the start of a game and posting the card are a separate step that is n
 ### What it says
 
 It reads the bound members on the perspective team and nothing else: `{ memberId, name, championId, smite, records }` for each, plus a count of the other players on that team and whether a bound member is playing on the other side.
-For each teammate it uses the latest 10 records of the current data mode and shows:
+For each teammate it reads the records of the current data mode that the caller passes, at most 200 per teammate (`RECORDS_PER_TEAMMATE` in `src/services/gameStartWatcher.ts`).
+The last 5 tiers, the averages, the trend and the runs use the latest 10 of them.
+The record on the champion in the game, the signature champion, the position and the pick use every record passed in.
+The card shows:
 
 - the last 5 tiers, newest first, and their average score;
 - the last 5 against the 5 before with an arrow, only when both sides have at least 3 games, where a difference of 1.0 or more counts as up or down;
@@ -143,7 +146,8 @@ A teammate without records next to rated ones is `新马` and stays unrated.
 
 Enemies, strangers and a tracked member on the other team are never passed to the builder, so they are never named, rated or counted into a pick.
 Strangers appear only as `还有 N 位路人队友` in the footer, and the footer always says `对面不评`.
-A bound member on the other side is acknowledged by `对面也有自家人，军师两边不站`, without a name, a mention or a rating.
+A bound member on the other side is acknowledged in the card by `对面也有自家人，军师两边不站`, without a name or a rating.
+The message above the card does mention every tracked player of the game who is in the voice channel, from both teams, so a friend on the other side is pinged that the game started (`pregameMentionContent` in `src/utils/pregameEmbed.ts`).
 The card shows bound teammates by `<@id>` mention, never by a Riot name, and the speech sanitizes names like the announcement does.
 The spoken name is `storedGameName`, which must come from the stored binding and never from spectator or match data about the live game.
 The builder throws for a `memberId` that is not a Discord snowflake (17 to 20 digits) and for a repeated `memberId`, so a caller bug fails loudly instead of printing a PUUID or a name into a mention.
