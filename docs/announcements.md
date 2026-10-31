@@ -330,7 +330,9 @@ A row that league-v4 has not updated by then is posted as pending, and the track
 Once every pending row of the report has settled, the report message is edited once, with the same content, the same embeds apart from `段位变化` and the same `allowedMentions`.
 The posted `Message` is kept in the match's progress, and the edit goes to that message.
 The edit runs apart from the poll and changes nothing else when it fails.
-A report someone deleted (Discord's Unknown Message, code 10008) is one info line, and any other failed edit is logged as an error.
+A report someone deleted (Discord's Unknown Message, code 10008) is one info line.
+So is a channel that is gone or out of sight, which happens when the voice channel is deleted or the bot is removed from the server: discord.js reports ChannelNotCached, or Discord answers Unknown Channel (10003) or Missing Access (50001).
+Any other failed edit is logged as an error.
 At shutdown `stopAllPolling` stops the tracker as well: queued reads do nothing, retries are cleared, pending rows settle with no row, and no edit goes out on the closing client.
 A bot restart drops pending reads, so such a row keeps saying it is not updated.
 
@@ -391,6 +393,8 @@ It has one line per announced member, in party order, with tiers as `黄金 II` 
 A demotion shows no LP change number, for the same reason as the `段位变化` row: the ladder distance is not the LP Riot actually takes until a real demotion has been measured.
 The members are mentions inside the embed, which notifies nobody, and the message carries no content and an `allowedMentions` that pings no one.
 Strangers, enemies and a friend on the other team are never listed.
+If the bot is no longer in the server, the announcement is skipped with one info line, with no post and no voice line.
+A post that fails because the channel is gone or out of sight (10003 or 50001) is one info line too, and any other failure is logged as an error.
 
 ### When it is sent
 
