@@ -2971,6 +2971,56 @@ test("stopping or shutting down while a new session waits for the old send ends 
   assert.deepEqual(closing.played, []);
 });
 
+test("a send that never settles stops holding the new session after the wait: the text is skipped, the voice plays once and a late answer posts nothing more", async () => {
+  const settledSoon = async (poll: Promise<unknown>) => Promise.race([poll.then(() => true), delay(1_000).then(() => false)]);
+
+  // The old send answers late with success: it is the one post, and nothing is spoken twice.
+  const bot = harness("keep-sending-stuck-guild");
+  bot.dependencies.inFlightWaitMs = 60;
+  await bot.start();
+  bot.latestIds.set("tracked", "m1");
+  const post = heldFirstSend(bot, "first-channel");
+  const oldPoll = bot.poll();
+  await until(() => post.calls() === 1, "the first send");
+  blip(bot);
+  const newPoll = bot.start();
+  assert.ok(await settledSoon(newPoll), "the new session does not wait for the send forever");
+  assert.equal(bot.played.length, 1, "the report is spoken once");
+  assert.equal(post.calls(), 1, "the text is not posted a second time while the first is unknown");
+  const warnings = bot.errors.filter((error) => /still in flight/.test((error as Error).message));
+  assert.equal(warnings.length, 1, "one warning");
+  assert.doesNotMatch((warnings[0] as Error).message, /token/i);
+  post.release();
+  await oldPoll;
+  await delay(30);
+  assert.equal(bot.sent.length, 1, "the late answer is the only post");
+  assert.equal(bot.played.length, 1);
+  assert.equal(post.calls(), 1);
+  assert.deepEqual(await bot.poll(), { announced: 0, errors: 0 });
+  assert.equal(bot.sent.length, 1);
+  assert.equal(bot.played.length, 1);
+
+  // The old send fails late: nothing is posted again either, and the voice already played once.
+  const failing = harness("keep-sending-stuck-failed-guild");
+  failing.dependencies.inFlightWaitMs = 60;
+  await failing.start();
+  failing.latestIds.set("tracked", "m1");
+  const failed = heldFirstSend(failing, "first-channel");
+  const oldFailing = failing.poll();
+  await until(() => failed.calls() === 1, "the first send");
+  blip(failing);
+  assert.ok(await settledSoon(failing.start()), "the new session does not wait for the send forever");
+  failed.fail(new Error("Fake Discord outage"));
+  await oldFailing;
+  await delay(30);
+  assert.equal(failed.calls(), 1, "no second post after the late failure");
+  assert.equal(failing.sent.length, 0);
+  assert.equal(failing.played.length, 1);
+  assert.deepEqual(await failing.poll(), { announced: 0, errors: 0 });
+  assert.equal(failed.calls(), 1);
+  assert.equal(failing.played.length, 1);
+});
+
 test("a /bind or /unbind forgets the member's kept baselines, also when it races a queued reconciliation", async () => {
   // Unbound and bound again while away, before any reconciliation ran: the store looks unchanged to the monitor.
   const away = harness("forget-away-guild");
