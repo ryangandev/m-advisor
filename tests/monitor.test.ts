@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { afterEach, beforeEach, mock, test } from "node:test";
 import { PermissionFlagsBits, VoiceChannel, type Client, type MessageCreateOptions, type MessageEditOptions } from "discord.js";
 import type { MatchDetail, RankedEntry, TrackedMember } from "../src/types";
-import { GameMonitor, KEEP_BASELINES_MS, MAX_VOICE_ATTEMPTS, resolveMonitoredTextChannel, resolveMonitoredVoiceChannel, type MonitorDependencies } from "../src/services/gameMonitor";
+import { GameMonitor, KEEP_BASELINES_MS, KEEP_FRESH_MS, MAX_VOICE_ATTEMPTS, resolveMonitoredTextChannel, resolveMonitoredVoiceChannel, type MonitorDependencies } from "../src/services/gameMonitor";
 import { AnnouncementQueueFullError, VoiceAnnouncementService, type VoiceAnnouncementDependencies } from "../src/services/voiceAnnouncements";
 import { resetMockData, RiotApiError, simulateMockMatch } from "../src/services/riotData";
 import { buildMatchAnnouncement } from "../src/services/announcementText";
@@ -2613,6 +2613,65 @@ test("baselines of an account not read recently are not kept, so a long sleep ca
   assert.deepEqual(result, { announced: 0, errors: 0 });
   assert.deepEqual(bot.generated, []);
   assert.equal(getLastMatchId(bot.guildId, "tracked"), "finished-long-ago", "a fresh baseline");
+});
+
+/**
+ * Bob's report plays for 100 s while Alice's own game ends; `leave` runs with the clock 100 s ahead, during the report or
+ * right after it, and makes Alice drop out of voice and return. Returns the bot once a poll after her return has run.
+ */
+async function longReportThenBlip(guildId: string, leaveDuringReport: boolean, afterReportMs = 0) {
+  const bot = harness(guildId, [
+    { id: "alice-id", puuids: ["alice"], channel: "x" },
+    { id: "bob-id", puuids: ["bob"], channel: "x" },
+  ]);
+  await bot.start();
+  bot.matches.set("bob-game", match("bob-game", ["bob"]));
+  bot.latestIds.set("bob", "bob-game");
+  const playback = heldPlayback(bot);
+  // Reads Alice (unchanged), then announces Bob's game.
+  const polling = bot.poll();
+  await playback.nextStart();
+  const real = Date.now.bind(Date);
+  let ahead = 100_000;
+  const clock = mock.method(Date, "now", () => real() + ahead);
+  const blipAlice = () => {
+    bot.move("alice-id", null);
+    bot.sync();
+    bot.move("alice-id", "x");
+    bot.sync();
+  };
+  try {
+    bot.matches.set("alice-game", match("alice-game", ["alice"], [], real() + 50_000));
+    bot.latestIds.set("alice", "alice-game");
+    if (leaveDuringReport) blipAlice();
+    playback.release();
+    await polling;
+    bot.play = async (target) => { bot.played.push(target.id); };
+    ahead += afterReportMs;
+    if (!leaveDuringReport) blipAlice();
+    await bot.poll();
+    await delay(30);
+  } finally {
+    clock.mock.restore();
+  }
+  return bot;
+}
+
+test("a member who finished a game during a teammate's long report and blips right after it gets the game announced", async () => {
+  const during = await longReportThenBlip("fresh-during-report-guild", true);
+  assert.equal(during.generated.length, 2, "a blip during the report keeps the baseline");
+  // 10 s after the report, before the next tick: every last read is 100 s old and no poll runs.
+  const after = await longReportThenBlip("fresh-after-report-guild", false, 10_000);
+  assert.equal(after.generated.length, 2, "so does a blip right after it");
+  assert.ok(after.infos.some((line) => line.startsWith("Baseline for alice#NA1 kept from before they left voice: historical-match")));
+  assert.equal(getLastMatchId(after.guildId, "alice"), "alice-game");
+});
+
+test("the allowance after a long report is short: a blip two poll intervals later takes a fresh baseline", async () => {
+  // No poll ran since the report ended, as after the Mac slept: the old read is not trusted any more.
+  const bot = await longReportThenBlip("fresh-gap-expired-guild", false, KEEP_FRESH_MS + 1_000);
+  assert.equal(bot.generated.length, 1, "only Bob's report");
+  assert.equal(getLastMatchId(bot.guildId, "alice"), "alice-game", "a fresh baseline");
 });
 
 test("a kept baseline is dropped when the member is unbound, so a rebind within the window starts fresh", async () => {
