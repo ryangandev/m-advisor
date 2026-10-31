@@ -8,6 +8,7 @@ import type { MonitorStatus } from "../services/gameMonitor";
 import { RECAP_FIELD_NAME } from "../services/pregameRecap";
 import { RANK_ANNOUNCEMENT_TITLE, RANK_FIELD_NAME } from "../services/rankText";
 import { isAnnouncedQueue } from "./riotMatchApi";
+import { isApex } from "../services/rankMath";
 
 // Verified against the official versions endpoint on 2026-10-02; configurable without changing code.
 const DEFAULT_DDRAGON_VERSION = "16.19.1";
@@ -31,7 +32,9 @@ function formatRank(entry?: RankedEntry): string {
   const totalGames = entry.wins + entry.losses;
   const winRate = totalGames > 0 ? Math.round((entry.wins / totalGames) * 100) : 0;
 
-  return `${entry.tier} ${entry.rank} - ${entry.leaguePoints} LP | ${entry.wins}W ${entry.losses}L (${winRate}%)`;
+  // Riot sends division I for MASTER, GRANDMASTER and CHALLENGER, which have no divisions.
+  const tier = isApex(entry.tier) ? entry.tier : `${entry.tier} ${entry.rank}`;
+  return `${tier} - ${entry.leaguePoints} LP | ${entry.wins}W ${entry.losses}L (${winRate}%)`;
 }
 
 export function buildProfileEmbed(
