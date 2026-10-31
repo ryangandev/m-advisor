@@ -117,13 +117,28 @@ function shutdown(): Promise<void> {
 // first time afterwards blocks the main thread, and a write to a dead terminal emits EIO that would crash the shutdown.
 for (const stream of [process.stdout, process.stderr]) stream.on("error", () => {});
 
+// A repeat of the signal that arrives this soon after the first is the same request, not a second one. Ctrl+C under
+// `npm start` reaches the bot twice almost at once: the terminal signals the whole foreground process group, and npm
+// also forwards it to its child. A person pressing Ctrl+C again takes longer than this.
+const REPEAT_SIGNAL_WINDOW_MS = 1_000;
+const SHUTDOWN_DEADLINE_MS = 15_000;
+let firstSignalAt: number | undefined;
+
 // SIGHUP is what closing the launcher's Terminal window sends; its default would exit without any cleanup.
-for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
-  process.once(signal, () => {
-    const deadline = setTimeout(() => process.exit(1), 15_000).unref();
-    void shutdown().then(() => { clearTimeout(deadline); }).catch(() => { process.exitCode = 1; });
-  });
+// The listeners stay registered (`on`, not `once`): a signal with no listener takes its default action and would kill
+// the process in the middle of cleanup.
+function handleStopSignal(): void {
+  const now = performance.now();
+  if (firstSignalAt !== undefined) {
+    if (now - firstSignalAt < REPEAT_SIGNAL_WINDOW_MS) return;
+    logError("Stop signal received again while stopping; ending the process now.");
+    process.exit(1);
+  }
+  firstSignalAt = now;
+  const deadline = setTimeout(() => process.exit(1), SHUTDOWN_DEADLINE_MS).unref();
+  void shutdown().then(() => { clearTimeout(deadline); }).catch(() => { process.exitCode = 1; });
 }
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, handleStopSignal);
 
 void bootstrap().catch(async (error: unknown) => {
   logError(`Bot startup failed: ${error instanceof Error ? error.message : "unknown error"}`);

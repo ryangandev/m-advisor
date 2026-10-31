@@ -9,7 +9,7 @@ import { test } from "node:test";
 // is stubbed before it loads. No tokens, network calls or GPU imports are used.
 // Log files go to a temporary data directory and are returned as one string.
 function spawnEntryPoint(
-  scenario: "before-commands" | "during-commands" | "during-login" | "crash" | "hangup" | "hangup-eio",
+  scenario: "before-commands" | "during-commands" | "during-login" | "crash" | "hangup" | "hangup-eio" | "double-sigint" | "late-sigint",
   failures: { client?: boolean; connection?: boolean } = {},
 ) {
   const root = path.resolve(__dirname, "..");
@@ -35,7 +35,9 @@ class FakeClient extends EventEmitter {
   }
   async destroy() {
     trace.push("destroy-begin");
-    await delay(15);
+    // The double-delivery run is still cleaning up when the repeat arrives; the late run never finishes cleaning up.
+    if (scenario === "late-sigint") await new Promise(() => {});
+    await delay(scenario === "double-sigint" ? 300 : 15);
     if (failures.client) {
       trace.push("destroy-failed");
       throw new Error("offline client destruction failure");
@@ -82,6 +84,13 @@ if (scenario === "hangup-eio") {
   }
 }
 if (scenario === "hangup" || scenario === "hangup-eio") process.kill(process.pid, "SIGHUP");
+// npm start forwards Ctrl+C that the terminal already sent to the whole process group, so SIGINT arrives twice.
+if (scenario === "double-sigint" || scenario === "late-sigint") {
+  // The real bot's sockets keep its event loop alive; the stuck fake client alone would not.
+  if (scenario === "late-sigint") setInterval(() => {}, 1000);
+  setTimeout(() => process.kill(process.pid, "SIGINT"), 20);
+  setTimeout(() => process.kill(process.pid, "SIGINT"), scenario === "double-sigint" ? 80 : 1500);
+}
 if (scenario === "crash") {
   process.emitWarning("offline test warning");
   setTimeout(() => { throw new Error("offline crash quoting offline-test-token"); }, 50);
@@ -138,6 +147,35 @@ test("SIGHUP from closing the terminal window runs the same graceful shutdown as
   assert.ok(trace.indexOf("destroy-end") < trace.indexOf("stop-speech"), trace.join(", "));
   assert.ok(trace.indexOf("stop-speech") < trace.indexOf("close-database"), trace.join(", "));
   assert.equal(trace.filter((entry) => entry === "stop-monitoring").length, 1);
+});
+
+function readTrace(stdout: string): string[] {
+  const result = stdout.trim().split("\n").map((line) => {
+    try { return JSON.parse(line); } catch { return undefined; }
+  }).find((item) => item?.trace);
+  assert.ok(result, stdout);
+  return result.trace;
+}
+
+test("a repeated SIGINT right after the first, as npm start delivers it, does not skip cleanup", () => {
+  const { child, log } = spawnEntryPoint("double-sigint");
+  assert.equal(child.error, undefined);
+  assert.equal(child.status, 0, child.stderr);
+  const trace = readTrace(child.stdout);
+  assert.ok(trace.indexOf("destroy-end") < trace.indexOf("stop-speech"), trace.join(", "));
+  assert.ok(trace.includes("close-database"), trace.join(", "));
+  assert.match(log, / INFO Bot stopped; speech process and database closed\.\n$/);
+});
+
+test("a later deliberate SIGINT while cleanup is stuck ends the process at once", () => {
+  const started = Date.now();
+  const { child, log } = spawnEntryPoint("late-sigint");
+  assert.equal(child.error, undefined);
+  assert.equal(child.status, 1, child.stderr);
+  assert.ok(Date.now() - started < 8_000, "ended by the second signal, not by the 15 second deadline");
+  assert.ok(!readTrace(child.stdout).includes("close-database"));
+  assert.match(log, / ERROR Stop signal received again while stopping; ending the process now\.\n$/);
+  assert.doesNotMatch(log, /Bot stopped/);
 });
 
 test("an error logged during a SIGHUP shutdown with a dead terminal still completes the shutdown", () => {
