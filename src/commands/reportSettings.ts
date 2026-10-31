@@ -259,7 +259,7 @@ function describe(guildId: string): string {
     `频道：${channel}`,
     `每日马报：${onOff(settings?.dailyEnabled ?? true)} · 每周马报：${onOff(settings?.weeklyEnabled ?? true)}`,
     settings?.rolesEnabled ? `每周身份组：开（<@&${settings.topRoleId}>、<@&${settings.noneRoleId}>）` : "每周身份组：关",
-    "结算按太平洋时间：每天 00:30 左右发前一天，周一 00:30 左右发上一周（周一到周日）。机器人没开时错过的，会在下次启动时补发最近的一天和一周。",
+    "结算按太平洋时间：每天 00:30 左右发前一天，周一 00:30 左右发上一周（周一到周日）。机器人没开或电脑睡眠时错过的，回来后日报和周报各补发一份：落下的几期里最近一期有对局的（日报最多往回 7 天，周报最多往回 2 周）。",
   ].join("\n");
 }
 
