@@ -177,7 +177,8 @@ function analyze(teammate: PregameTeammate, mock: boolean): Analysis {
   const none = onChampion.filter((record) => record.tier === "没有马").length;
   const enough = onChampion.length >= MIN_CHAMPION_GAMES;
   const signature = enough && top >= SIGNATURE_MIN_TOP && top / onChampion.length >= SIGNATURE_MIN_SHARE - EPSILON && top > none;
-  const position = teammate.smite ? "JUNGLE" : mostCommonPosition(onChampion);
+  // Jungle is never inferred from history: a player without Smite is not in the jungle this game.
+  const position = teammate.smite ? "JUNGLE" : mostCommonPosition(onChampion.filter((record) => record.position !== "JUNGLE"));
   const champion = championLabel({ championId: teammate.championId, championName: readableName(onChampion[0]?.championName || "神秘英雄") });
   return {
     teammate,
