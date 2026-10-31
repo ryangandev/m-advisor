@@ -8,6 +8,7 @@ import {
   setReportRoleHolders,
   setReportRoles,
 } from "../store/reportStore";
+import { DatabaseClosedError } from "../store/database";
 import type { ReportKind, ReportSettings } from "../store/reportStore";
 import { logError, logInfo, logWarn } from "../utils/log";
 import { REPORT_ALLOWED_MENTIONS, buildReportEmbed, periodLabel } from "../utils/reportEmbed";
@@ -191,6 +192,11 @@ export class ReportScheduler {
     try {
       markReportHandled(guildId, mock, kind, periodStart, now);
     } catch (error) {
+      if (error instanceof DatabaseClosedError) {
+        // The send finished after shutdown closed the database, so the mark cannot be written and nothing will check again.
+        logWarn(`Bot stopped before the ${kindName(kind)} 马报 of server ${guildId} was recorded; it may be posted again after restart.`);
+        return;
+      }
       const memoryKey = `${guildId}:${mock ? 1 : 0}:${kind}`;
       this.settledMarks.set(memoryKey, Math.max(this.settledMarks.get(memoryKey) ?? periodStart, periodStart));
       logError(`Could not record the ${kindName(kind)} 马报 of server ${guildId} as handled (${errorName(error)}); it will not be touched again until the bot restarts.`);
