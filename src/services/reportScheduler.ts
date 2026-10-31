@@ -307,6 +307,11 @@ export class ReportScheduler {
       // acting on the row read before the send would hand out roles that nothing takes back.
       problems = await runInGuildQueue(guildId, () => this.rotateRolesNow(guildId, top, none, options));
     } catch (error) {
+      if (error instanceof DatabaseClosedError) {
+        // Shutdown closed the database under the rotation: this is not a failure to report to the admins.
+        logWarn(`Bot stopped during the weekly role update in server ${guildId}; the holders may not have been recorded.`);
+        return;
+      }
       logError(`Weekly roles in server ${guildId} failed: ${errorName(error)}`);
       problems = ["身份组更新时出了意外错误，详情见机器人日志。"];
     }
@@ -323,6 +328,8 @@ export class ReportScheduler {
 
   /** The rotation itself, run inside the server's queue on freshly read settings. Returns what could not be done. */
   private async rotateRolesNow(guildId: string, top: readonly string[], none: readonly string[], options: { quiet: boolean }): Promise<string[]> {
+    // This may have waited in the queue while shutdown began; a role added now could not be recorded on a closed database.
+    if (this.stopping) return [];
     const settings = getReportSettings(guildId);
     if (!settings?.rolesEnabled || !settings.topRoleId || !settings.noneRoleId) return [];
     // Nothing to take back from an empty week when nobody holds a role.

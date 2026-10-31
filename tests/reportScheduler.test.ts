@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
 import { setMemberAccounts } from "../src/store/bindingStore";
-import { closeDatabase, getDatabase, shutdownDatabase } from "../src/store/database";
+import { DatabaseClosedError, closeDatabase, getDatabase, shutdownDatabase } from "../src/store/database";
 import type { HorseRecord } from "../src/store/horseRecordStore";
 import type { HorseTier } from "../src/services/horseRanking";
 import { FAILURE_GAP_RESET_MS, GIVE_UP_AFTER_MS, ReportChannelError, ReportScheduler, REPORT_TICK_MS, reportNonce } from "../src/services/reportScheduler";
@@ -1099,6 +1099,38 @@ test("a send that takes minutes before failing does not look like a sleep", asyn
 });
 
 // Keep this test last: shutting the database down cannot be undone in a process, so later tests here could not open it.
+test("a rotation waiting in the guild queue does nothing when the scheduler is halted before its turn", async () => {
+  seedGames(DUE_WEEK.start + 5 * HOUR);
+  setReportKindEnabled(GUILD, "day", false);
+  const guild = enableRoles();
+  const { state, scheduler } = harness();
+  state.roleGuild = guild;
+  let open!: () => void;
+  const admin = runInGuildQueue(GUILD, () => new Promise<void>((resolve) => { open = resolve; }));
+  const run = scheduler.runDue();
+  await settle();
+  assert.equal(state.sent.length, 1, "the report went out and the rotation is queued behind the admin's operation");
+  scheduler.halt();
+  open();
+  await admin;
+  await run;
+  assert.deepEqual(guild.changes, []);
+  assert.deepEqual([getReportSettings(GUILD)!.topHolderIds, getReportSettings(GUILD)!.noneHolderIds], [[], []]);
+});
+
+test("the database closing under a role rotation is a quiet shutdown line, not a role failure note", async () => {
+  seedGames(DUE_WEEK.start + 5 * HOUR);
+  setReportKindEnabled(GUILD, "day", false);
+  enableRoles();
+  const { state, deps, scheduler } = harness();
+  // What a store call does once shutdown has closed the database (a real shutdown would break the tests after this one).
+  deps.roleGuild = () => { throw new DatabaseClosedError(); };
+  await scheduler.runDue();
+  assert.equal(state.sent.length, 1, "no note about the roles was sent");
+  assert.ok(output.some((line) => line.includes("Bot stopped during the weekly role update")), output.join("\n"));
+  assert.ok(!output.some((line) => line.includes("Weekly roles in server scheduler-guild failed")));
+});
+
 test("a send that finishes after shutdown closed the database says so, instead of claiming the period is settled", async () => {
   seedGames(DUE_DAY.start + HOUR);
   setReportKindEnabled(GUILD, "week", false);
