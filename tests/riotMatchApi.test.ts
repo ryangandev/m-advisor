@@ -1,14 +1,20 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { afterEach, beforeEach, test } from "node:test";
+import { after, afterEach, before, beforeEach, test } from "node:test";
 import { getAccountByRiotId } from "../src/utils/riotApi";
 import { getLatestSRMatchId, getMatchDetail, parseMatchDetail } from "../src/utils/riotMatchApi";
-import { resetMockData, riotFetch, simulateMockMatch } from "../src/services/riotData";
+import { resetMockData, riotFetch, simulateMockMatch, useRiotPacer } from "../src/services/riotData";
+import { RiotPacer } from "../src/services/riotPacing";
 import { appealCustomId } from "../src/utils/whyEmbed";
 
 const originalMode = process.env.RIOT_MODE;
 const originalKey = process.env.RIOT_API_KEY;
 const originalFetch = globalThis.fetch;
+
+// The cache tests send hundreds of requests to a fake Riot; pacing is tested in riotPacing.test.ts and recentPacing.test.ts.
+let restorePacer: () => void;
+before(() => { restorePacer = useRiotPacer(new RiotPacer({ windows: [] })); });
+after(() => { restorePacer(); });
 
 beforeEach(() => {
   delete process.env.RIOT_MODE;

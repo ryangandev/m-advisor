@@ -81,12 +81,36 @@ The fields it reads (`position`, `shutdownBounty`, `KILL_FIRST_BLOOD`, `KILL_MUL
 The latest match lookup checks up to 20 matches for supported Summoner's Rift queues and caches at most 200 immutable match details, dropping the least recently used first.
 It also remembers the queue of up to 2000 matches, so a match already seen as another mode is skipped and one already seen as supported is returned without a request.
 A repeat poll of an account therefore costs only its ID list, and only matches never seen before are fetched, newest first, until the first supported one.
-`/recent` reads its accounts two at a time (each account's matches one at a time), so a large server cannot burst past the americas limit that finished-match polling shares.
+`/recent` reads its accounts two at a time (each account's matches one at a time), and its requests are bulk requests for [request pacing](#request-pacing).
+Concurrency alone does not keep it under the limit: a cold `/recent count:10` over 10 accounts is 110 americas requests, more than the 100 per 2 minutes the development key allows.
 Supported queues are 400, 420, 430, 440, 480, and 490; this includes Swiftplay and Quickplay and preserves Blind Pick for older history.
 
 Queue IDs were checked against [Riot's official queue constants](https://static.developer.riotgames.com/docs/lol/queues.json) on 2026-10-02.
 Retry and authentication failure behavior follows the [Riot Developer Portal response-code documentation](https://developer.riotgames.com/docs/portal).
 NA1 and Americas routing follows the [official League of Legends routing documentation](https://developer.riotgames.com/docs/lol).
+
+### Request pacing
+
+Riot's development key allows 20 requests per 1 s and 100 per 120 s on each routing host, counted separately on `na1.api.riotgames.com` and `americas.api.riotgames.com`.
+Going past either answers 429 with a Retry-After of up to the rest of the 2-minute window, and the cooldown then fails every shared request on that host until it ends.
+`src/services/riotPacing.ts` paces requests so they wait for room instead of being sent and rejected.
+
+- One pacer is shared by every requester in the process: the shared requester behind `riotFetch`, the spectator, league and timeline requesters, and scripts that create their own. Every caller draws on one budget per host.
+- `RIOT_PACING_WINDOWS` keeps each host at most 16 requests per 1.2 s and 95 per 125 s. The counts are below Riot's 20 and 100, and the windows are longer than Riot's 1 s and 120 s, so a request that reaches Riot a little late is still inside the window it was counted in.
+- Every attempt takes a turn, retries included, because Riot counts each one. A request counts as sent when it gets its turn, and its timeout starts then.
+- Each response's `X-App-Rate-Limit-Count` tells the pacer Riot's own count. When Riot has counted more, for example requests from before a restart or from another process on the same key, the pacer counts the difference as sent. It never lowers its own count.
+- The Retry-After cooldown still applies on top: a request first waits out a short cooldown (or fails on a long one), then waits for its turn, and when a new 429 started a cooldown while it waited, it gives the turn back and honors that cooldown too.
+- A requester that never waits out a cooldown (spectator, league and timelines, `maxRetryDelayMs` 0) waits at most its 5 s timeout for a turn. When the turn would come later, the request is refused at once as `rate_limited` with the wait as `retryAfterMs` and is never sent. The game start watcher and the rank tracker already skip a `rate_limited` read quietly, and a refused timeline leaves the report on statistics only. Any other requester waits as long as its turn takes.
+- At shutdown a waiting request is refused within a second (`unavailable`, never sent), and so is every later one. Waiting uses unref'd timers, so it never keeps the process alive.
+
+Polling must not starve behind `/recent`, so requests have two priorities.
+`/recent` sends bulk requests; everything else is normal, including finished-match polling with its match detail and timeline, league and spectator reads, `/profile`, `/bind` and the key check.
+Bulk requests may use at most 10 turns per short window and 55 per long one, and a freed turn goes to a waiting normal request first.
+Normal requests therefore always have 6 per short window and 40 per long window that bulk cannot take, more than a 10-account poll needs (10 ID lists per 45 s, about 28 per 125 s, plus a detail and a timeline per finished match).
+A `/recent` burst can hold a poll's request back by at most one short window at a time, about a second, and never for the long window.
+A smaller share was chosen over a strict priority queue so that `/recent` always makes progress, and over a cap on what `/recent` shows so that its reply stays the same.
+The cost is time: a cold `/recent count:10` over 10 accounts sends 55 requests within a few seconds and the rest after the first ones leave the window, so its reply comes after about 2 minutes, well inside the 15 minutes a deferred Discord reply allows.
+On na1 there are no bulk requests; the worst case of spectator (60 per 2 minutes for 10 accounts) and league (30, see [Rank tracking](#rank-tracking)) leaves 5 turns for `/profile` and `/bind`, which otherwise wait for the window.
 
 ## Profile icons and visible labels
 
@@ -156,7 +180,7 @@ It exists to read an account's rank and LP before and after a ranked game.
 The league endpoint has its own requester, like spectator: one attempt, a 5 second timeout, no retries and no waiting.
 The caller schedules any retry.
 A league 429 therefore never sets the shared na1 cooldown that `/profile` and `/bind` honor, and the league requester's own cooldown fails fast.
-Riot still counts every request against the same na1 app limit on its side.
+Riot still counts every request against the same na1 app limit on its side, and the shared [pacer](#request-pacing) counts it with the rest.
 
 The parser is tolerant per entry, because the numbers drive an LP difference:
 
@@ -203,7 +227,7 @@ It depends on an injected `readEntries(puuid)`, which is `getLeagueEntries` in p
 - Every read of an account comes at least 60 seconds after its previous read of any kind, failed reads included, checked when it is queued and again when its turn comes. The only exception is a match's first after-read, which goes out at detection.
 - While league-v4 has not caught up (`wins + losses` unchanged), the account is read again on that floor, at most 4 reads per account per match.
 - Only one snapshot read per account waits in the queue.
-- The worst case is therefore 3 reads per account in any 2 minutes (two reads a floor apart plus one first after-read), 30 for 10 accounts, and in practice about 2 per account. That leaves room under the na1 app limit of 100 per 2 minutes next to spectator's 60 for `/profile` and `/bind`.
+- The worst case is therefore 3 reads per account in any 2 minutes (two reads a floor apart plus one first after-read), 30 for 10 accounts, and in practice about 2 per account. That leaves room under the na1 app limit of 100 per 2 minutes next to spectator's 60 for `/profile` and `/bind`, and inside the pacer's 95 (see [Request pacing](#request-pacing)).
 - `hasReadSince(puuid, since)` says whether a successful read was sent at or after `since`.
   It is true when nothing more will be read for the account, such as LP off or a saved mock account in real mode.
 - A ranked game's start is retried through it.
