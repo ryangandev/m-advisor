@@ -2766,6 +2766,134 @@ test("co-reporters who leave together during the speech, then take turns: whoeve
   assert.equal(getLastMatchId(bot.guildId, "bob"), "m1");
 });
 
+/** Holds the first text post in `channelId` until it is answered, like a slow Discord; later posts go straight through. */
+function heldFirstSend(bot: ReturnType<typeof harness>, channelId: string) {
+  const room = bot.channel(channelId);
+  const send = room.send;
+  const answer = deferred<void>();
+  let calls = 0;
+  room.send = async (message) => {
+    if (++calls === 1) await answer.promise;
+    return send(message);
+  };
+  return { calls: () => calls, release: () => answer.resolve(), fail: (error: Error) => answer.reject(error) };
+}
+
+/** The member drops out of voice, which stops their session, and is back within the keep window. */
+function blip(bot: ReturnType<typeof harness>) {
+  bot.move("member-1", null);
+  bot.sync();
+  bot.move("member-1", "first-channel");
+}
+
+test("a quick leave and rejoin while the report's text is being sent posts it once and speaks it once", async () => {
+  const bot = harness("keep-sending-guild");
+  await bot.start();
+  bot.latestIds.set("tracked", "m1");
+  const post = heldFirstSend(bot, "first-channel");
+  const oldPoll = bot.poll();
+  await until(() => post.calls() === 1, "the first send");
+  blip(bot);
+  const newPoll = bot.start();
+  await delay(30);
+  assert.equal(post.calls(), 1, "the new session waits for the post already in flight instead of sending again");
+  post.release();
+  assert.deepEqual(await oldPoll, { announced: 0, errors: 0 });
+  assert.deepEqual(await newPoll, { announced: 1, errors: 0 });
+  await delay(30);
+  assert.equal(bot.sent.length, 1, "the text report is posted once");
+  assert.equal(bot.played.length, 1, "and spoken once");
+  assert.equal(getLastMatchId(bot.guildId, "tracked"), "m1");
+  assert.deepEqual(await bot.poll(), { announced: 0, errors: 0 });
+  assert.deepEqual(bot.errors, []);
+});
+
+test("a send in flight that fails after the session stopped is posted by the next session, once, and spoken once", async () => {
+  const bot = harness("keep-sending-failed-guild");
+  await bot.start();
+  bot.latestIds.set("tracked", "m1");
+  const post = heldFirstSend(bot, "first-channel");
+  const oldPoll = bot.poll();
+  await until(() => post.calls() === 1, "the first send");
+  blip(bot);
+  const newPoll = bot.start();
+  await delay(30);
+  assert.equal(post.calls(), 1);
+  post.fail(new Error("Fake Discord outage"));
+  await oldPoll;
+  assert.deepEqual(await newPoll, { announced: 1, errors: 0 });
+  await delay(30);
+  assert.equal(post.calls(), 2, "the failed post is tried again, not lost");
+  assert.equal(bot.sent.length, 1);
+  assert.equal(bot.played.length, 1, "the voice plays once, from the new session");
+  assert.deepEqual(bot.errors.map((error) => (error as Error).message), ["Fake Discord outage"]);
+  assert.deepEqual(await bot.poll(), { announced: 0, errors: 0 });
+  assert.equal(bot.sent.length, 1);
+});
+
+test("a send that failed before anyone returned leaves nothing behind, so the next session posts the report", async () => {
+  const bot = harness("keep-sending-failed-early-guild");
+  await bot.start();
+  bot.latestIds.set("tracked", "m1");
+  const post = heldFirstSend(bot, "first-channel");
+  const oldPoll = bot.poll();
+  await until(() => post.calls() === 1, "the first send");
+  bot.move("member-1", null);
+  bot.sync();
+  post.fail(new Error("Fake Discord outage"));
+  await oldPoll;
+  bot.move("member-1", "first-channel");
+  assert.deepEqual(await bot.start(), { announced: 1, errors: 0 });
+  await delay(30);
+  assert.equal(bot.sent.length, 1);
+  assert.equal(bot.played.length, 1);
+});
+
+test("stopping or shutting down while a new session waits for the old send ends the wait at once and plays nothing twice", async () => {
+  const settledSoon = async (poll: Promise<unknown>) => Promise.race([poll.then(() => true), delay(500).then(() => false)]);
+
+  // The member blips again while the new session waits: a third session carries the report on.
+  const bot = harness("keep-sending-stop-guild");
+  await bot.start();
+  bot.latestIds.set("tracked", "m1");
+  const post = heldFirstSend(bot, "first-channel");
+  const firstPoll = bot.poll();
+  await until(() => post.calls() === 1, "the first send");
+  blip(bot);
+  const secondPoll = bot.start();
+  await delay(30);
+  blip(bot);
+  assert.ok(await settledSoon(secondPoll), "the stopped session does not wait for the send");
+  const thirdPoll = bot.start();
+  await delay(30);
+  assert.equal(post.calls(), 1);
+  post.release();
+  await firstPoll;
+  assert.deepEqual(await thirdPoll, { announced: 1, errors: 0 });
+  await delay(30);
+  assert.equal(bot.sent.length, 1);
+  assert.equal(bot.played.length, 1);
+
+  // The bot shuts down while the new session waits: nothing more is posted or played.
+  const closing = harness("keep-sending-shutdown-guild");
+  await closing.start();
+  closing.latestIds.set("tracked", "m1");
+  const held = heldFirstSend(closing, "first-channel");
+  const oldPoll = closing.poll();
+  await until(() => held.calls() === 1, "the first send");
+  blip(closing);
+  const newPoll = closing.start();
+  await delay(30);
+  closing.monitor.stopAll();
+  assert.ok(await settledSoon(newPoll), "shutdown does not wait for the send");
+  held.release();
+  await oldPoll;
+  await delay(30);
+  assert.equal(closing.sent.length, 1, "only the send Discord already had");
+  assert.equal(held.calls(), 1);
+  assert.deepEqual(closing.played, []);
+});
+
 test("a /bind or /unbind forgets the member's kept baselines, also when it races a queued reconciliation", async () => {
   // Unbound and bound again while away, before any reconciliation ran: the store looks unchanged to the monitor.
   const away = harness("forget-away-guild");
