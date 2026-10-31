@@ -6,6 +6,7 @@ import { getMonitorStatus, POLL_INTERVAL_MS } from "../services/gameMonitor";
 import { isMockData } from "../services/riotData";
 import { getMatchDetail, getRecentMatchIds } from "../utils/riotMatchApi";
 import { buildErrorEmbed, buildRecentMatchesEmbed, NO_MENTIONS, type RecentAccountView, type RecentMemberView } from "../utils/embeds";
+import { isRiotKeyRejection, logRiotKeyRejection } from "../services/riotKey";
 import { getRiotUserErrorMessage } from "../utils/userFacingErrors";
 
 /** How many accounts /recent reads from Riot at once; each reads its matches one at a time. */
@@ -61,6 +62,8 @@ const recentCommand: BotCommand = {
 
     const count = interaction.options.getInteger("count") ?? 5;
     const mock = isMockData();
+    // Every account fails the same way when the key is dead; the log gets the line once per command.
+    let keyRejectionLogged = false;
     const accounts = members.flatMap(({ member, order }) => member.accounts.map((account) => ({ account, order })));
     // At most RECENT_ACCOUNT_CONCURRENCY accounts at a time, so a large server cannot burst past the americas limit
     // that finished-match polling shares; the replies still come back in bind order.
@@ -76,6 +79,10 @@ const recentCommand: BotCommand = {
         }
         return { ...view, lastMatchId: getLastMatchId(guildId, account.puuid) };
       } catch (error) {
+        if (!keyRejectionLogged && isRiotKeyRejection(error)) {
+          keyRejectionLogged = true;
+          logRiotKeyRejection(error);
+        }
         return { ...view, matches: [], notice: `⚠️ ${getRiotUserErrorMessage(error)}` };
       }
     });

@@ -73,6 +73,13 @@ A different signal while the bot is stopping (for example closing the launcher w
 Only a repeat of the same signal more than 1 second after its first arrival, while the bot is still stopping, ends the process at once with exit code 1, and a 15 second deadline forces exit if cleanup hangs.
 Starting again restores saved bindings and checks whether the tracked members are already in voice.
 In real mode, startup warns about each saved mock account; `/bind` with a real Riot ID removes them.
+In real mode, after login, the bot also makes one request to the na1 `lol/status/v4/platform-data` endpoint to check `RIOT_API_KEY`.
+An accepted key is one info line, `RIOT_API_KEY accepted by Riot.`
+A 401 or 403 logs `Riot rejected RIOT_API_KEY (401); paste a new key into .env and restart.` as a warning (a development key expires every 24 hours).
+Any other failure, such as a timeout or a Riot outage, is a one-line warning with the error code.
+The check never delays or stops startup, makes no request in mock mode, and never logs the key.
+`/profile`, `/bind` and `/recent` log the same rejected-key line when Riot answers them with a 401 or 403 (`/recent` once per command, however many accounts fail); their replies to users are unchanged.
+A simulated mock rejection such as `MockAuth#NA1` logs nothing, because it says nothing about the real key.
 
 ## Logs
 

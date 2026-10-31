@@ -658,6 +658,8 @@ test("a spectator 403 turns off only the watcher; finished matches are still ann
   const first = await bot.start();
   assert.equal(first.errors, 1);
   assert.equal(bot.errors.filter((line) => line.includes("game start checks are off")).length, 1);
+  assert.doesNotMatch(bot.errors.join("\n"), /still announced/, "a 403 can mean the whole key is dead, so the line promises nothing about matches");
+  assert.match(bot.errors.join("\n"), /paste a new key into \.env and restart/);
   await bot.tick();
   await bot.tick();
   assert.deepEqual(bot.requests, ["acct-a"], "no more spectator requests in this session");

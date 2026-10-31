@@ -56,6 +56,7 @@ Retries use 1 and 2 second backoff unless Riot specifies `Retry-After`.
 The requester applies 429 cooldowns across all endpoints on the affected regional host.
 A delay longer than 10 seconds is returned as `RiotApiError.retryAfterMs` and blocks further requests on that host until the cooldown has elapsed.
 Authentication and not-found errors are returned immediately.
+A rejected key is made visible in the log: `src/services/riotKey.ts` holds the shared `Riot rejected RIOT_API_KEY (<status>); paste a new key into .env and restart.` line, used by `/profile`, `/bind`, `/recent` and the one startup check described in [Runtime](runtime.md).
 Errors carry a stable `code`, optional HTTP `status`, optional `retryAfterMs`, and a `simulated` flag without exposing request keys or raw upstream diagnostic bodies.
 Response parsers normalize omitted zero statistics and reject malformed profile, rank, or match shapes.
 `parseMatchDetail()` keeps each participant's position (team position, falling back to individual position), champion, K/D/A, result and the scoring statistics, plus team objective counts, the game end time when present, whether the game was a remake, and whether it was aborted without a winner (`endOfGameResult` other than `GameComplete`).
@@ -125,7 +126,8 @@ Spectator's own requester also reads the `errorCode` token of a 404 (kept only i
 `isLoading(game)` is true while `gameStartTime` is 0.
 Spectator has its own requester with one attempt, a 5 second timeout and no waiting, like the timeline requester.
 A spectator 429 therefore never sets the shared na1 cooldown that `/profile` and `/bind` honor, and its own cooldown fails fast.
-A 401 or 403 is thrown as a `RiotApiError`; `isSpectatorAuthError()` recognizes it so the watcher can disable itself without stopping match monitoring.
+A 401 or 403 is thrown as a `RiotApiError`; `isSpectatorAuthError()` recognizes it so the watcher can disable itself for the session.
+The watcher's log line tells the developer to check `RIOT_API_KEY` and does not say matches are still announced: a dead key stops the match poll too.
 
 ### Mock active games
 
@@ -216,7 +218,8 @@ It depends on an injected `readEntries(puuid)`, which is `getLeagueEntries` in p
 
 Failures never reach the report as an error:
 
-- A 401 or 403 turns LP off until the bot restarts, with one log line; pending rows are dropped and finished matches are still announced.
+- A 401 or 403 turns LP off until the bot restarts, with one log line that tells the developer to check `RIOT_API_KEY`; pending rows are dropped.
+  The line makes no promise about finished matches, because a 401, or a 403 from an expired key, also stops the match poll at its next run.
 - A 429 is quiet: that read counts toward the cap and the scheduled read follows.
 - A timeout, the requester's 5 seconds or the tracker's guard, counts as not caught up yet.
 - Any other failure is logged once per kind, with one line when a read works again, and the row says `段位暂时查不到`.

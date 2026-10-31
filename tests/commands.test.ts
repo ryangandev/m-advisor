@@ -850,6 +850,40 @@ test("/recent flags a mock account in real mode without calling Riot", async () 
   assert.match(reply, /这是模拟账号，真实模式下监听会跳过它。用 \/bind 绑定真实 Riot ID 后会自动移除它。/);
 });
 
+const keyRejectionLines = () => errorLogs.map((args) => String(args[0])).filter((line) => line.includes("Riot rejected RIOT_API_KEY"));
+
+test("/bind logs one line without the key when Riot rejects it, and the reply stays the same", async () => {
+  process.env.RIOT_MODE = "real";
+  process.env.RIOT_API_KEY = "do-not-log-this-key";
+  globalThis.fetch = async () => new Response("do-not-log-this-key", { status: 401 });
+  const f = interactionFixture({ riotId: "RealName#NA1" });
+  await commands.bind.execute(f.interaction);
+  assert.match(replyText(f.replies.at(-1)), /The Riot API request was rejected\. The bot configuration needs attention\./);
+  assert.equal(keyRejectionLines().length, 1);
+  assert.match(keyRejectionLines()[0], /^\[\d\d:\d\d:\d\d\] Riot rejected RIOT_API_KEY \(401\); paste a new key into \.env and restart\.$/);
+  assert.ok(!errorLogs.some((args) => args.some((value) => String(value).includes("do-not-log-this-key"))));
+});
+
+test("/bind logs nothing about the key for a simulated mock rejection", async () => {
+  const f = interactionFixture({ riotId: "MockAuth#NA1" });
+  await commands.bind.execute(f.interaction);
+  assert.match(replyText(f.replies.at(-1)), /configuration needs attention/);
+  assert.deepEqual(keyRejectionLines(), []);
+});
+
+test("/recent logs the rejected key once for a whole server of accounts", async () => {
+  setMemberAccounts(guildId, "tracked-user", [{ puuid: "real-a", gameName: "RealA", tagLine: "NA1" }]);
+  setMemberAccounts(guildId, "second-user", [{ puuid: "real-b", gameName: "RealB", tagLine: "NA1" }]);
+  process.env.RIOT_MODE = "real";
+  process.env.RIOT_API_KEY = "do-not-log-this-key";
+  globalThis.fetch = async () => new Response("", { status: 403 });
+  const f = interactionFixture();
+  await commands.recent.execute(f.interaction);
+  assert.match(replyText(f.replies.at(-1)), /The Riot API request was rejected/);
+  assert.equal(keyRejectionLines().length, 1);
+  assert.match(keyRejectionLines()[0], /\(403\); paste a new key into \.env and restart\.$/);
+});
+
 test("/simulate uses the earliest-bound tracked member who is in the test channel and their first account", async () => {
   // The first member is in another channel; the second and third are in the test channel.
   setMemberAccounts(guildId, "away-user", [await getAccountByRiotId("MockLoss", "NA1")]);

@@ -4,6 +4,7 @@ import type { ChatInputCommandInteraction, EmbedBuilder } from "discord.js";
 import profileCommand from "../src/commands/profile";
 import { RiotApiError, resetMockData } from "../src/services/riotData";
 import { buildErrorEmbed, buildProfileEmbed, getProfileIconUrl } from "../src/utils/embeds";
+import { captureConsole } from "./helpers/captureConsole";
 import { AccountBoundToOtherMemberError, GuildAccountLimitError } from "../src/store/storeErrors";
 import { getCommandUserErrorMessage, getRiotUserErrorMessage } from "../src/utils/userFacingErrors";
 
@@ -61,7 +62,8 @@ test("mock authentication and input errors remain visibly simulated", async () =
   assert.match(invalidId.description!, /Invalid Riot ID/);
 });
 
-test("real profile authentication errors remain safe and are never labeled as simulated", async () => {
+test("real profile authentication errors remain safe and are never labeled as simulated", async (t) => {
+  const logged = captureConsole(t);
   process.env.RIOT_MODE = "real";
   process.env.RIOT_API_KEY = "do-not-show-this-key";
   globalThis.fetch = async () => new Response("do-not-show-this-key", { status: 403 });
@@ -69,6 +71,20 @@ test("real profile authentication errors remain safe and are never labeled as si
   assert.equal(error.title, "Error");
   assert.doesNotMatch(error.description!, /模拟数据|do-not-show-this-key/);
   assert.match(error.description!, /configuration needs attention/);
+  assert.ok(logged.lines.every((line) => !line.includes("do-not-show-this-key")));
+});
+
+test("a rejected real key is logged once without the key, and a simulated rejection logs nothing", async (t) => {
+  const logged = captureConsole(t);
+  process.env.RIOT_MODE = "real";
+  process.env.RIOT_API_KEY = "do-not-show-this-key";
+  globalThis.fetch = async () => new Response("do-not-show-this-key", { status: 401 });
+  await runProfile("RealPlayer#NA1");
+  assert.equal(logged.lines.length, 1);
+  assert.match(logged.lines[0], /^\[\d\d:\d\d:\d\d\] Riot rejected RIOT_API_KEY \(401\); paste a new key into \.env and restart\.$/);
+  process.env.RIOT_MODE = "mock";
+  await runProfile("MockAuth#NA1");
+  assert.equal(logged.lines.length, 1, "a mock 401 says nothing about the real key");
 });
 
 test("binding store errors get their own messages instead of the Riot substring rules", () => {
