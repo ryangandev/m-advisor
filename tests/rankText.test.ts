@@ -144,6 +144,25 @@ test("a demotion comforts with 胜败乃兵家常事, not the reversed idiom", (
   assert.ok(lines.every((line) => !line.includes("胜负兵家常事")));
 });
 
+test("two members with the same report name are spoken by their champions, never as one", () => {
+  const withChampion = (puuid: string, name: string, champion: string): RankVoiceMove => ({ ...voiceMove(puuid, name, promotion), champion });
+  const line = buildRankVoiceLine({
+    matchId: "NA1_7", mock: false, moves: [withChampion("p1", "Ryan", "亚索"), withChampion("p2", "Ryan", "锐雯")],
+  });
+  assert.match(line, /亚索/);
+  assert.match(line, /锐雯/);
+  assert.doesNotMatch(line, /Ryan/, "the shared name is not spoken at all");
+  // Names that already differ are spoken as before, whatever the champions are.
+  const distinctNames = buildRankVoiceLine({
+    matchId: "NA1_7", mock: false, moves: [withChampion("p1", "Ryan", "亚索"), withChampion("p2", "Kate", "锐雯")],
+  });
+  assert.equal(distinctNames, buildRankVoiceLine({
+    matchId: "NA1_7", mock: false, moves: [voiceMove("p1", "Ryan", promotion), voiceMove("p2", "Kate", promotion)],
+  }));
+  assert.match(distinctNames, /Ryan/);
+  assert.match(distinctNames, /Kate/);
+});
+
 test("the 段位播报 embed is titled 段位播报, and 模拟数据 · 段位播报 in mock mode", () => {
   const real = buildRankAnnouncementEmbed(["<@m1> 单双排 晋级：铂金 I → 钻石 IV · 12 LP"], false).toJSON();
   const mock = buildRankAnnouncementEmbed(["<@m1> 单双排 晋级：铂金 I → 钻石 IV · 12 LP"], true).toJSON();
