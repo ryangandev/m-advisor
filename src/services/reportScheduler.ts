@@ -69,6 +69,11 @@ export interface ReportSchedulerDeps {
   send(guildId: string, channelId: string, payload: ReportPayload): Promise<void>;
   /** The server for weekly roles, or null when the bot is no longer in it. */
   roleGuild(guildId: string): RoleGuild | null;
+  /**
+   * Whether the bot is still in the server. A removed server is skipped. A Discord outage keeps the server in the cache,
+   * so only a real removal answers false.
+   */
+  inGuild(guildId: string): boolean;
   stopped(): boolean;
   setTimer(callback: () => void, delayMs: number): unknown;
   clearTimer(handle: unknown): void;
@@ -91,6 +96,8 @@ export class ReportScheduler {
   private halted = false;
   /** When each period's send first failed in this process (after the last sleep) and when it last failed. */
   private readonly firstFailure = new Map<string, { first: number; last: number }>();
+  /** Servers already logged as skipped because the bot is not in them. */
+  private readonly skippedGuilds = new Set<string>();
   /** Periods this process must not touch again, because they were posted or given up but could not be marked in the database. */
   private readonly settled = new Set<string>();
 
@@ -152,6 +159,15 @@ export class ReportScheduler {
     for (const settings of destinations) {
       if (this.stopping) return;
       try {
+        if (!this.deps.inGuild(settings.guildId)) {
+          // Said once per server and process; the destination stays stored, so the reports resume if the bot is added back.
+          if (!this.skippedGuilds.has(settings.guildId)) {
+            this.skippedGuilds.add(settings.guildId);
+            logInfo(`Skipping the 马报 of server ${settings.guildId}: the bot is not in that server.`);
+          }
+          continue;
+        }
+        this.skippedGuilds.delete(settings.guildId);
         if (settings.dailyEnabled) await this.handle(settings, "day", mock);
         if (this.stopping) return;
         if (settings.weeklyEnabled) await this.handle(settings, "week", mock);
@@ -307,6 +323,7 @@ export function discordSchedulerDeps(client: Client): ReportSchedulerDeps {
       const guild = client.guilds.cache.get(guildId);
       return guild ? roleGuildFrom(guild) : null;
     },
+    inGuild: (guildId) => client.guilds.cache.has(guildId),
     stopped: isStopping,
     // Unref'd: the Discord connection keeps the process alive, and a pending timer must never delay shutdown.
     setTimer: (callback, delayMs) => setTimeout(callback, delayMs).unref(),

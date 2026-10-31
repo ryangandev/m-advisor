@@ -88,6 +88,8 @@ function harness(options: { now?: number; mock?: boolean } = {}) {
     sent: [] as Sent[],
     failures: [] as Error[],
     roleGuild: null as FakeRoleGuild | null,
+    /** Servers the bot has been removed from. */
+    removedGuilds: new Set<string>(),
     stopped: false,
     timers: [] as Array<{ callback: () => void; delay: number; cleared: boolean }>,
   };
@@ -100,6 +102,7 @@ function harness(options: { now?: number; mock?: boolean } = {}) {
       state.sent.push({ guildId, channelId, payload });
     },
     roleGuild: () => state.roleGuild,
+    inGuild: (guildId) => !state.removedGuilds.has(guildId),
     stopped: () => state.stopped,
     setTimer: (callback, delay) => { state.timers.push({ callback, delay, cleared: false }); return state.timers.length - 1; },
     clearTimer: (handle) => { state.timers[handle as number].cleared = true; },
@@ -816,3 +819,22 @@ test("after a sleep the failure clock restarts, and six hours of awake failing s
   assert.ok(FAILURE_GAP_RESET_MS > REPORT_TICK_MS && FAILURE_GAP_RESET_MS < GIVE_UP_AFTER_MS);
 });
 
+test("a server the bot was removed from is skipped with no send, no give-up warning and one log line", async () => {
+  seedGames(DUE_DAY.start + HOUR);
+  const { state, scheduler } = harness();
+  state.removedGuilds.add(GUILD);
+  state.failures.push(discordError(50001, "Missing Access"));
+  await scheduler.runDue();
+  await scheduler.runDue();
+  assert.deepEqual(state.sent, []);
+  assert.equal(state.failures.length, 1, "no send was attempted");
+  assert.equal(getReportMark(GUILD, false, "day"), undefined);
+  assert.ok(!output.some((line) => line.includes("giving up")));
+  assert.equal(output.filter((line) => line.includes("not in that server")).length, 1, "logged once, not at every check");
+
+  // If the bot is invited back, the server is served again.
+  state.failures.length = 0;
+  state.removedGuilds.clear();
+  await scheduler.runDue();
+  assert.deepEqual(titles(state.sent), ["每日马报 · 2026-10-27 周二"]);
+});

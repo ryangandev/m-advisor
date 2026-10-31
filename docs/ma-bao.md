@@ -80,6 +80,9 @@ Network and timeout errors therefore never use up attempts: a Mac that wakes wit
 The log gets one line when a send starts failing and one when the period is given up.
 A missing channel, missing access or missing permissions give up on that period at once.
 A server that fails never blocks the other servers.
+A server the bot is no longer in (`client.guilds.cache` does not hold it, which only a real removal causes and not a Discord outage) is skipped, so it neither fails every day nor logs a give-up warning; one info line says so per process.
+Its settings and marks stay, so the reports resume with the normal catch-up if the bot is added back.
+When the bot is removed, `src/events/guildDelete.ts` also stops that server's monitoring session, so the match poll and the game-start watcher stop calling Riot for it.
 
 Every report is sent with a nonce derived from the server, data mode, kind and period and with `enforceNonce: true`, which discord.js 14.27 supports.
 If a request times out after Discord already accepted it, the retry carries the same nonce and Discord returns the first message instead of posting a second one.
@@ -144,6 +147,7 @@ A role that no longer exists counts as already released.
 
 `tests/reportStore.test.ts` covers the version 3 to 4 migration from a literal version 3 file with an uncheckpointed WAL, its backup, rollback of a failed step and the settings and marks API.
 `tests/reports.test.ts` and `tests/reportEmbed.test.ts` cover the period timing including daylight saving, the report math, ties, mock and real separation, the finished and in-progress wording and the embed.
-`tests/reportScheduler.test.ts` covers catch-up, at-most-once posting, empty periods, retries, the timer, shutdown and the role hand-off with a fake clock and fake Discord.
+`tests/reportScheduler.test.ts` covers catch-up and its caps, at-most-once posting, empty periods, retries including a sleep between failures, removed servers, the timer, shutdown and the role hand-off with a fake clock and fake Discord.
+`tests/guildDelete.test.ts` covers the removal log line and the monitoring stop.
 `tests/reportRoles.test.ts` and `tests/reportCommands.test.ts` cover role rotation and failures with a fake server and the commands.
 None of them contacts Discord, and live posting and role changes are not yet verified in a real server.

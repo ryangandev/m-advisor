@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { afterEach, beforeEach, test } from "node:test";
 import { Events } from "discord.js";
 import type { Guild } from "discord.js";
-import guildDelete from "../src/events/guildDelete";
+import guildDelete, { handleGuildRemoved } from "../src/events/guildDelete";
 
 let lines: string[];
 let savedLog: typeof console.log;
@@ -30,4 +30,16 @@ test("a removal of an uncached server falls back to its ID", () => {
   guildDelete.execute(guild({ id: "synthetic-guild-2" }));
   assert.equal(lines.length, 1);
   assert.match(lines[0], /Removed from server synthetic-guild-2;/);
+});
+
+test("a removal stops that server's monitoring, and only that server's", () => {
+  const stopped: Array<[string, string]> = [];
+  handleGuildRemoved(guild({ id: "synthetic-guild-3", name: "Gone" }), (guildId, reason) => { stopped.push([guildId, reason]); });
+  assert.deepEqual(stopped, [["synthetic-guild-3", "the bot was removed from this server"]]);
+  assert.equal(lines.length, 1, "still logged once");
+});
+
+test("the removal is logged before monitoring is stopped, so a failure there cannot hide it", () => {
+  assert.throws(() => handleGuildRemoved(guild({ id: "synthetic-guild-4" }), () => { throw new Error("boom"); }), /boom/);
+  assert.equal(lines.length, 1);
 });
