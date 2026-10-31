@@ -54,7 +54,7 @@ export const KEEP_BASELINES_MS = 120_000;
 /**
  * A baseline is kept only if its account was read this recently when the member left, so a Mac that slept for hours
  * and then reconciles cannot bring back a stale baseline and replay an old match. A poll in flight, whose report may take
- * minutes to speak, allows the longer age.
+ * minutes to speak, or one that finished within this time allows the longer age.
  */
 export const KEEP_FRESH_MS = 2 * POLL_INTERVAL_MS;
 const KEEP_FRESH_BUSY_MS = 10 * 60_000;
@@ -442,7 +442,11 @@ export class GameMonitor {
     if (this.closed) return;
     this.purge(guildId);
     const now = Date.now();
-    const maxAge = session.inFlight ? KEEP_FRESH_BUSY_MS : KEEP_FRESH_MS;
+    // A poll reads its accounts before it speaks, so right after a long report every read is old although the session
+    // was busy all along; the longer age holds until the next tick could have read them again.
+    const busy = session.inFlight !== undefined
+      || (session.lastPollAt !== undefined && now - session.lastPollAt <= KEEP_FRESH_MS);
+    const maxAge = busy ? KEEP_FRESH_BUSY_MS : KEEP_FRESH_MS;
     const kept = this.kept.get(guildId) ?? new Map<string, KeptBaseline>();
     for (const [puuid, state] of accounts) {
       if (!state.baselined || state.noKeep || this.ownerOf(guildId, puuid) !== state.owner) continue;
