@@ -6,6 +6,7 @@ import type { HorseProfile } from "../services/horseProfile";
 import { HORSE_TIERS } from "../services/horseRanking";
 import type { HorseTier } from "../services/horseRanking";
 import type { HorseRecord } from "../store/horseRecordStore";
+import { normalizeChampionName } from "./championName";
 
 export const TIER_ICONS: Record<HorseTier, string> = { 特等马: "👑", 上等马: "🐎", 中等马: "🐴", 下等马: "🫏", 没有马: "🪦" };
 
@@ -35,7 +36,8 @@ const timestamp = (milliseconds: number) => `<t:${Math.floor(milliseconds / 1000
 /** The Chinese champion name, or Riot's English identifier when the table has none. */
 export function championLabel(record: Pick<HorseRecord, "championId" | "championName">): string {
   const names = (championNames as { names: Record<string, string> }).names;
-  return names[String(record.championId)] ?? record.championName;
+  const known = names[String(record.championId)];
+  return known === undefined ? record.championName : normalizeChampionName(known);
 }
 
 /** Deterministic, so the same profile always reads the same. */

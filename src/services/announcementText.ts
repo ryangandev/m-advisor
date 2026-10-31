@@ -1,5 +1,6 @@
 import championNames from "../data/championNamesZh.json";
 import type { MatchDetail, MatchParticipant, Position } from "../types";
+import { normalizeChampionName } from "../utils/championName";
 import type { EpicMonster } from "../utils/matchTimeline";
 import { rankTeam } from "./horseRanking";
 import type { Benchmarks, Dimension, HorseTier, RankedHorse } from "./horseRanking";
@@ -54,7 +55,8 @@ export function readableName(name: string): string {
 
 export function championLabel(participant: MatchParticipant): string {
   const names = (championNames as { names: Record<string, string> }).names;
-  return names[String(participant.championId)] ?? readableName(participant.championName || "神秘英雄");
+  const known = names[String(participant.championId)];
+  return known === undefined ? readableName(participant.championName || "神秘英雄") : normalizeChampionName(known);
 }
 
 /** Deterministic per-match choices keep a report reproducible while varying between matches. */

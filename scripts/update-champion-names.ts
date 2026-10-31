@@ -2,6 +2,7 @@
 // Run after a patch adds champions; unknown champions fall back to their English identifier.
 import { writeFileSync } from "node:fs";
 import path from "node:path";
+import { normalizeChampionName } from "../src/utils/championName";
 
 async function update(): Promise<void> {
   const versions = await (await fetch("https://ddragon.leagueoflegends.com/api/versions.json")).json() as string[];
@@ -11,7 +12,7 @@ async function update(): Promise<void> {
   };
   // In zh_CN data the short spoken name (亚索) is `title`; `name` holds the epithet (疾风剑豪).
   const names = Object.fromEntries(Object.values(body.data)
-    .map((champion) => [champion.key, champion.title] as const)
+    .map((champion) => [champion.key, normalizeChampionName(champion.title)] as const)
     .sort(([a], [b]) => Number(a) - Number(b)));
   const output = path.resolve("src/data/championNamesZh.json");
   writeFileSync(output, `${JSON.stringify({ version, names }, null, 2)}\n`);
