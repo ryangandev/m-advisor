@@ -150,7 +150,8 @@ function harness(guildId: string, specs: string[] | MemberSpec[] = ["tracked"]) 
   };
   const monitor = new GameMonitor(dependencies);
   monitors.push(monitor);
-  const client = {} as Client;
+  // The server is in the bot's cache until a test removes it, like a bot that was kicked.
+  const client = { guilds: { cache: new Map([[guildId, {}]]) } } as unknown as Client;
   const inVoice = () => members.filter((member) => location.get(member.discordUserId)).map((member) => member.discordUserId);
   return {
     guildId, monitor, client, dependencies, latestIds, matches, lookups, generated, played, cleaned, errors, infos, warnings, sent, channel, move, blocked, voiceBlocked,
@@ -1962,6 +1963,25 @@ test("a deleted report is an info line, not a monitoring failure; another edit f
   }
 });
 
+test("a deleted channel or a removed server is an info line in the late 段位变化 edit, not a monitoring failure", async () => {
+  // discord.js throws ChannelNotCached (a string code) once the channel left its cache; Discord answers 10003 and 50001 for a gone channel or server.
+  for (const code of ["ChannelNotCached", 10003, 50001] as const) {
+    const { bot, rank } = await rankedTrio(`rank-gone-${code}-guild`, { retryFloorMs: 30 });
+    const original = bot.channel("x").send;
+    bot.channel("x").send = async (message) => {
+      await original(message);
+      return { edit: async () => { throw Object.assign(new Error("gone"), { code }); } };
+    };
+    assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
+    rank.league.set("alice", [ranked("GOLD", "II", 86, 11, 10)]);
+    rank.league.set("bob", [ranked("SILVER", "I", 12, 10, 11)]);
+    const infoLine = "The channel of match ranked-trio's report is gone, so its 段位变化 was not updated.";
+    await until(() => bot.infos.includes(infoLine) || bot.errors.length > 0, "the edit failing");
+    assert.ok(bot.infos.includes(infoLine), `code ${code}`);
+    assert.equal(bot.errors.length, 0, `code ${code}`);
+  }
+});
+
 // 段位播报: a separate message and a short voice line for a promotion or a demotion.
 
 const RANK_TITLE = "模拟数据 · 段位播报";
@@ -2097,6 +2117,42 @@ test("a late 段位播报 is text only when nobody of the reported team is still
   assert.equal(bot.generated.length, 1);
   assert.ok(bot.infos.some((line) => /段位播报 of match ranked-trio is text only/.test(line)));
   assert.equal(bot.errors.length, 0);
+});
+
+test("a late 段位播报 is not posted into a server the bot has left, and that is an info line", async () => {
+  const { bot, rank } = await rankedTrio("cast-left-guild", { retryFloorMs: 30 });
+  const queued = recordAnnouncements(bot);
+  assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
+  // The bot is removed from the server before the rows settle; the channel is still cached.
+  (bot.client as unknown as { guilds: { cache: Map<string, unknown> } }).guilds.cache.delete(bot.guildId);
+  rank.league.set("alice", [ranked("PLATINUM", "IV", 7, 11, 10)]);
+  rank.league.set("bob", [ranked("SILVER", "I", 12, 10, 11)]);
+  const infoLine = "The 段位播报 of match ranked-trio was not posted: the bot is no longer in the server.";
+  await until(() => bot.infos.includes(infoLine) || bot.errors.length > 0, "the 段位播报 being skipped");
+  await delay(WATCH);
+  assert.ok(bot.infos.includes(infoLine));
+  assert.equal(castsOf(bot).length, 0, "nothing is sent into the server");
+  assert.equal(queued.length, 1, "no voice line for the skipped 段位播报");
+  assert.equal(bot.errors.length, 0);
+});
+
+test("a 段位播报 post that fails because the channel or server is gone is an info line; another failure is still logged", async () => {
+  for (const [code, gone] of [[10003, true], [50001, true], [50013, false]] as const) {
+    const { bot, rank } = await rankedTrio(`cast-gone-${code}-guild`, { retryFloorMs: 30 });
+    const original = bot.channel("x").send;
+    bot.channel("x").send = async (message) => {
+      if (postedEmbeds(message)[0]?.title?.endsWith("段位播报")) throw Object.assign(new Error("Discord said no"), { code });
+      return original(message);
+    };
+    assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
+    rank.league.set("alice", [ranked("PLATINUM", "IV", 7, 11, 10)]);
+    rank.league.set("bob", [ranked("SILVER", "I", 12, 10, 11)]);
+    const infoLine = "The 段位播报 of match ranked-trio was not posted: its channel is gone or the bot can no longer see it.";
+    const logged = () => bot.errors.some((error) => /段位播报 of match ranked-trio was not posted/.test((error as Error).message));
+    await until(() => bot.infos.includes(infoLine) || logged(), "the post failing");
+    assert.equal(bot.infos.includes(infoLine), gone, `code ${code}`);
+    assert.equal(logged(), !gone, `code ${code}`);
+  }
 });
 
 test("a member whose move only the late update shows gets their own follow-up, and nobody is announced twice", async () => {

@@ -1,5 +1,5 @@
 import { Client, VoiceChannel } from "discord.js";
-import { PermissionFlagsBits, RESTJSONErrorCodes } from "discord.js";
+import { DiscordjsErrorCodes, PermissionFlagsBits, RESTJSONErrorCodes } from "discord.js";
 import type { Message, MessageCreateOptions } from "discord.js";
 import type { MatchDetail, RiotAccount, TrackedMember } from "../types";
 import { listTrackedMembers } from "../store/bindingStore";
@@ -1373,8 +1373,8 @@ export class GameMonitor {
 
   /**
    * Edits the posted report once, when the pending rows have settled, with the same mentions and allowedMentions.
-   * It runs apart from the poll, and never after the monitor shut down. A deleted report is an info line; any other
-   * failure is logged.
+   * It runs apart from the poll, and never after the monitor shut down. A deleted report, a deleted channel or a removed
+   * server is an info line; any other failure is logged.
    */
   private editRankLater(
     guildId: string,
@@ -1399,6 +1399,8 @@ export class GameMonitor {
         } catch (error) {
           if ((error as { code?: unknown } | null)?.code === RESTJSONErrorCodes.UnknownMessage) {
             this.dependencies.info(`The report of match ${matchId} was deleted, so its 段位变化 was not updated.`);
+          } else if (isGoneChannelError(error)) {
+            this.dependencies.info(`The channel of match ${matchId}'s report is gone, so its 段位变化 was not updated.`);
           } else {
             this.dependencies.log(new Error(`The 段位变化 of match ${matchId} was not updated: ${errorMessage(error)}`));
           }
@@ -1442,6 +1444,11 @@ export class GameMonitor {
   private async castRank(cast: RankCast): Promise<void> {
     try {
       if (this.closed || cast.reportVoice === "dropped") return;
+      // A bot that was removed from the server (or lost it) has nowhere to post, and no voice to queue either.
+      if (!cast.client.guilds.cache.has(cast.guildId)) {
+        this.dependencies.info(`The 段位播报 of match ${cast.matchId} was not posted: the bot is no longer in the server.`);
+        return;
+      }
       const moves = this.rankMoves(cast.matchId, cast.party).filter((move) => !cast.announced.has(move.puuid));
       const lines = moves.flatMap((move) => rankMoveText(move.memberId, move) ?? []);
       if (lines.length === 0) return;
@@ -1457,7 +1464,11 @@ export class GameMonitor {
         await cast.channel.send({ embeds: [buildRankAnnouncementEmbed(lines, mock)], allowedMentions: NO_MENTIONS });
         this.dependencies.info(`Posted the 段位播报 of match ${cast.matchId}.`);
       } catch (error) {
-        this.dependencies.log(new Error(`The 段位播报 of match ${cast.matchId} was not posted: ${errorMessage(error)}`));
+        if (isGoneChannelError(error)) {
+          this.dependencies.info(`The 段位播报 of match ${cast.matchId} was not posted: its channel is gone or the bot can no longer see it.`);
+        } else {
+          this.dependencies.log(new Error(`The 段位播报 of match ${cast.matchId} was not posted: ${errorMessage(error)}`));
+        }
       }
       if (line) cast.pendingLines.push(line);
       this.flushRank(cast);
@@ -1589,6 +1600,15 @@ export class GameMonitor {
     }
     this.remember(guildId, match.matchId, progress, true);
   }
+}
+
+/**
+ * The channel is gone or out of sight, an ordinary result of deleting it or removing the bot: discord.js lost it from its
+ * cache (ChannelNotCached), or Discord answered Unknown Channel (10003) or Missing Access (50001).
+ */
+function isGoneChannelError(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  return code === DiscordjsErrorCodes.ChannelNotCached || code === RESTJSONErrorCodes.UnknownChannel || code === RESTJSONErrorCodes.MissingAccess;
 }
 
 /** The member's voice channel when it passes the mock-mode TEST_* restrictions, whatever the bot can do in it. */
