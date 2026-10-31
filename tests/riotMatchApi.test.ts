@@ -152,3 +152,31 @@ test("the match detail cache evicts the least recently used entry, not the oldes
   await getMatchDetail("COLD_0");
   assert.deepEqual(riot.details, ["COLD_0"]);
 });
+
+// One attempt per Riot request for a caller whose next poll is the retry (#156).
+
+test("the latest-match and match-detail helpers make one attempt per request with retry false", async () => {
+  process.env.RIOT_MODE = "real";
+  process.env.RIOT_API_KEY = "test-key";
+  const sent: string[] = [];
+  let failing: (pathname: string) => boolean = () => true;
+  globalThis.fetch = async (input) => {
+    const pathname = new URL(input.toString()).pathname;
+    sent.push(pathname.split("/").at(-1)!);
+    if (failing(pathname)) return new Response(null, { status: 503 });
+    if (pathname.endsWith("/ids")) return Response.json(["NA1_ONCE"]);
+    return Response.json({ metadata: { matchId: "NA1_ONCE" }, info: { queueId: 420, participants: [{ puuid: "p", teamId: 100, win: true }] } });
+  };
+  await assert.rejects(getLatestSRMatchId("once-puuid", { retry: false }), { code: "unavailable", status: 503 });
+  assert.deepEqual(sent, ["ids"], "the ID list is asked once");
+
+  sent.length = 0;
+  failing = (pathname) => !pathname.endsWith("/ids");
+  await assert.rejects(getLatestSRMatchId("once-puuid", { retry: false }), { code: "unavailable" });
+  assert.deepEqual(sent, ["ids", "NA1_ONCE"], "and so is the match detail it needs");
+
+  sent.length = 0;
+  globalThis.fetch = async () => { sent.push("detail"); throw new Error("offline"); };
+  await assert.rejects(getMatchDetail("NA1_ONCE", { retry: false }), { code: "network" });
+  assert.deepEqual(sent, ["detail"]);
+});

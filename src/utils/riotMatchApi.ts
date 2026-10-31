@@ -1,6 +1,7 @@
 import { CHALLENGE_STATS, PERFORMANCE_STATS, POSITIONS } from "../types";
 import type { MatchDetail, MatchParticipant, ParticipantPerformance, Position, TeamObjectives } from "../types";
 import { createRiotRequester, getRiotMode, isMockData, RiotApiError, riotFetch, riotNumber, riotObject } from "../services/riotData";
+import type { RiotCallOptions } from "../services/riotData";
 import { parseMatchTimeline } from "./matchTimeline";
 import type { MatchTimeline } from "./matchTimeline";
 
@@ -36,10 +37,16 @@ export function isAnnouncedQueue(queueId: number): boolean {
   return SR_QUEUE_IDS.includes(queueId);
 }
 
+/**
+ * Options for the match helpers. `retry: false` makes each Riot request one attempt, for a caller whose next run is
+ * the retry (see `RiotCallOptions`). A cached match detail or queue costs no request either way.
+ */
+export type MatchRequestOptions = RiotCallOptions;
+
 /** The account's most recent match IDs in every queue, newest first. */
-export async function getRecentMatchIds(puuid: string, count = 20): Promise<string[]> {
+export async function getRecentMatchIds(puuid: string, count = 20, options: MatchRequestOptions = {}): Promise<string[]> {
   const idsUrl = `${AMERICAS}/lol/match/v5/matches/by-puuid/${encodeURIComponent(puuid)}/ids?count=${count}`;
-  const matchIds = await riotFetch<unknown>(idsUrl);
+  const matchIds = await riotFetch<unknown>(idsUrl, options);
   if (!Array.isArray(matchIds) || matchIds.some((id) => typeof id !== "string")) {
     throw new RiotApiError("Riot API returned invalid match history.", "invalid_response");
   }
@@ -51,24 +58,24 @@ export async function getRecentMatchIds(puuid: string, count = 20): Promise<stri
  * a non-Summoner's-Rift one is skipped and a supported one is returned as it is, so only matches never seen before
  * are fetched, newest first, until the first supported one.
  */
-export async function getLatestSRMatchId(puuid: string): Promise<string | null> {
+export async function getLatestSRMatchId(puuid: string, options: MatchRequestOptions = {}): Promise<string | null> {
   const mode = getRiotMode();
-  for (const matchId of await getRecentMatchIds(puuid)) {
+  for (const matchId of await getRecentMatchIds(puuid, 20, options)) {
     const known = touch(queueCache, `${mode}:${matchId}`);
-    const queueId = known ?? (await getMatchDetail(matchId)).info.queueId;
+    const queueId = known ?? (await getMatchDetail(matchId, options)).info.queueId;
     if (isAnnouncedQueue(queueId)) return matchId;
   }
 
   return null;
 }
 
-export async function getMatchDetail(matchId: string): Promise<MatchDetail> {
+export async function getMatchDetail(matchId: string, options: MatchRequestOptions = {}): Promise<MatchDetail> {
   const mode = getRiotMode();
   const cacheKey = `${mode}:${matchId}`;
   const cached = touch(matchCache, cacheKey);
   if (cached) return structuredClone(cached);
   const detailUrl = `${AMERICAS}/lol/match/v5/matches/${encodeURIComponent(matchId)}`;
-  const detail = parseMatchDetail(await riotFetch<unknown>(detailUrl), matchId);
+  const detail = parseMatchDetail(await riotFetch<unknown>(detailUrl, options), matchId);
   remember(matchCache, cacheKey, structuredClone(detail), MATCH_CACHE_LIMIT);
   remember(queueCache, cacheKey, detail.info.queueId, QUEUE_CACHE_LIMIT);
   return detail;

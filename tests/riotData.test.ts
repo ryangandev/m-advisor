@@ -338,6 +338,34 @@ test("service and network retries are bounded with backoff", async () => {
   });
 });
 
+test("a call with retry false makes one attempt for a 5xx, a network failure and a short 429", async () => {
+  const sleeps: number[] = [];
+  let answer: () => Response = () => new Response(null, { status: 503 });
+  let attempts = 0;
+  const requester = createRiotRequester({
+    apiKey: () => "test", sleep: async (ms) => { sleeps.push(ms); },
+    fetch: (async () => { attempts++; return answer(); }) as typeof fetch,
+  });
+  await assert.rejects(requester("https://na1.api.riotgames.com/test", { retry: false }), { code: "unavailable", status: 503 });
+  assert.equal(attempts, 1);
+  await assert.rejects(requester("https://americas.api.riotgames.com/test", { retry: false }), { code: "unavailable" });
+  assert.equal(attempts, 2);
+  answer = () => { throw new Error("offline"); };
+  await assert.rejects(requester("https://na1.api.riotgames.com/test", { retry: false }), { code: "network" });
+  assert.equal(attempts, 3);
+  answer = () => new Response(null, { status: 429, headers: { "Retry-After": "1" } });
+  await assert.rejects(requester("https://americas.api.riotgames.com/test", { retry: false }), { code: "rate_limited", retryAfterMs: 1000 });
+  assert.equal(attempts, 4);
+  assert.deepEqual(sleeps, [], "one attempt never backs off");
+
+  // The same requester still retries a call without the option.
+  answer = () => new Response(null, { status: 503 });
+  attempts = 0;
+  await assert.rejects(requester("https://na1.api.riotgames.com/again"), { code: "unavailable" });
+  assert.equal(attempts, 3);
+  assert.deepEqual(sleeps, [1000, 2000]);
+});
+
 test("malformed successful response becomes a structured error", async () => {
   const requester = createRiotRequester({
     apiKey: () => "test", fetch: (async () => new Response("not JSON", { status: 200 })) as typeof fetch,

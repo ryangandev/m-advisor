@@ -53,6 +53,8 @@ Keys are passed in the `X-Riot-Token` header and removed from legacy `api_key` q
 Only HTTPS calls to the configured NA1 and Americas Riot hosts are allowed, with redirects rejected.
 Each request has a 10 second timeout and at most two retries for network failures, 429 responses, or server errors.
 Retries use 1 and 2 second backoff unless Riot specifies `Retry-After`.
+A call can pass `{ retry: false }` to make one attempt only, so a network failure, a 5xx or a 429 is thrown at once; a short cooldown on the host is still waited out first, because that wait is not a retry.
+`getLatestSRMatchId(puuid, options)`, `getMatchDetail(matchId, options)` and `getRecentMatchIds(puuid, count, options)` pass it to every request they make, for a caller whose next poll is the retry.
 The requester applies 429 cooldowns across all endpoints on the affected regional host.
 A delay longer than 10 seconds is returned as `RiotApiError.retryAfterMs` and blocks further requests on that host until the cooldown has elapsed.
 Authentication and not-found errors are returned immediately.
