@@ -3,6 +3,7 @@ import type { ActiveGame, TrackedMember } from "../types";
 import type { HorseRecord } from "../store/horseRecordStore";
 import type { VoiceStyle } from "../store/announcerStore";
 import { RiotApiError } from "./riotData";
+import { riotErrorKind } from "./riotErrorKind";
 import { isAnnouncedGame, isLoading, isSpectatorAuthError, matchIdOf } from "../utils/riotSpectatorApi";
 import { boundParticipants, chooseChannel, liveParticipantIds, liveParticipants, perspective } from "./channelChoice";
 import type { BoundParticipant, ResolveChannel } from "./channelChoice";
@@ -190,7 +191,6 @@ export interface GameStartOutcome {
 }
 
 const errorMessage = (error: unknown): string => error instanceof Error ? error.message : "Unknown error";
-const errorKey = (error: unknown): string => error instanceof RiotApiError ? `${error.code}:${error.status ?? ""}` : "other";
 
 /**
  * Watches the present members' accounts for a game on its loading screen and posts the 军师赛前锦囊 for it:
@@ -321,7 +321,7 @@ export class GameStartWatcher {
 
   /** Logs an error once per kind until a check works again, so a Riot outage does not repeat every 20 seconds. */
   private logOnce(error: unknown, context: string): void {
-    const key = errorKey(error);
+    const key = riotErrorKind(error);
     if (this.loggedErrors.has(key)) return;
     this.loggedErrors.add(key);
     this.dependencies.log(new Error(`${context}: ${errorMessage(error)} (logged once until a check works again)`));
