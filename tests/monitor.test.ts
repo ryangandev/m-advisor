@@ -112,6 +112,7 @@ function harness(guildId: string, specs: string[] | MemberSpec[] = ["tracked"]) 
   const cleaned: string[] = [];
   const errors: unknown[] = [];
   const infos: string[] = [];
+  const warnings: string[] = [];
   const records: HorseRecord[][] = [];
   const timelines: string[] = [];
   const edits: Array<{ channelId: string; options: MessageEditOptions }> = [];
@@ -143,13 +144,14 @@ function harness(guildId: string, specs: string[] | MemberSpec[] = ["tracked"]) 
     mock: () => true,
     log: (error) => { errors.push(error); },
     info: (message) => { infos.push(message); },
+    warn: (message) => { warnings.push(message); },
   };
   const monitor = new GameMonitor(dependencies);
   monitors.push(monitor);
   const client = {} as Client;
   const inVoice = () => members.filter((member) => location.get(member.discordUserId)).map((member) => member.discordUserId);
   return {
-    guildId, monitor, client, dependencies, latestIds, matches, lookups, generated, played, cleaned, errors, infos, sent, channel, move, blocked, voiceBlocked,
+    guildId, monitor, client, dependencies, latestIds, matches, lookups, generated, played, cleaned, errors, infos, warnings, sent, channel, move, blocked, voiceBlocked,
     records, timelines, edits,
     get messages() { return sent.map((entry) => entry.message); },
     get members() { return members; },
@@ -2987,9 +2989,10 @@ test("a send that never settles stops holding the new session after the wait: th
   assert.ok(await settledSoon(newPoll), "the new session does not wait for the send forever");
   assert.equal(bot.played.length, 1, "the report is spoken once");
   assert.equal(post.calls(), 1, "the text is not posted a second time while the first is unknown");
-  const warnings = bot.errors.filter((error) => /still in flight/.test((error as Error).message));
-  assert.equal(warnings.length, 1, "one warning");
-  assert.doesNotMatch((warnings[0] as Error).message, /token/i);
+  assert.equal(bot.warnings.length, 1, "one warning, on the warn sink");
+  assert.match(bot.warnings[0], /^The text report of match m1 is still in flight/);
+  assert.doesNotMatch(bot.warnings[0], /token/i);
+  assert.deepEqual(bot.errors, [], "and not an error");
   post.release();
   await oldPoll;
   await delay(30);
@@ -3019,6 +3022,31 @@ test("a send that never settles stops holding the new session after the wait: th
   assert.deepEqual(await failing.poll(), { announced: 0, errors: 0 });
   assert.equal(failed.calls(), 1);
   assert.equal(failing.played.length, 1);
+});
+
+test("a post that is unknown after the wait still lets a promotion be announced when the old send lands", async () => {
+  const { bot, rank } = await rankedTrio("rank-stuck-send-guild");
+  bot.dependencies.inFlightWaitMs = 60;
+  const queued = recordAnnouncements(bot);
+  rank.league.set("alice", [ranked("PLATINUM", "IV", 7, 11, 10)]);
+  const post = heldFirstSend(bot, "x");
+  const oldPoll = bot.poll();
+  await until(() => post.calls() === 1, "the first send");
+  for (const id of ["alice-id", "bob-id", "zed-id"]) bot.move(id, null);
+  bot.sync();
+  for (const id of ["alice-id", "bob-id", "zed-id"]) bot.move(id, "x");
+  const newPoll = bot.start();
+  assert.deepEqual(await Promise.race([newPoll, delay(1_000).then(() => "stuck")]), { announced: 1, errors: 0 });
+  assert.equal(bot.warnings.length, 1);
+  assert.equal(castsOf(bot).length, 0, "nothing is known to be posted yet");
+  post.release();
+  await oldPoll;
+  await until(() => castsOf(bot).length === 1, "the 段位播报 message after the late send");
+  await until(() => queued.length === 2, "the 段位播报 voice line");
+  await delay(30);
+  assert.equal(castsOf(bot).length, 1, "posted once");
+  assert.equal(bot.sent.length, 2, "the report and the 段位播报");
+  assert.equal(queued.length, 2, "the report and one 段位播报 line");
 });
 
 test("a /bind or /unbind forgets the member's kept baselines, also when it races a queued reconciliation", async () => {
