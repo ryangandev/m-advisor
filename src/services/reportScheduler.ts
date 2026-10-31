@@ -25,8 +25,14 @@ const MIN_DELAY_MS = 1_000;
  * How long a send may keep failing before the period is given up.
  * Measured from the first failure in this process, so a Mac that wakes without Wi-Fi for a few minutes, or a Discord
  * outage, never drops a period, while a problem that never clears does not retry forever.
+ * Time the computer slept does not count: see FAILURE_GAP_RESET_MS.
  */
 export const GIVE_UP_AFTER_MS = 6 * 3_600_000;
+/**
+ * A failed retry this long after the previous failed attempt means the process was asleep in between (checks come at
+ * least every REPORT_TICK_MS while awake), so the failure clock restarts instead of counting the sleep.
+ */
+export const FAILURE_GAP_RESET_MS = 5 * REPORT_TICK_MS;
 /** How long shutdown waits for a report that is being sent before it closes the database anyway. */
 export const SHUTDOWN_WAIT_MS = 3_000;
 
@@ -83,8 +89,8 @@ export class ReportScheduler {
   private timer: unknown;
   private running: Promise<void> | undefined;
   private halted = false;
-  /** When each period's send first failed in this process. */
-  private readonly firstFailure = new Map<string, number>();
+  /** When each period's send first failed in this process (after the last sleep) and when it last failed. */
+  private readonly firstFailure = new Map<string, { first: number; last: number }>();
   /** Periods this process must not touch again, because they were posted or given up but could not be marked in the database. */
   private readonly settled = new Set<string>();
 
@@ -202,11 +208,15 @@ export class ReportScheduler {
         nonce: reportNonce(guildId, mock, kind, posted.range.start),
       });
     } catch (error) {
-      const first = this.firstFailure.get(key);
-      if (first === undefined) this.firstFailure.set(key, now);
-      const giveUp = isPermanent(error) || (first !== undefined && now - first >= GIVE_UP_AFTER_MS);
+      const previous = this.firstFailure.get(key);
+      // A gap far longer than the tick means the process was asleep, so the failure clock restarts: only time spent
+      // awake and failing counts toward giving up.
+      const awake = previous !== undefined && now - previous.last <= FAILURE_GAP_RESET_MS;
+      const first = awake ? previous.first : now;
+      this.firstFailure.set(key, { first, last: now });
+      const giveUp = isPermanent(error) || (previous !== undefined && now - first >= GIVE_UP_AFTER_MS);
       // One line when the trouble starts and one when the period is dropped; the retries in between stay quiet.
-      if (first === undefined || giveUp) {
+      if (previous === undefined || giveUp) {
         logWarn(`Could not post the ${kindName(kind)} 马报 for ${periodLabel(posted)} in server ${guildId} (${errorName(error)}, code ${discordErrorCode(error) ?? "none"})${giveUp ? "; giving up on this period. Check the report channel and the bot's permissions there." : "; will keep retrying."}`);
       }
       if (giveUp) {

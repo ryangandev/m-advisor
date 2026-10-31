@@ -75,6 +75,7 @@ Reports then start with the next period instead of replaying yesterday, and `/re
 Switching a report on when it is already on changes nothing, so it never drops a report that is due.
 
 A failed send does not mark the period, and it is retried on every check until it has kept failing for 6 hours (`GIVE_UP_AFTER_MS`), counted from the first failure in this process.
+Only time the bot was awake counts: a failed retry more than 5 minutes after the previous failed attempt (`FAILURE_GAP_RESET_MS`) means the computer slept, so the 6 hours start again from that retry.
 Network and timeout errors therefore never use up attempts: a Mac that wakes without Wi-Fi for a few minutes still posts once the network is back.
 The log gets one line when a send starts failing and one when the period is given up.
 A missing channel, missing access or missing permissions give up on that period at once.
