@@ -30,7 +30,7 @@ function teammateLine(line: PregameLine): string {
   const parts = [who, line.champion, line.recentTiers.map((tier) => TIER_ICONS[tier]).join(" ")];
   if (line.recentAverage !== null) {
     const trend = line.trend && line.previousAverage !== null
-      ? ` ${TREND_ARROW[line.trend]}（前5局 ${formatScore(line.previousAverage)}）`
+      ? ` ${TREND_ARROW[line.trend]}（前${line.previousGames}局 ${formatScore(line.previousAverage)}）`
       : "";
     parts.push(`近${line.recentTiers.length}局均 ${formatScore(line.recentAverage)}${trend}`);
   }
