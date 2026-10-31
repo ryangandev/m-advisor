@@ -4,6 +4,7 @@ import type { Client, Guild, VoiceChannel, VoiceState } from "discord.js";
 import type { TrackedMember } from "../src/types";
 import { GameMonitor } from "../src/services/gameMonitor";
 import { MonitorLifecycle } from "../src/services/monitorLifecycle";
+import { handleGuildRemoved } from "../src/events/guildDelete";
 import { closeDatabase } from "../src/store/database";
 import { testMatch } from "./helpers/matches";
 
@@ -34,6 +35,8 @@ function presence(guildId: string) {
   ];
   const location = new Map<string, string | null>();
   const syncs: string[][] = [];
+  /** Every sync and stop the lifecycle performed, in order. */
+  const actions: string[] = [];
   const lookups: string[] = [];
   /** A pending lookup per member, so tests can hold one reconcile's view of voice. */
   const slowFetch = new Map<string, Promise<void>>();
@@ -47,7 +50,8 @@ function presence(guildId: string) {
       },
     },
   };
-  const client = { guilds: { cache: new Map([[guildId, guild]]) } } as unknown as Client;
+  const cache = new Map<string, typeof guild>([[guildId, guild]]);
+  const client = { guilds: { cache }, isReady: () => true } as unknown as Client;
   const monitor = new GameMonitor({
     latest: async (puuid) => { lookups.push(puuid); return "historical-match"; },
     // Every lookup returns the same old match, so joining members only ever take a baseline.
@@ -71,8 +75,12 @@ function presence(guildId: string) {
   monitors.push(monitor);
   const lifecycle = new MonitorLifecycle({
     members: () => members,
-    sync: (syncClient, syncGuildId, memberIds) => { syncs.push(memberIds); monitor.sync(syncClient, syncGuildId, memberIds); },
-    stop: (stopGuildId, reason) => monitor.stop(stopGuildId, reason),
+    sync: (syncClient, syncGuildId, memberIds) => {
+      syncs.push(memberIds);
+      actions.push(`sync ${syncGuildId} ${memberIds.join(",")}`);
+      monitor.sync(syncClient, syncGuildId, memberIds);
+    },
+    stop: (stopGuildId, reason) => { actions.push(`stop ${stopGuildId}`); monitor.stop(stopGuildId, reason); },
     stopping: () => false,
     log: (message) => { throw new Error(message); },
   });
@@ -85,7 +93,12 @@ function presence(guildId: string) {
     return lifecycle.voiceStateChanged(state(id, before), state(id, channelId));
   };
   const available = () => lifecycle.guildAvailable({ id: guildId, client } as unknown as Guild);
-  return { monitor, lifecycle, client, available, location, syncs, lookups, slowFetch, state, voice, status: () => monitor.status(guildId) };
+  /** discord.js drops the guild from its cache before it emits GuildDelete, and caches a new object before GuildCreate. */
+  const removeGuild = () => {
+    cache.delete(guildId);
+    return handleGuildRemoved({ id: guildId, name: "Test Server", client: client as Client<true> }, (reconcileClient, id) => lifecycle.reconcile(reconcileClient, id));
+  };
+  return { monitor, lifecycle, client, available, removeGuild, actions, location, syncs, lookups, slowFetch, state, voice, status: () => monitor.status(guildId) };
 }
 
 test("an untracked member and a mute toggle do nothing", async () => {
@@ -181,4 +194,21 @@ test("the guild available event reconciles through the lifecycle", async () => {
   const { default: event } = await import("../src/events/guildAvailable");
   assert.equal(event.name, "guildAvailable");
   assert.equal(typeof event.execute, "function");
+});
+
+test("a reconcile still reading voice states when the bot is removed cannot restart the session", async () => {
+  const bot = presence("removed-guild");
+  await bot.voice("alice-id", "x");
+  assert.equal(bot.status().active, true);
+  // Bob joins, and his lookup is held while the bot is removed.
+  const held = deferred<void>();
+  bot.slowFetch.set("bob-id", held.promise);
+  const inFlight = bot.voice("bob-id", "y");
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  const removal = bot.removeGuild();
+  held.resolve();
+  await Promise.all([inFlight, removal]);
+  assert.equal(bot.actions.at(-1), "stop removed-guild", "the last action is the stop, not a start");
+  assert.deepEqual(bot.actions, ["sync removed-guild alice-id", "stop removed-guild"], "the older view is dropped, not applied and then undone");
+  assert.equal(bot.status().active, false);
 });

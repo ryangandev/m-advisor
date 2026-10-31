@@ -68,6 +68,8 @@ export class MonitorLifecycle {
     const states = await Promise.all(members.map((member) =>
       guild.members.fetch(member.discordUserId).catch(() => null)));
     if (this.dependencies.stopping()) return;
+    // A removal during the lookups queues its own reconcile, which stops the session; this older view must not restart it.
+    if (client.guilds.cache.get(guildId) !== guild) return;
     const present = members.filter((_, index) => Boolean(states[index]?.voice.channelId)).map((member) => member.discordUserId);
     this.dependencies.sync(client, guildId, present);
   }
