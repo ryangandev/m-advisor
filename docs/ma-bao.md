@@ -137,6 +137,8 @@ Turning roles off takes them back from the members the bot gave them to, keeps t
 Roles follow the weekly report, so clearing the channel or switching weekly reports off while roles are on also releases the holders and turns the roles off; they stay off until `/report-settings roles` enables them again.
 Enabling roles with different roles than before first takes the replaced roles back from their holders, and lists in the reply any member Discord would not let it release so an administrator can remove the role by hand.
 A role that no longer exists counts as already released.
+The two roles must be two different roles; when a role option would clash with the saved other role, the reply says so instead of blaming the role order.
+Role changes (`roles`, and the releases done by `channel-clear` and `weekly enabled:false`) run one at a time per server, so two overlapping commands cannot create two pairs of roles.
 
 ## What the administrator does in Discord
 
