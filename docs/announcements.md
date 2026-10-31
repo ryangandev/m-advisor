@@ -68,7 +68,8 @@ A kind is forgotten as soon as a poll that reads Riot has no failure of that kin
 Then one line says that match polling works again, or which kinds no longer fail and which still do.
 Every failed read still counts in `errors` and in the last error that `getMonitorStatus` reports, and each poll still retries it, so no match is consumed or skipped because of the quieter log.
 A Riot credential or configuration failure is always logged and still stops the session.
-The shared Riot requester still retries a failed read twice before it gives up, so each poll of an account can send up to three requests while Riot is down.
+The latest-match read makes one attempt per request (`pollLatestMatchId`, which passes `{ retry: false }`), because the next poll is already the retry, so each account costs one request per poll while Riot is down.
+A new match's detail keeps the shared requester's retries, so a brief 5xx does not delay its announcement by a whole poll.
 `stopPolling(guildId)` cancels the session, timer, and match baselines.
 `stopAllPolling()` performs the same cancellation for every active guild during shutdown.
 `getMonitorStatus(guildId)` reports `presentMemberIds`, the members the session covers in bind order, along with the activity, last check and last error.

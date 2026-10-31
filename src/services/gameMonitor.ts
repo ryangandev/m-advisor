@@ -1720,8 +1720,17 @@ export const rankTracker = new RankTracker({
   info: logInfo,
 });
 
+/**
+ * The poll's latest-match read: one attempt per request, because the next poll is already the retry. During a Riot outage
+ * each account then costs one request per poll instead of three. A new match's detail keeps the requester's retries, so a
+ * brief 5xx does not delay its announcement by a whole poll.
+ */
+export function pollLatestMatchId(puuid: string): Promise<string | null> {
+  return getLatestSRMatchId(puuid, { retry: false });
+}
+
 const monitor = new GameMonitor({
-  latest: getLatestSRMatchId,
+  latest: pollLatestMatchId,
   detail: getMatchDetail,
   members: listTrackedMembers,
   resolveChannel: resolveMonitoredVoiceChannel,
