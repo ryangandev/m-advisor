@@ -4,6 +4,8 @@ import { buildMockActiveGame, buildMockMatch, buildMockProfile, buildMockTimelin
 import type { MockOutcome, MockProfile, RawMatch } from "../fixtures/riotFixtures";
 import type { RankedEntry } from "../types";
 import { rankedQueueFor, shiftEntry } from "./rankMath";
+import { PacingRejection, RiotPacer } from "./riotPacing";
+import type { PacingSlot, RiotPriority } from "./riotPacing";
 
 export type RiotMode = "mock" | "real";
 export type RiotErrorCode = "invalid_mode" | "missing_key" | "unauthorized" | "forbidden" | "not_found" | "rate_limited" | "unavailable" | "bad_request" | "network" | "timeout" | "invalid_response" | "mock_only";
@@ -281,6 +283,14 @@ export interface RiotRequesterOptions {
   apiKey?: () => string | undefined;
   /** On a 404, read Riot's `errorCode` token from the body into `RiotApiError.errorCode`. */
   readNotFoundCode?: boolean;
+  /** The pacer to take turns from; the process-wide one (`getRiotPacer()`) unless a test passes its own. */
+  pacer?: RiotPacer;
+  /**
+   * The longest a request waits for its turn before it is rejected as `rate_limited` without being sent.
+   * A requester that never waits out a cooldown (`maxRetryDelayMs` 0, such as spectator, league and timelines) waits
+   * at most its `timeoutMs`; any other waits as long as the turn takes, until the bot stops.
+   */
+  maxQueueWaitMs?: number;
 }
 
 /** Options for one call of a requester. */
@@ -291,6 +301,8 @@ export interface RiotCallOptions {
    * host is still waited out before the one attempt, because that wait is not a retry.
    */
   retry?: boolean;
+  /** `bulk` for interactive work that sends many requests at once (`/recent`); see `RiotPriority`. Normal otherwise. */
+  priority?: RiotPriority;
 }
 
 /** A Riot request function: the shared one behind `riotFetch`, or one from `createRiotRequester`. */
@@ -314,6 +326,29 @@ function retryDelay(header: string | null, now: number): number | undefined {
   return Number.isFinite(date) ? Math.max(0, date - now) : undefined;
 }
 
+let sharedPacer: RiotPacer | undefined;
+
+/** The pacer every requester in the process takes turns from, so all callers share one budget per Riot host. */
+export function getRiotPacer(): RiotPacer {
+  sharedPacer ??= new RiotPacer();
+  return sharedPacer;
+}
+
+/** Replaces the shared pacer, for tests (an unpaced one or one on a fake clock); returns a function that restores the previous one. */
+export function useRiotPacer(pacer: RiotPacer): () => void {
+  const previous = sharedPacer;
+  sharedPacer = pacer;
+  return () => { sharedPacer = previous; };
+}
+
+/** A request the pacer did not give a turn was never sent. */
+function pacingError(error: unknown): unknown {
+  if (!(error instanceof PacingRejection)) return error;
+  return error.reason === "stopping"
+    ? new RiotApiError(error.message, "unavailable")
+    : new RiotApiError(error.message, "rate_limited", undefined, error.waitMs);
+}
+
 export function createRiotRequester(options: RiotRequesterOptions = {}): RiotRequest {
   const fetchImpl = options.fetch ?? ((...args) => fetch(...args));
   const sleep = options.sleep ?? (async (milliseconds: number) => { await delay(milliseconds); });
@@ -321,7 +356,26 @@ export function createRiotRequester(options: RiotRequesterOptions = {}): RiotReq
   const timeoutMs = options.timeoutMs ?? 10_000;
   const retries = options.maxRetries ?? 2;
   const maxRetryDelayMs = options.maxRetryDelayMs ?? 10_000;
+  const maxQueueWaitMs = options.maxQueueWaitMs ?? (maxRetryDelayMs === 0 ? timeoutMs : Infinity);
   const cooldowns = new Map<string, number>();
+
+  /** Waits out a short cooldown on the host, then for a turn from the pacer; a long cooldown is thrown. */
+  const takeTurn = async (target: URL, call: RiotCallOptions): Promise<PacingSlot> => {
+    for (;;) {
+      const cooldownUntil = cooldowns.get(target.origin);
+      const remainingCooldown = (cooldownUntil ?? 0) - now();
+      if (remainingCooldown > maxRetryDelayMs) throw statusError(429, remainingCooldown);
+      if (remainingCooldown > 0) await sleep(remainingCooldown);
+      let slot: PacingSlot;
+      try {
+        slot = await (options.pacer ?? getRiotPacer()).acquire(target.hostname, { priority: call.priority, maxWaitMs: maxQueueWaitMs });
+      } catch (error) { throw pacingError(error); }
+      // A 429 that another request got while this one waited for its turn starts a cooldown this one honors too.
+      const latest = cooldowns.get(target.origin);
+      if (latest === cooldownUntil || (latest ?? 0) <= now()) return slot;
+      slot.refund();
+    }
+  };
 
   return async function request<T>(url: string, call: RiotCallOptions = {}): Promise<T> {
     const apiKey = (options.apiKey?.() ?? process.env.RIOT_API_KEY)?.trim();
@@ -334,9 +388,8 @@ export function createRiotRequester(options: RiotRequesterOptions = {}): RiotReq
     target.searchParams.delete("api_key");
     const maxRetries = call.retry === false ? 0 : retries;
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
-      const remainingCooldown = (cooldowns.get(target.origin) ?? 0) - now();
-      if (remainingCooldown > maxRetryDelayMs) throw statusError(429, remainingCooldown);
-      if (remainingCooldown > 0) await sleep(remainingCooldown);
+      // Every attempt takes a turn: Riot counts each one against the host's limits.
+      await takeTurn(target, call);
       const signal = AbortSignal.timeout(timeoutMs);
       let response: Response;
       try {
@@ -347,6 +400,7 @@ export function createRiotRequester(options: RiotRequesterOptions = {}): RiotReq
         await sleep(Math.min(1000 * 2 ** attempt, maxRetryDelayMs));
         continue;
       }
+      (options.pacer ?? getRiotPacer()).observe(target.hostname, response.headers.get("X-App-Rate-Limit-Count"));
       if (response.ok) {
         try { return await response.json() as T; }
         catch { throw new RiotApiError("Riot API returned an invalid response.", signal.aborted ? "timeout" : "invalid_response"); }

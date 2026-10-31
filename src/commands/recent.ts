@@ -12,6 +12,9 @@ import { getRiotUserErrorMessage } from "../utils/userFacingErrors";
 /** How many accounts /recent reads from Riot at once; each reads its matches one at a time. */
 export const RECENT_ACCOUNT_CONCURRENCY = 2;
 
+/** /recent sends many requests at once, so they take the bulk share of the Riot pacer (see src/services/riotPacing.ts). */
+const RECENT_REQUESTS = { priority: "bulk" } as const;
+
 /** Maps in order with at most `limit` calls running at once. `fn` must not reject. */
 async function mapWithLimit<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
   const results = new Array<R>(items.length);
@@ -65,17 +68,18 @@ const recentCommand: BotCommand = {
     // Every account fails the same way when the key is dead; the log gets the line once per command.
     let keyRejectionLogged = false;
     const accounts = members.flatMap(({ member, order }) => member.accounts.map((account) => ({ account, order })));
-    // At most RECENT_ACCOUNT_CONCURRENCY accounts at a time, so a large server cannot burst past the americas limit
-    // that finished-match polling shares; the replies still come back in bind order.
+    // At most RECENT_ACCOUNT_CONCURRENCY accounts at a time; the replies still come back in bind order.
+    // Its requests are bulk: the shared pacer gives them a smaller share of each americas window, so a cold /recent
+    // waits for its turns instead of using up the limit that finished-match polling needs.
     const views = await mapWithLimit(accounts, RECENT_ACCOUNT_CONCURRENCY, async ({ account, order }): Promise<RecentAccountView> => {
       const view: RecentAccountView = { memberOrder: order, riotId: `${account.gameName}#${account.tagLine}`, puuid: account.puuid, matches: [] };
       if (!mock && account.puuid.startsWith("MOCK-")) {
         return { ...view, notice: "⚠️ 这是模拟账号，真实模式下监听会跳过它。用 /bind 绑定真实 Riot ID 后会自动移除它。" };
       }
       try {
-        // Details are fetched one at a time to stay well inside the Riot rate limit; repeated lookups hit the cache.
-        for (const matchId of await getRecentMatchIds(account.puuid, count)) {
-          view.matches.push({ matchId, detail: await getMatchDetail(matchId) });
+        // Details are fetched one at a time; repeated lookups hit the cache.
+        for (const matchId of await getRecentMatchIds(account.puuid, count, RECENT_REQUESTS)) {
+          view.matches.push({ matchId, detail: await getMatchDetail(matchId, RECENT_REQUESTS) });
         }
         return { ...view, lastMatchId: getLastMatchId(guildId, account.puuid) };
       } catch (error) {
