@@ -54,7 +54,7 @@ export const KEEP_BASELINES_MS = 120_000;
 /**
  * A baseline is kept only if its account was read this recently when the member left, so a Mac that slept for hours
  * and then reconciles cannot bring back a stale baseline and replay an old match. A poll in flight, whose report may take
- * minutes to speak, or one that finished within this time allows the longer age.
+ * minutes to speak, allows the longer age, and so does one that finished within this time for the accounts it read.
  */
 export const KEEP_FRESH_MS = 2 * POLL_INTERVAL_MS;
 const KEEP_FRESH_BUSY_MS = 10 * 60_000;
@@ -270,6 +270,8 @@ const PROGRESS_LIMIT = 50;
 
 interface MonitorSession {
   startedAt: number;
+  /** When the running poll started, or the last one when none runs. */
+  lastPollStartedAt?: number;
   lastPollAt?: number;
   controller: AbortController;
   /** Tracked members in voice, in bind order. */
@@ -443,14 +445,16 @@ export class GameMonitor {
     this.purge(guildId);
     const now = Date.now();
     // A poll reads its accounts before it speaks, so right after a long report every read is old although the session
-    // was busy all along; the longer age holds until the next tick could have read them again.
-    const busy = session.inFlight !== undefined
-      || (session.lastPollAt !== undefined && now - session.lastPollAt <= KEEP_FRESH_MS);
-    const maxAge = busy ? KEEP_FRESH_BUSY_MS : KEEP_FRESH_MS;
+    // was busy all along; the longer age holds until the next tick could have read them again, but only for accounts
+    // that poll really read, so a poll whose reads failed, as right after the Mac woke, extends nothing.
+    const justPolled = session.inFlight === undefined && session.lastPollAt !== undefined
+      && session.lastPollStartedAt !== undefined && now - session.lastPollAt <= KEEP_FRESH_MS;
     const kept = this.kept.get(guildId) ?? new Map<string, KeptBaseline>();
     for (const [puuid, state] of accounts) {
       if (!state.baselined || state.noKeep || this.ownerOf(guildId, puuid) !== state.owner) continue;
-      if (state.readAt === undefined || now - state.readAt > maxAge) continue;
+      if (state.readAt === undefined) continue;
+      const busy = session.inFlight !== undefined || (justPolled && state.readAt >= session.lastPollStartedAt!);
+      if (now - state.readAt > (busy ? KEEP_FRESH_BUSY_MS : KEEP_FRESH_MS)) continue;
       kept.set(puuid, { owner: state.owner, matchId: getLastMatchId(guildId, puuid), keptAt: now, readAt: state.readAt });
     }
     if (kept.size > 0) this.kept.set(guildId, kept);
@@ -727,6 +731,7 @@ export class GameMonitor {
 
   private async run(client: Client, guildId: string, session: MonitorSession, requiredTargets: Set<string>): Promise<PollResult> {
     const result = { announced: 0, errors: 0 };
+    session.lastPollStartedAt = Date.now();
     const fail = (error: unknown): boolean => {
       result.errors++;
       this.report(guildId, error);

@@ -2674,6 +2674,24 @@ test("the allowance after a long report is short: a blip two poll intervals late
   assert.equal(getLastMatchId(bot.guildId, "alice"), "alice-game", "a fresh baseline");
 });
 
+test("a poll whose reads all failed grants no allowance, so a blip after a short sleep takes a fresh baseline", async () => {
+  const bot = harness("fresh-failed-reads-guild");
+  await bot.start();
+  const latest = bot.dependencies.latest;
+  // The Mac slept 5 minutes with no poll running; the first poll after waking cannot reach Riot yet.
+  const result = await clockAhead(5 * 60_000, async () => {
+    bot.dependencies.latest = async () => { throw new RiotApiError("Riot API request failed: network down.", "network"); };
+    assert.deepEqual(await bot.poll(), { announced: 0, errors: 1 });
+    bot.dependencies.latest = latest;
+    bot.latestIds.set("tracked", "finished-while-asleep");
+    blip(bot);
+    return bot.start();
+  });
+  assert.deepEqual(result, { announced: 0, errors: 0 });
+  assert.deepEqual(bot.generated, [], "the game finished during the sleep is not announced");
+  assert.equal(getLastMatchId(bot.guildId, "tracked"), "finished-while-asleep", "a fresh baseline");
+});
+
 test("a kept baseline is dropped when the member is unbound, so a rebind within the window starts fresh", async () => {
   const bot = harness("keep-unbind-guild");
   await bot.start();
