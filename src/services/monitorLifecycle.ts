@@ -50,8 +50,8 @@ export class MonitorLifecycle {
   }
 
   /**
-   * A guild that comes back after a gateway re-identify has reloaded its voice states without any VoiceStateUpdate,
-   * so the session is read against the real voice states again.
+   * A guild that comes back after a gateway re-identify, or that the bot is invited back to, has loaded its voice states
+   * without any VoiceStateUpdate, so the session is read against the real voice states again.
    */
   guildAvailable(guild: Guild): Promise<void> {
     return this.reconcile(guild.client, guild.id);
