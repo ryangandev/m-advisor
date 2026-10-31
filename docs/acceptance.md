@@ -173,6 +173,9 @@ It needs `RIOT_MODE=real` and `RIOT_API_KEY` in the local `.env`, reads the data
 Pass a Riot ID as the first argument, as in `npm run probe:spectator -- "name#tag"`, to probe a specific bound account; it is matched case-insensitively against the stored name and tag.
 Without an argument it uses the first account of the first tracked member.
 Run it once on the loading screen and once a minute or two into the game, then compare the output with the assumptions in `src/services/gameStartWatcher.ts`.
+For each of those fields it prints Riot's raw JSON type and value next to the value the bot parsed, and the raw participant count next to the count kept, so a missing or malformed field is visible instead of becoming `null`.
+A body the bot rejects still prints its raw fields, and any Riot error (401, 403, 429, timeout, invalid body) prints the status and a one-line reason and exits with code 1; not being in a game exits 0.
+Send back the full output of both runs (loading screen and in game), including the `raw` and `parsed` columns and the exit code; it contains no PUUID, Riot ID, summoner name or key.
 Run it by hand only; no test or verifier calls it.
 
 On 2026-10-07 this check passed: one real match was spoken and reported exactly once in General; see [Status](status.md#real-riot-acceptance).
