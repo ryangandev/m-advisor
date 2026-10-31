@@ -20,6 +20,15 @@ test("the default database and log directory of a test process are a temporary d
   }
 });
 
+test("the temporary directory of a test process, and of the children it starts, is inside its own folder", () => {
+  const folder = process.env.M_ADVISOR_TEST_AUTO_DATA_DIR;
+  assert.ok(folder, "the preload did not run");
+  for (const name of ["TMPDIR", "TMP", "TEMP"]) assert.equal(process.env[name], folder, `${name} does not point at the per-process folder`);
+  assert.equal(path.resolve(os.tmpdir()), path.resolve(folder));
+  const child = spawnSync(process.execPath, ["--eval", "console.log(require('node:os').tmpdir())"], { encoding: "utf8" });
+  assert.equal(path.resolve(child.stdout.trim()), path.resolve(folder));
+});
+
 test("host credentials and the data mode are not inherited by a test process", () => {
   for (const name of ["DISCORD_TOKEN", "CLIENT_ID", "RIOT_API_KEY", "RIOT_MODE", "DATABASE_PATH"]) {
     assert.equal(process.env[name], undefined, `${name} leaked into the test process`);
