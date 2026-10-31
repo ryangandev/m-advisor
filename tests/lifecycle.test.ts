@@ -9,7 +9,7 @@ import { test } from "node:test";
 // is stubbed before it loads. No tokens, network calls or GPU imports are used.
 // Log files go to a temporary data directory and are returned as one string.
 function spawnEntryPoint(
-  scenario: "before-commands" | "during-commands" | "during-login" | "crash" | "hangup",
+  scenario: "before-commands" | "during-commands" | "during-login" | "crash" | "hangup" | "hangup-eio",
   failures: { client?: boolean; connection?: boolean } = {},
 ) {
   const root = path.resolve(__dirname, "..");
@@ -75,14 +75,20 @@ Module._load = function(request, parent, ...args) {
 require(root + "/src/index.ts");
 if (scenario === "before-commands") process.emit("SIGTERM");
 // A real signal, as closing the launcher Terminal window sends.
-if (scenario === "hangup") process.kill(process.pid, "SIGHUP");
+if (scenario === "hangup-eio") {
+  // The terminal is gone: every write to the standard streams fails with EIO.
+  for (const stream of [process.stdout, process.stderr]) {
+    stream.write = () => { stream.destroy(Object.assign(new Error("write EIO"), { code: "EIO" })); return true; };
+  }
+}
+if (scenario === "hangup" || scenario === "hangup-eio") process.kill(process.pid, "SIGHUP");
 if (scenario === "crash") {
   process.emitWarning("offline test warning");
   setTimeout(() => { throw new Error("offline crash quoting offline-test-token"); }, 50);
 }
 // The trace is reported when the process exits on its own (the entry point has finished shutting down),
 // never on a fixed timer, so a slow or starved machine cannot cut the run short.
-process.on("exit", () => console.log(JSON.stringify({ trace })));
+process.on("exit", () => fs.writeSync(1, JSON.stringify({ trace }) + "\n"));
 `;
   try {
     const child = spawnSync(process.execPath, ["--import", "tsx", "-e", code],
@@ -132,6 +138,20 @@ test("SIGHUP from closing the terminal window runs the same graceful shutdown as
   assert.ok(trace.indexOf("destroy-end") < trace.indexOf("stop-speech"), trace.join(", "));
   assert.ok(trace.indexOf("stop-speech") < trace.indexOf("close-database"), trace.join(", "));
   assert.equal(trace.filter((entry) => entry === "stop-monitoring").length, 1);
+});
+
+test("an error logged during a SIGHUP shutdown with a dead terminal still completes the shutdown", () => {
+  const { child } = spawnEntryPoint("hangup-eio", { client: true });
+  assert.equal(child.error, undefined);
+  assert.equal(child.status, 1, child.stderr);
+  assert.ok(!/EIO/.test(child.stderr), child.stderr);
+  const result = child.stdout.trim().split("\n").map((line) => {
+    try { return JSON.parse(line); } catch { return undefined; }
+  }).find((item) => item?.trace);
+  assert.ok(result, child.stdout);
+  const trace: string[] = result.trace;
+  assert.ok(trace.includes("destroy-failed"), trace.join(", "));
+  assert.ok(trace.indexOf("stop-speech") < trace.indexOf("close-database"), trace.join(", "));
 });
 
 test("SIGTERM during login destroys the client again if login completes after stopping", () => {

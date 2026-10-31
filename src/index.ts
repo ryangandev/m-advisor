@@ -113,6 +113,10 @@ function shutdown(): Promise<void> {
   return shutdownPromise;
 }
 
+// Closing the launcher window removes the terminal. Initialise both streams while it is alive: opening stderr for the
+// first time afterwards blocks the main thread, and a write to a dead terminal emits EIO that would crash the shutdown.
+for (const stream of [process.stdout, process.stderr]) stream.on("error", () => {});
+
 // SIGHUP is what closing the launcher's Terminal window sends; its default would exit without any cleanup.
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
   process.once(signal, () => {

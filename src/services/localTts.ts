@@ -62,7 +62,6 @@ export function localTtsOptions(env = process.env): LocalTtsOptions {
   };
 }
 
-/** One offline worker shared by all guilds, with bounded, serialized requests. */
 export const TTS_DIRECTORY_PREFIX = "m-advisor-tts-";
 // New directories are `<prefix><pid>-<6 random chars>`; the older `<prefix><6 random chars>` has no owner recorded.
 const TTS_DIRECTORY_NAME = /^m-advisor-tts-(?:(\d+)-)?[A-Za-z0-9]{6}$/;
@@ -81,13 +80,15 @@ function processIsRunning(pid: number): boolean {
  */
 export async function sweepStaleTtsDirectories(root: string, keep: string, now = Date.now()): Promise<void> {
   try {
+    // The kept directory is a realpath while the temp root may be a symlink (macOS /var -> /private/var).
+    const keepPath = await realpath(keep).catch(() => path.resolve(keep));
     const uid = process.getuid?.();
     for (const name of await readdir(root)) {
       const match = TTS_DIRECTORY_NAME.exec(name);
       if (!match) continue;
       const target = path.join(root, name);
       try {
-        if (path.resolve(target) === path.resolve(keep)) continue;
+        if ((await realpath(target).catch(() => path.resolve(target))) === keepPath) continue;
         const info = await lstat(target);
         if (!info.isDirectory() || info.isSymbolicLink()) continue;
         if (uid !== undefined && info.uid !== uid) continue;
@@ -100,6 +101,7 @@ export async function sweepStaleTtsDirectories(root: string, keep: string, now =
   } catch { /* the temp directory itself is unreadable: nothing to sweep */ }
 }
 
+/** One offline worker shared by all guilds, with bounded, serialized requests. */
 export class LocalTtsService {
   private worker?: ChildProcessWithoutNullStreams;
   private readonly workers = new Set<ChildProcessWithoutNullStreams>();
