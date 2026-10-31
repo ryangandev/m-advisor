@@ -102,6 +102,11 @@ Copying `bot.sqlite3` yourself before the first launch of the new version is opt
 It deliberately has no foreign key to `tracked_members`, so removing a member never deletes their history.
 `/unbind` keeps the history; only `eraseMemberHorseRecords(guildId, userId)`, behind the administrator command `/stable-erase`, deletes it.
 Rebinding the same Discord member continues the same history, because the key is the Discord user and not the binding.
+An erase leaves the member bound, so the database cannot tell a late write for a match reported before the erase from a new one.
+`eraseMemberHorseRecords` therefore also remembers the erase time per server and member in memory (`src/store/eraseCutoff.ts`), and nothing is added to the schema.
+The monitor's late LP write and its 马厩 write after the voice skip a member erased at or after the moment the match was detected, and still record a match detected later.
+The cutoff compares the monitor's own detection time with the erase time, both from the same clock, and not Riot's match end time.
+A restart drops the cutoffs, which is safe because it also drops every pending late write.
 
 `recordHorseRecords(records)` validates every record, saves the batch in one transaction and returns how many were new.
 Inside that transaction it also checks that each (server, member, account) is currently in `member_accounts`, and otherwise throws `UntrackedMemberError` and saves nothing.

@@ -365,7 +365,8 @@ A row that reaches a final state is also written to `rank_results` (see [LP resu
 The final states are a change, a promotion, a demotion, a placement and an unattributable change; a pending, stale or unavailable row and a row that is left out are not stored.
 The monitor writes at two points: with the report, for the rows the first reads already settled, and after the late update, for the rows that settled since.
 The late write offers every final row again, and the key ignores the ones already stored, so a row cannot be stored twice or changed.
-Each write reads the bindings live and offers only the members who still own the account they played on, and the store checks the same ownership inside its transaction, so a member who unbinds or erases their data while a row is pending never gets that row back.
+Each write reads the bindings live and offers only the members who still own the account they played on, and the store checks the same ownership inside its transaction, so a member who unbinds while a row is pending never gets that row back.
+An erase leaves the member bound, so both the LP write and the 马厩 write also skip a member whose `/stable-erase` came at or after the match was detected (an in-memory cutoff, see [storage](storage.md#马厩-horse-records)); a match detected after the erase is recorded normally.
 The write follows the posted report, so a match whose text report never posted stores nothing. Both the LP and the 马厩 writes are skipped once the monitor has shut down, even when the send was already under way, so the closed database is never reopened.
 A storage failure is logged as an error line, `The LP results of match <id> were not saved`, and never affects the report, the late edit, the 段位播报 or the voice attempt count.
 
