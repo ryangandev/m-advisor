@@ -64,10 +64,12 @@ npm start
 ```
 
 Alternatively, double-click `scripts/launch.command` on this Mac.
-The launcher enters the repository, locates Node through PATH or an existing nvm installation, builds and starts the bot.
+The launcher enters the repository, locates Node through PATH or an existing nvm installation, builds, then replaces itself with `node dist/index.js` (not `npm start`, so npm is not between the terminal and the bot).
 Wait for `Speech provider ready.` before testing audio.
 Ctrl+C, SIGTERM or closing the launcher's Terminal window (SIGHUP) stops the 马报 scheduler, then monitoring, and closes voice connections, the Discord client, the speech worker and SQLite.
-A second signal of the same kind while stopping ends the process at once, and a 15 second deadline forces exit if cleanup hangs.
+Ctrl+C under `npm start` reaches the bot twice almost at once, because the terminal signals the whole process group and npm also forwards the signal.
+A repeat signal within about 1 second of the first is therefore treated as the same stop request.
+A signal after that, while the bot is still stopping, ends the process at once with exit code 1, and a 15 second deadline forces exit if cleanup hangs.
 Starting again restores saved bindings and checks whether the tracked members are already in voice.
 In real mode, startup warns about each saved mock account; `/bind` with a real Riot ID removes them.
 

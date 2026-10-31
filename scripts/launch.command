@@ -9,4 +9,5 @@ if ! command -v node >/dev/null 2>&1; then
   exit 1
 fi
 npm run build
-exec npm start
+# Run node directly: with npm in between, Ctrl+C reaches the bot twice and npm outlives it.
+exec node dist/index.js
