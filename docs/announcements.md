@@ -214,13 +214,16 @@ Each tick asks spectator-v5 through `getActiveGame` for every account of the mem
 In real mode a saved `MOCK-` account is skipped without a request or a log line; the match poll already warns about it.
 Once one account returns a game, every other account among that game's participants counts as in that game for this tick without its own request, so a premade costs one request.
 An account already seen in a game is asked again only on every sixth tick (2 minutes), until spectator answers that it is not in a game.
+It is asked once earlier as soon as the match it was seen in is finished, because it may already be in the next game.
+That early recheck is spent once per game: if Riot still lists the old game, the sixth tick cadence resumes.
 No account is ever asked twice within 20 seconds, counted from the start of the tick that asked it and across monitoring sessions of the guild.
 So an early check for a member who joins only asks accounts that were not asked in the last 20 seconds, and a member flapping in and out of voice adds no requests.
 Ten accounts therefore cost at most 60 requests in any 2 minutes on na1, which counts its rate limit apart from americas.
 
 Each account has a state for the current presence of its member: unknown, not in a game, or in a game.
 A member who leaves voice, is unbound or loses the account starts over as unknown when they are back.
-A game is announced when one check finds it still loading (`gameStartTime` 0), or when this account's previous check in this presence found no game and the game has run at most 60 seconds.
+A game is announced when one check finds it still loading (`gameStartTime` 0), or when this account was not in that game at its previous check in this presence and the game has run at most 60 seconds.
+Not in that game means no game then, or a different match: a quick requeue found by the in-game recheck.
 A game first seen already in progress is recorded as skipped with one log line and is never announced, so joining voice mid-game stays silent.
 Only Summoner's Rift (map 11) in a queue the bot announces counts, so ARAM, Arena, custom games and an unknown queue or map are skipped the same way.
 A game whose finished match the session already knows (waiting for a channel, being announced or announced) is skipped too.
@@ -526,7 +529,7 @@ It also pins the `段位播报`: the separate mock-labeled message right after t
 `tests/partyRanking.test.ts` pins the 车队内战 order, the 背锅 wording, the sentence length, the exclusion of other-team friends and the embed, and `tests/monitor.test.ts` pins the second embed and the unchanged ping set.
 `tests/voicePresence.test.ts` drives voice events through the real lifecycle into a monitor with fake Riot I/O.
 `tests/gameStart.test.ts` runs the real monitor, watcher and voice queue with a fake spectator, clock, speech and Discord.
-It pins the detection rules, the premade dedup and the sixth-tick recheck, the request budget with fake timers, the queue filter, the voice switch, the 90 second window, the finished-match cancel, leaving before and during playback, the rated team, the exact mentions, the quiet 429 and the 403 that leaves match monitoring on.
+It pins the detection rules, the premade dedup and the sixth-tick recheck, the requeue found by that recheck and the early recheck after a finished match, the request budget with fake timers, the queue filter, the voice switch, the 90 second window, the finished-match cancel, leaving before and during playback, the rated team, the exact mentions, the quiet 429 and the 403 that leaves match monitoring on.
 It also feeds a game with enemies, strangers and a friend on the other team through the watcher and checks that none of their names, PUUIDs or champions reach the card or the line.
 It checks that a ranked game's start reads both teams' bound players, announced or skipped, so a dodge before it never shows as that game's LP.
 It covers the guild memory: the only member leaving and rejoining during loading gets one card and one line, a 锦囊 is forgotten after 15 minutes, and the memory keeps at most 50 games.
