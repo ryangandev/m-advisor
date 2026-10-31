@@ -3,6 +3,7 @@ import { BotCommand } from "../types";
 import { countMemberAppeals } from "../store/appealStore";
 import { countMemberHorseRecords, eraseMemberHorseRecords } from "../store/horseRecordStore";
 import { countMemberRankResults } from "../store/rankStore";
+import { markMemberErased } from "../store/eraseCutoff";
 import { buildErrorEmbed } from "../utils/embeds";
 import { logInfo } from "../utils/log";
 import { isAdmin } from "../utils/permissions";
@@ -38,6 +39,8 @@ const stableEraseCommand: BotCommand = {
     const appeals = countMemberAppeals(guildId, user.id);
     const ranks = countMemberRankResults(guildId, user.id);
     if (counts.real + counts.mock + appeals + ranks === 0) {
+      // Nothing is stored yet, but a match already in flight could still write rows after this reply; the cutoff stops that.
+      if (interaction.options.getBoolean("confirm") === true) markMemberErased(guildId, user.id);
       await interaction.reply({ content: `<@${user.id}> 没有马厩档案，没有什么可清除的。`, flags: MessageFlags.Ephemeral, allowedMentions: noMentions });
       return;
     }
