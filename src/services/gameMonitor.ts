@@ -1071,6 +1071,7 @@ export class GameMonitor {
   /**
    * The end of a text-only attempt: no player is in a channel the voice can use, so the posted text is the whole report.
    * Nothing here is a voice failure; a text that could not be posted is retried on the next poll, up to the same cap.
+   * A post that is only unknown (see `postUnknown`) is not the whole report yet: the match is left unconsumed.
    */
   private finishTextOnly(guildId: string, session: MonitorSession, match: PendingMatch, progress: MatchProgress, channel: VoiceChannel): boolean {
     const name = (channel as { name?: string }).name ?? channel.id;
@@ -1082,9 +1083,12 @@ export class GameMonitor {
       }
       return false;
     }
+    // The post is only unknown: the old send may still fail, and then nothing else would post the report. The match stays
+    // pending, quietly, until that send answers: a success makes the next poll consume it, a failure lets it post the text.
+    if (!progress.textPosted) return false;
     this.consume(guildId, session, match, progress);
     if (progress.rankCast) this.finishRankVoice(progress.rankCast, "given_up");
-    this.dependencies.info(`Announced match ${match.matchId} as text only in ${name}${progress.textPosted ? "" : " (its post is unconfirmed)"}: `
+    this.dependencies.info(`Announced match ${match.matchId} as text only in ${name}: `
       + "no player is in a voice channel the bot can join and speak in.");
     return true;
   }
@@ -1212,7 +1216,11 @@ export class GameMonitor {
       progress.posting = undefined;
       // A session that gave up waiting may post it after all if it retries; one that already spoke does not.
       progress.postUnknown = false;
+      // A match consumed meanwhile, for instance spoken while this send was unknown, is not posted again: its 段位播报 goes too.
+      const entry = this.handled.get(guildId)?.get(matchId);
+      const consumed = entry?.progress === progress && entry.consumed;
       this.forgetPost(guildId, matchId, progress);
+      if (consumed && progress.rankCast) this.finishRankVoice(progress.rankCast, "dropped");
       settle();
       result.errors++;
       this.report(guildId, error);
