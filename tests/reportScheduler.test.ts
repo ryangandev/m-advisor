@@ -7,7 +7,7 @@ import { setMemberAccounts } from "../src/store/bindingStore";
 import { closeDatabase, getDatabase } from "../src/store/database";
 import type { HorseRecord } from "../src/store/horseRecordStore";
 import type { HorseTier } from "../src/services/horseRanking";
-import { GIVE_UP_AFTER_MS, ReportChannelError, ReportScheduler, REPORT_TICK_MS, reportNonce } from "../src/services/reportScheduler";
+import { FAILURE_GAP_RESET_MS, GIVE_UP_AFTER_MS, ReportChannelError, ReportScheduler, REPORT_TICK_MS, reportNonce } from "../src/services/reportScheduler";
 import type { ReportPayload, ReportSchedulerDeps } from "../src/services/reportScheduler";
 import { REPORT_GRACE_MS } from "../src/services/reports";
 import { NONE_ROLE_NAME, TOP_ROLE_NAME } from "../src/services/reportRoles";
@@ -269,11 +269,14 @@ test("a failure that lasts six hours drops the period and says so once", async (
   seedGames(DUE_DAY.start + HOUR);
   setReportKindEnabled(GUILD, "week", false);
   const { state, scheduler } = harness();
-  state.failures.push(new Error("still down"), new Error("still down"), new Error("still down"));
-  await scheduler.runDue();
-  state.now = NOW + GIVE_UP_AFTER_MS - 1;
-  await scheduler.runDue();
-  assert.equal(getReportMark(GUILD, false, "day"), undefined);
+  // Awake the whole time: one failing check per tick, so no gap is mistaken for a sleep.
+  for (let offset = 0; offset < GIVE_UP_AFTER_MS; offset += REPORT_TICK_MS) {
+    state.failures.push(new Error("still down"));
+    state.now = NOW + offset;
+    await scheduler.runDue();
+    assert.equal(getReportMark(GUILD, false, "day"), undefined);
+  }
+  state.failures.push(new Error("still down"));
   state.now = NOW + GIVE_UP_AFTER_MS;
   await scheduler.runDue();
   assert.equal(getReportMark(GUILD, false, "day"), DUE_DAY.start);
@@ -774,3 +777,42 @@ test("a failed send of an older missed day is retried as that same day", async (
   assert.equal(state.sent[0].payload.nonce, reportNonce(GUILD, false, "day", dayStart("2026-10-26T20:00:00Z")));
   assert.equal(getReportMark(GUILD, false, "day"), DUE_DAY.start);
 });
+
+test("a Mac that slept through a failure does not count the sleep toward the 6-hour give-up", async () => {
+  seedGames(DUE_DAY.start + HOUR);
+  setReportKindEnabled(GUILD, "week", false);
+  const { state, scheduler } = harness();
+  state.failures.push(new Error("getaddrinfo ENOTFOUND discord.com"));
+  await scheduler.runDue(); // fails as the lid closes
+  state.now = NOW + 7 * HOUR; // asleep
+  state.failures.push(new Error("getaddrinfo ENOTFOUND discord.com"));
+  await scheduler.runDue(); // the first check after waking, the network is not back yet
+  assert.equal(getReportMark(GUILD, false, "day"), undefined, "still waiting, not given up");
+  assert.ok(!output.some((line) => line.includes("giving up")));
+  state.now += 3 * 60_000;
+  await scheduler.runDue(); // the network is back
+  assert.equal(state.sent.length, 1);
+  assert.equal(getReportMark(GUILD, false, "day"), DUE_DAY.start);
+});
+
+test("after a sleep the failure clock restarts, and six hours of awake failing still gives up", async () => {
+  seedGames(DUE_DAY.start + HOUR);
+  setReportKindEnabled(GUILD, "week", false);
+  const { state, scheduler } = harness();
+  state.failures.push(new Error("still down"));
+  await scheduler.runDue();
+  const wake = NOW + 7 * HOUR;
+  for (let offset = 0; offset < GIVE_UP_AFTER_MS; offset += REPORT_TICK_MS) {
+    state.now = wake + offset;
+    state.failures.push(new Error("still down"));
+    await scheduler.runDue();
+    assert.equal(getReportMark(GUILD, false, "day"), undefined, `still retrying ${offset} ms after waking`);
+  }
+  state.now = wake + GIVE_UP_AFTER_MS;
+  state.failures.push(new Error("still down"));
+  await scheduler.runDue();
+  assert.equal(getReportMark(GUILD, false, "day"), DUE_DAY.start);
+  assert.ok(output.some((line) => line.includes("giving up")));
+  assert.ok(FAILURE_GAP_RESET_MS > REPORT_TICK_MS && FAILURE_GAP_RESET_MS < GIVE_UP_AFTER_MS);
+});
+
