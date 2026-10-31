@@ -283,6 +283,19 @@ export interface RiotRequesterOptions {
   readNotFoundCode?: boolean;
 }
 
+/** Options for one call of a requester. */
+export interface RiotCallOptions {
+  /**
+   * `false` makes one attempt only: a network failure, a 5xx or a 429 is thrown at once instead of retried.
+   * For a caller that already repeats itself, such as a poll whose next run is the retry. A short 429 cooldown on the
+   * host is still waited out before the one attempt, because that wait is not a retry.
+   */
+  retry?: boolean;
+}
+
+/** A Riot request function: the shared one behind `riotFetch`, or one from `createRiotRequester`. */
+export type RiotRequest = <T>(url: string, options?: RiotCallOptions) => Promise<T>;
+
 /** Riot's `errorCode` of a 404 body, only if it is a short upper-case token; anything else is dropped. */
 async function notFoundCode(response: Response): Promise<string | undefined> {
   try {
@@ -301,16 +314,16 @@ function retryDelay(header: string | null, now: number): number | undefined {
   return Number.isFinite(date) ? Math.max(0, date - now) : undefined;
 }
 
-export function createRiotRequester(options: RiotRequesterOptions = {}): <T>(url: string) => Promise<T> {
+export function createRiotRequester(options: RiotRequesterOptions = {}): RiotRequest {
   const fetchImpl = options.fetch ?? ((...args) => fetch(...args));
   const sleep = options.sleep ?? (async (milliseconds: number) => { await delay(milliseconds); });
   const now = options.now ?? Date.now;
   const timeoutMs = options.timeoutMs ?? 10_000;
-  const maxRetries = options.maxRetries ?? 2;
+  const retries = options.maxRetries ?? 2;
   const maxRetryDelayMs = options.maxRetryDelayMs ?? 10_000;
   const cooldowns = new Map<string, number>();
 
-  return async function request<T>(url: string): Promise<T> {
+  return async function request<T>(url: string, call: RiotCallOptions = {}): Promise<T> {
     const apiKey = (options.apiKey?.() ?? process.env.RIOT_API_KEY)?.trim();
     if (!apiKey) throw new RiotApiError("Missing RIOT_API_KEY environment variable for RIOT_MODE=real.", "missing_key");
     const target = new URL(url);
@@ -319,6 +332,7 @@ export function createRiotRequester(options: RiotRequesterOptions = {}): <T>(url
     }
     // A key is only transmitted in the header, including if an older caller supplied api_key.
     target.searchParams.delete("api_key");
+    const maxRetries = call.retry === false ? 0 : retries;
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       const remainingCooldown = (cooldowns.get(target.origin) ?? 0) - now();
       if (remainingCooldown > maxRetryDelayMs) throw statusError(429, remainingCooldown);
@@ -362,6 +376,6 @@ export function createRiotRequester(options: RiotRequesterOptions = {}): <T>(url
 
 const realFetch = createRiotRequester();
 
-export async function riotFetch<T>(url: string): Promise<T> {
-  return isMockData() ? mockFetch<T>(url) : realFetch<T>(url);
+export async function riotFetch<T>(url: string, options: RiotCallOptions = {}): Promise<T> {
+  return isMockData() ? mockFetch<T>(url) : realFetch<T>(url, options);
 }
