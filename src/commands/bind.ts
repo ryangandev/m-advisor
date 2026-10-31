@@ -16,6 +16,7 @@ import { forgetMemberBaselines } from "../services/gameMonitor";
 import { getRiotDataLabel, isMockData } from "../services/riotData";
 import { isSyntheticAccount, mergeBoundAccount } from "../utils/bindingAccounts";
 import { getBindingStoreErrorMessage, getRiotUserErrorMessage } from "../utils/userFacingErrors";
+import { logRiotKeyRejection } from "../services/riotKey";
 import { assertRunning } from "../services/shutdownState";
 import { logInfo } from "../utils/log";
 
@@ -76,6 +77,7 @@ const bindCommand: BotCommand = {
     try {
       account = await getAccountByRiotId(gameName, tagLine);
     } catch (error) {
+      logRiotKeyRejection(error);
       await interaction.editReply({ embeds: [buildErrorEmbed(getRiotUserErrorMessage(error))], allowedMentions: NO_MENTIONS });
       return;
     }

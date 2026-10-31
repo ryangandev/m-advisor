@@ -492,12 +492,12 @@ export class RankTracker implements RankTracking {
     read.settled.resolve();
   }
 
-  /** Riot rejected the key for league-v4: LP is off until the bot restarts, with one log line. Matches are still announced. */
+  /** Riot rejected the key for league-v4: LP is off until the bot restarts, with one log line. */
   private disable(error: unknown): void {
     if (this.disabled) return;
     this.disabled = true;
     this.dependencies.log(new Error(`Riot rejected the key for league-v4 (${errorMessage(error)}), so LP reads are off until the bot `
-      + "restarts. Finished matches are still announced."));
+      + "restarts. If RIOT_API_KEY expired, paste a new key into .env and restart."));
     for (const read of this.matches.values()) this.finish(read, null);
   }
 

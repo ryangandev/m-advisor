@@ -5,6 +5,7 @@ import { Client, Collection, GatewayIntentBits } from "discord.js";
 import { loadCommands } from "./handlers/commandHandler";
 import { BotCommand, BotEvent } from "./types";
 import { getRiotMode } from "./services/riotData";
+import { checkRiotKey } from "./services/riotKey";
 import { stopAllPolling } from "./services/gameMonitor";
 import { finishReportScheduler, haltReportScheduler } from "./services/reportScheduler";
 import { shutdownTTS } from "./utils/tts";
@@ -74,7 +75,12 @@ async function bootstrap(): Promise<void> {
   }
 
   await client.login(token);
-  if (isStopping()) await client.destroy();
+  if (isStopping()) {
+    await client.destroy();
+    return;
+  }
+  // Not awaited: the check only reports in the log and never delays or stops the bot.
+  if (mode === "real") void checkRiotKey({ mode });
 }
 
 function reportEventError(error: unknown): void {

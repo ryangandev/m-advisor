@@ -245,7 +245,7 @@ test("a 401 or 403 turns LP off for the run with one log line, and nothing is re
   assert.equal(row, undefined, "no row");
   assert.equal(tracker.isDisabled, true);
   assert.equal(logs.length, 1);
-  assert.match(logs[0], /^Riot rejected the key for league-v4 \(Riot API error 403: access denied\.\), so LP reads are off until the bot restarts\. Finished matches are still announced\.$/);
+  assert.match(logs[0], /^Riot rejected the key for league-v4 \(Riot API error 403: access denied\.\), so LP reads are off until the bot restarts\. If RIOT_API_KEY expired, paste a new key into \.env and restart\.$/);
   const before = reads.length;
   league.set("other", [entry("GOLD", "II", 64)]);
   tracker.snapshot(["other"]);

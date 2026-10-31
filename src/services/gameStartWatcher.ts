@@ -408,7 +408,7 @@ export class GameStartWatcher {
           this.stop();
           result.errors++;
           this.dependencies.log(new Error(`Riot rejected the key for spectator (${errorMessage(error)}), so game start checks are off `
-            + "for this monitoring session. Finished matches are still announced."));
+            + "for this monitoring session. If RIOT_API_KEY expired, paste a new key into .env and restart."));
           return;
         }
         // A rate limit only skips this account for this tick; it is expected and stays quiet.

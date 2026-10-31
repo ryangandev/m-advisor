@@ -7,6 +7,7 @@ import { getAccountByRiotId, getRankedEntries, getSummonerByPuuid } from "../uti
 import { buildErrorEmbed, buildProfileEmbed, NO_MENTIONS } from "../utils/embeds";
 import { BotCommand } from "../types";
 import { INVALID_RIOT_ID_MESSAGE, parseRiotId } from "../utils/riotId";
+import { logRiotKeyRejection } from "../services/riotKey";
 import { getRiotUserErrorMessage } from "../utils/userFacingErrors";
 
 const profileCommand: BotCommand = {
@@ -44,6 +45,7 @@ const profileCommand: BotCommand = {
 
       await interaction.editReply({ embeds: [profileEmbed], allowedMentions: NO_MENTIONS });
     } catch (error) {
+      logRiotKeyRejection(error);
       await interaction.editReply({ embeds: [buildErrorEmbed(getRiotUserErrorMessage(error))], allowedMentions: NO_MENTIONS });
     }
   },
