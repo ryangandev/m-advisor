@@ -104,8 +104,9 @@ It deliberately has no foreign key to `tracked_members`, so removing a member ne
 Rebinding the same Discord member continues the same history, because the key is the Discord user and not the binding.
 An erase leaves the member bound, so the database cannot tell a late write for a match reported before the erase from a new one.
 `eraseMemberHorseRecords` therefore also remembers the erase time per server and member in memory (`src/store/eraseCutoff.ts`), and nothing is added to the schema.
-The monitor's late LP write and its 马厩 write after the voice skip a member erased at or after the moment the match was detected, and still record a match detected later.
-The cutoff compares the monitor's own detection time with the erase time, both from the same clock, and not Riot's match end time.
+The monitor's late LP write and its 马厩 write after the voice skip a member erased after the match was detected, and still record a match detected later.
+Both events are ordered by a process-wide counter (`nextStamp`): the monitor stamps a match when it detects it, and the erase takes the next stamp.
+Wall-clock time is not used, because it can step backwards and two events can share a millisecond.
 A restart drops the cutoffs, which is safe because it also drops every pending late write.
 
 `recordHorseRecords(records)` validates every record, saves the batch in one transaction and returns how many were new.

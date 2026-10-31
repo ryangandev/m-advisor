@@ -2495,7 +2495,10 @@ test("a member erased, not unbound, while their LP is pending gets no row from t
   assert.deepEqual(lpOwners(guildId), ["alice-id"]);
 
   // Bob still owns his account, so the store's ownership check passes: only the erase cutoff can stop the row.
-  eraseMemberHorseRecords(guildId, "bob-id");
+  // The wall clock has stepped back by then, which must not make the erase look older than the detection.
+  const realNow = Date.now;
+  Date.now = () => 0;
+  try { eraseMemberHorseRecords(guildId, "bob-id"); } finally { Date.now = realNow; }
   rank.league.set("bob", [ranked("SILVER", "I", 12, 10, 11)]);
   await until(() => bot.edits.length === 1, "the late edit");
   await delay(100);
@@ -2522,8 +2525,7 @@ test("a match detected after a member's erase is recorded normally", async () =>
   const guildId = "rank-store-after-erase-guild";
   const { bot, rank } = await erasableTrio(guildId);
   eraseMemberHorseRecords(guildId, "alice-id");
-  // The cutoff is the erase's millisecond, and a match detected in it counts as before.
-  await delay(5);
+  // The order is the counter's, not the clock's, so no wait is needed between the erase and the detection.
   rank.league.set("alice", [ranked("GOLD", "II", 86, 11, 10)]);
   rank.league.set("bob", [ranked("SILVER", "I", 12, 10, 11)]);
   assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
