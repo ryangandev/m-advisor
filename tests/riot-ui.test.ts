@@ -3,7 +3,7 @@ import { afterEach, beforeEach, test } from "node:test";
 import type { ChatInputCommandInteraction, EmbedBuilder } from "discord.js";
 import profileCommand from "../src/commands/profile";
 import { RiotApiError, resetMockData } from "../src/services/riotData";
-import { buildErrorEmbed, getProfileIconUrl } from "../src/utils/embeds";
+import { buildErrorEmbed, buildProfileEmbed, getProfileIconUrl } from "../src/utils/embeds";
 import { AccountBoundToOtherMemberError, GuildAccountLimitError } from "../src/store/storeErrors";
 import { getCommandUserErrorMessage, getRiotUserErrorMessage } from "../src/utils/userFacingErrors";
 
@@ -102,4 +102,15 @@ test("official profile icon version is configurable, with unsafe settings omitte
   delete process.env.DDRAGON_VERSION;
   assert.equal(getProfileIconUrl(-1), undefined);
   assert.equal(getProfileIconUrl(Number.NaN), undefined);
+});
+
+test("the profile shows MASTER, GRANDMASTER and CHALLENGER without a division, and other tiers with one", () => {
+  const summoner = { id: "s", accountId: "a", puuid: "p", name: "n", profileIconId: 29, summonerLevel: 300 };
+  const embed = buildProfileEmbed("Apex#NA1", summoner, [
+    { queueType: "RANKED_SOLO_5x5", tier: "MASTER", rank: "I", leaguePoints: 250, wins: 60, losses: 40 },
+    { queueType: "RANKED_FLEX_SR", tier: "GOLD", rank: "II", leaguePoints: 40, wins: 5, losses: 5 },
+  ]).toJSON();
+  const value = (name: string) => embed.fields?.find((field) => field.name === name)?.value;
+  assert.equal(value("Solo/Duo"), "MASTER - 250 LP | 60W 40L (60%)");
+  assert.equal(value("Flex"), "GOLD II - 40 LP | 5W 5L (50%)");
 });
