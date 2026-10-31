@@ -214,8 +214,7 @@ Each tick asks spectator-v5 through `getActiveGame` for every account of the mem
 In real mode a saved `MOCK-` account is skipped without a request or a log line; the match poll already warns about it.
 Once one account returns a game, every other account among that game's participants counts as in that game for this tick without its own request, so a premade costs one request.
 An account already seen in a game is asked again only on every sixth tick (2 minutes), until spectator answers that it is not in a game.
-It is asked once earlier as soon as the match it was seen in is finished, because it may already be in the next game.
-That early recheck is spent once per game: if Riot still lists the old game, the sixth tick cadence resumes.
+Once the match it was seen in is finished it may already be in the next game, so it is asked on every tick like an account in no game, until spectator no longer lists the old game or lists a different one.
 No account is ever asked twice within 20 seconds, counted from the start of the tick that asked it and across monitoring sessions of the guild.
 So an early check for a member who joins only asks accounts that were not asked in the last 20 seconds, and a member flapping in and out of voice adds no requests.
 Ten accounts therefore cost at most 60 requests in any 2 minutes on na1, which counts its rate limit apart from americas.
