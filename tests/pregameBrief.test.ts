@@ -498,3 +498,22 @@ test("the card stays inside Discord's limits and nothing in it uses an em dash",
     assert.ok(!JSON.stringify(card).includes(dash) && !result.speech.includes(dash));
   }
 });
+
+test("without Smite the position is never jungle, only the most common other position on that champion", () => {
+  const jungleOnly = history(ID.a, Array(8).fill("中等马"), { position: "JUNGLE", championId: AHRI });
+  const noSmite = brief([mate(ID.a, "Alpha", AHRI, jungleOnly, false)]);
+  assert.equal(noSmite.lines[0].position, null, "only jungle history and no Smite leaves no position");
+  assert.ok(!buildPregameEmbed(noSmite).toJSON().description!.includes("打野"));
+
+  const withSmite = brief([mate(ID.a, "Alpha", AHRI, jungleOnly, true)]);
+  assert.equal(withSmite.lines[0].position, "JUNGLE", "Smite still means jungle");
+  assert.ok(buildPregameEmbed(withSmite).toJSON().description!.includes("打野"));
+
+  const mixed = [
+    ...history(ID.b, Array(6).fill("中等马"), { position: "JUNGLE", championId: AHRI }).map((record, index) => ({ ...record, matchId: `NA1_jg_${index}` })),
+    ...history(ID.b, Array(2).fill("中等马"), { position: "TOP", championId: AHRI }).map((record, index) => ({ ...record, matchId: `NA1_top_${index}` })),
+  ];
+  const fallback = brief([mate(ID.b, "Bravo", AHRI, mixed, false)]);
+  assert.equal(fallback.lines[0].position, "TOP", "the most common non-jungle position wins over a more common jungle one");
+  assert.equal(brief([mate(ID.b, "Bravo", AHRI, mixed, true)]).lines[0].position, "JUNGLE");
+});
