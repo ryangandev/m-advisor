@@ -201,15 +201,18 @@ Then delete the `bot.sqlite3.v<N>.bak` backups too, because they still hold the 
 
 ## Durability and shutdown
 
-`src/store/database.ts` owns connection initialization, schema versioning, and `closeDatabase()`.
+`src/store/database.ts` owns connection initialization, schema versioning, `closeDatabase()` and `shutdownDatabase()`.
 The schema uses foreign keys with cascading account deletion from tracked member to accounts, WAL journaling, a five-second busy timeout, and full synchronous writes.
 Every connection also turns on `secure_delete`, so deleted content is overwritten with zeros instead of staying readable in free pages.
 After the erase transaction, `eraseMemberHorseRecords` runs `wal_checkpoint(TRUNCATE)`, so the old page images do not linger in the `-wal` file either.
 The checkpoint runs with `busy_timeout = 0` (restored afterwards), because the store is synchronous and waiting on another process would stall the event loop past Discord's three second reply window.
 The erase is already committed by then, so a checkpoint that cannot finish (another process has the database open for reading) logs a warning and does not fail the command.
 `closeDatabase()` runs the same truncating checkpoint once more before closing.
-Call `closeDatabase()` during graceful shutdown after stopping monitors.
-It closes only the SQLite connection; callers remain responsible for stopping their timers and voice processes.
+The bot's graceful shutdown calls `shutdownDatabase()` after stopping monitors and letting the 马报 scheduler finish.
+It does the same close, and then the database stays closed for the rest of the process: a store call that arrives later throws `DatabaseClosedError` instead of opening a new connection that nothing would ever close or truncate.
+A command still waiting on Riot when the bot is stopped gets the usual private "something went wrong" reply, and the log records `Command execution failed for /<name>: DatabaseClosedError`.
+`closeDatabase()` alone does not latch: the next store call opens a new connection, which tests and one-shot scripts rely on when they reopen a file or switch `DATABASE_PATH`.
+Either function closes only the SQLite connection; callers remain responsible for stopping their timers and voice processes.
 
 A newer unsupported schema or a corrupt file produces an error.
 The bot never silently replaces an existing database or falls back to an empty memory store.

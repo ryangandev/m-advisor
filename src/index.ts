@@ -8,7 +8,7 @@ import { getRiotMode } from "./services/riotData";
 import { stopAllPolling } from "./services/gameMonitor";
 import { finishReportScheduler, haltReportScheduler } from "./services/reportScheduler";
 import { shutdownTTS } from "./utils/tts";
-import { closeDatabase } from "./store/database";
+import { shutdownDatabase } from "./store/database";
 import { getVoiceConnections } from "@discordjs/voice";
 import { beginShutdown, isStopping } from "./services/shutdownState";
 import { logError, logInfo, logToFileOnly, startFileLog } from "./utils/log";
@@ -106,7 +106,7 @@ function shutdown(): Promise<void> {
     await cleanup("speech provider", shutdownTTS);
     // A report still being sent gets a few seconds to finish before the database closes under it.
     await cleanup("report scheduler", () => finishReportScheduler());
-    await cleanup("database", closeDatabase);
+    await cleanup("database", shutdownDatabase);
     if (failed) logError("Bot stopped with cleanup errors; see the messages above.");
     else logInfo("Bot stopped; speech process and database closed.");
   });
