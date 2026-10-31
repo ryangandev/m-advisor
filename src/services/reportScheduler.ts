@@ -14,7 +14,8 @@ import { REPORT_ALLOWED_MENTIONS, buildReportEmbed, periodLabel } from "../utils
 import { isMockData } from "./riotData";
 import { discordErrorCode, rotateWeeklyRoles, roleGuildFrom } from "./reportRoles";
 import type { RoleGuild } from "./reportRoles";
-import { latestDuePeriod, loadReport, nextReportDueAt } from "./reports";
+import { catchUpPeriods, latestDuePeriod, loadReport, nextReportDueAt } from "./reports";
+import type { ReportData } from "./reports";
 import { isStopping } from "./shutdownState";
 
 /** The longest the scheduler sleeps. A timer does not count time the computer slept, so waking checks again within a minute. */
@@ -170,27 +171,35 @@ export class ReportScheduler {
   private async handle(settings: ReportSettings, kind: ReportKind, mock: boolean): Promise<void> {
     const guildId = settings.guildId;
     const now = this.deps.now();
-    // Only the newest finished period is ever considered, so a long outage never produces a flood of old reports.
-    const range = latestDuePeriod(kind, now);
-    const key = `${guildId}:${mock ? 1 : 0}:${kind}:${range.start}`;
-    if (this.settled.has(key)) return;
+    // The latest finished period is the one that gets marked. The report posted may be an older missed period that has
+    // games (see catchUpPeriods), but never more than one post per kind per check, so an outage never floods the channel.
+    const latest = latestDuePeriod(kind, now);
+    const latestKey = `${guildId}:${mock ? 1 : 0}:${kind}:${latest.start}`;
+    if (this.settled.has(latestKey)) return;
     const mark = getReportMark(guildId, mock, kind);
-    if (mark !== undefined && mark >= range.start) return;
+    if (mark !== undefined && mark >= latest.start) return;
 
-    const data = loadReport(guildId, kind, range, mock);
-    if (data.totalGames === 0) {
-      this.settle(key, guildId, mock, kind, range.start, now);
+    // Newest first: the first period with games is the one posted.
+    let data: ReportData | undefined;
+    for (const range of catchUpPeriods(kind, now, mark)) {
+      const loaded = loadReport(guildId, kind, range, mock);
+      if (loaded.totalGames > 0) { data = loaded; break; }
+    }
+    if (!data) {
+      this.settle(latestKey, guildId, mock, kind, latest.start, now);
       // Nothing is posted for an empty week, but its roles still move on: last week's holders lose them and nobody gains any.
       if (kind === "week") await this.rotateRoles(settings, [], [], mock, { quiet: true });
       return;
     }
+    const posted = data;
+    const key = `${guildId}:${mock ? 1 : 0}:${kind}:${posted.range.start}`;
 
     if (this.stopping) return;
     try {
       await this.deps.send(guildId, settings.channelId!, {
-        embeds: [buildReportEmbed(data, { final: true })],
+        embeds: [buildReportEmbed(posted, { final: true })],
         allowedMentions: REPORT_ALLOWED_MENTIONS,
-        nonce: reportNonce(guildId, mock, kind, range.start),
+        nonce: reportNonce(guildId, mock, kind, posted.range.start),
       });
     } catch (error) {
       const first = this.firstFailure.get(key);
@@ -198,21 +207,30 @@ export class ReportScheduler {
       const giveUp = isPermanent(error) || (first !== undefined && now - first >= GIVE_UP_AFTER_MS);
       // One line when the trouble starts and one when the period is dropped; the retries in between stay quiet.
       if (first === undefined || giveUp) {
-        logWarn(`Could not post the ${kindName(kind)} 马报 for ${periodLabel(data)} in server ${guildId} (${errorName(error)}, code ${discordErrorCode(error) ?? "none"})${giveUp ? "; giving up on this period. Check the report channel and the bot's permissions there." : "; will keep retrying."}`);
+        logWarn(`Could not post the ${kindName(kind)} 马报 for ${periodLabel(posted)} in server ${guildId} (${errorName(error)}, code ${discordErrorCode(error) ?? "none"})${giveUp ? "; giving up on this period. Check the report channel and the bot's permissions there." : "; will keep retrying."}`);
       }
       if (giveUp) {
         this.firstFailure.delete(key);
-        this.settle(key, guildId, mock, kind, range.start, now);
+        this.settle(latestKey, guildId, mock, kind, latest.start, now);
       }
       return;
     }
     this.firstFailure.delete(key);
     // Recorded right after the send so a restart never posts the same period twice.
-    this.settle(key, guildId, mock, kind, range.start, now);
-    logInfo(`Posted the ${kindName(kind)} 马报 for ${periodLabel(data)} in server ${guildId}${mock ? " (mock data)" : ""}.`);
+    this.settle(latestKey, guildId, mock, kind, latest.start, now);
+    logInfo(`Posted the ${kindName(kind)} 马报 for ${periodLabel(posted)} in server ${guildId}${mock ? " (mock data)" : ""}.`);
 
     if (kind === "week") {
-      await this.rotateRoles(settings, data.topHorses.map((member) => member.discordUserId), data.noneHorses.map((member) => member.discordUserId), mock, { quiet: false });
+      // Roles follow the latest finished week. When that week had no games and an older one was posted, nobody earns
+      // the roles, so the old holders lose them. The report itself never mentions roles, so it stays true either way.
+      const current = posted.range.start === latest.start;
+      await this.rotateRoles(
+        settings,
+        current ? posted.topHorses.map((member) => member.discordUserId) : [],
+        current ? posted.noneHorses.map((member) => member.discordUserId) : [],
+        mock,
+        { quiet: !current },
+      );
     }
   }
 

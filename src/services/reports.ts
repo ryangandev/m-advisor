@@ -43,6 +43,25 @@ export function latestDuePeriod(kind: ReportKind, now: number): TimeRange {
   return periodOf(kind, current.start - 1);
 }
 
+/** How many finished periods back from the latest due one a catch-up may look: 7 days for a day, 2 weeks for a week. */
+export const CATCH_UP_PERIODS: Record<ReportKind, number> = { day: 7, week: 2 };
+
+/**
+ * The finished periods the scheduler may post for, newest first: the latest due period, then the ones before it that
+ * come after `mark` (the newest period already handled), at most CATCH_UP_PERIODS of them.
+ * Without a mark only the latest due period is returned, as the scheduler has always done.
+ */
+export function catchUpPeriods(kind: ReportKind, now: number, mark: number | undefined): TimeRange[] {
+  const periods = [latestDuePeriod(kind, now)];
+  if (mark === undefined) return periods;
+  while (periods.length < CATCH_UP_PERIODS[kind]) {
+    const older = periodOf(kind, periods[periods.length - 1].start - 1);
+    if (older.start <= mark) break;
+    periods.push(older);
+  }
+  return periods;
+}
+
 /** The next instant at which a new day (and on Mondays a new week) becomes due, always later than `now`. */
 export function nextReportDueAt(now: number): number {
   return pacificDay(now - REPORT_GRACE_MS).end + REPORT_GRACE_MS;
