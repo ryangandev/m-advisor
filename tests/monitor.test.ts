@@ -3049,6 +3049,85 @@ test("a post that is unknown after the wait still lets a promotion be announced 
   assert.equal(queued.length, 2, "the report and one 段位播报 line");
 });
 
+/** The member leaves and comes back to a channel the voice cannot use, so the new session can only post text. */
+function blipToTextOnly(bot: ReturnType<typeof harness>) {
+  bot.voiceBlocked.add("full");
+  bot.move("member-1", null);
+  bot.sync();
+  bot.move("member-1", "full");
+}
+
+test("a text-only report whose earlier post is only unknown is not consumed: when the old send fails the next poll posts it", async () => {
+  const settledSoon = async (poll: Promise<unknown>) => Promise.race([poll.then(() => true), delay(1_000).then(() => false)]);
+  const bot = harness("text-only-unknown-failed-guild");
+  bot.dependencies.inFlightWaitMs = 60;
+  await bot.start();
+  bot.latestIds.set("tracked", "m1");
+  const post = heldFirstSend(bot, "first-channel");
+  const oldPoll = bot.poll();
+  await until(() => post.calls() === 1, "the first send");
+  blipToTextOnly(bot);
+  assert.ok(await settledSoon(bot.start()), "the new session does not wait for the send forever");
+  assert.equal(bot.warnings.length, 1);
+  assert.ok(!bot.infos.some((line) => line.includes("Announced match m1")), "an unconfirmed post is not announced as done");
+  assert.equal(getLastMatchId(bot.guildId, "tracked") === "m1", false, "the match is not consumed");
+  assert.equal(post.calls(), 1, "nothing is posted twice while the old send is unknown");
+  // Still unknown on a further poll: it keeps waiting, quietly.
+  assert.deepEqual(await bot.poll(), { announced: 0, errors: 0 });
+  assert.equal(post.calls(), 1);
+  assert.equal(bot.warnings.length, 1, "one warning only");
+  post.fail(new Error("Fake Discord outage"));
+  await oldPoll;
+  await delay(30);
+  assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
+  assert.deepEqual(bot.sent.map((entry) => entry.channelId), ["full"], "the report is posted after all");
+  assert.deepEqual(bot.played, []);
+  assert.ok(bot.infos.some((line) => line.includes("Announced match m1 as text only in full")));
+  assert.deepEqual(await bot.poll(), { announced: 0, errors: 0 });
+  assert.equal(bot.sent.length, 1);
+});
+
+test("a text-only report whose earlier post is unknown and then lands is announced once and never posted again", async () => {
+  const bot = harness("text-only-unknown-landed-guild");
+  bot.dependencies.inFlightWaitMs = 60;
+  await bot.start();
+  bot.latestIds.set("tracked", "m1");
+  const post = heldFirstSend(bot, "first-channel");
+  const oldPoll = bot.poll();
+  await until(() => post.calls() === 1, "the first send");
+  blipToTextOnly(bot);
+  assert.deepEqual(await Promise.race([bot.start(), delay(1_000).then(() => "stuck")]), { announced: 0, errors: 0 });
+  post.release();
+  await oldPoll;
+  await delay(30);
+  assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
+  assert.equal(post.calls(), 1);
+  assert.deepEqual(bot.sent.map((entry) => entry.channelId), ["first-channel"], "only the old send posted it");
+  assert.ok(bot.infos.some((line) => line.includes("Announced match m1 as text only in full")));
+  assert.deepEqual(await bot.poll(), { announced: 0, errors: 0 });
+  assert.equal(bot.sent.length, 1);
+  assert.deepEqual(bot.played, []);
+});
+
+test("a voice report whose earlier post fails after the wait logs the dropped 段位播报", async () => {
+  const { bot, rank } = await rankedTrio("rank-stuck-failed-guild");
+  bot.dependencies.inFlightWaitMs = 60;
+  rank.league.set("alice", [ranked("PLATINUM", "IV", 7, 11, 10)]);
+  const post = heldFirstSend(bot, "x");
+  const oldPoll = bot.poll();
+  await until(() => post.calls() === 1, "the first send");
+  for (const id of ["alice-id", "bob-id", "zed-id"]) bot.move(id, null);
+  bot.sync();
+  for (const id of ["alice-id", "bob-id", "zed-id"]) bot.move(id, "x");
+  assert.deepEqual(await Promise.race([bot.start(), delay(1_000).then(() => "stuck")]), { announced: 1, errors: 0 });
+  assert.equal(bot.played.length, 1, "the report was spoken");
+  post.fail(new Error("Fake Discord outage"));
+  await oldPoll;
+  await delay(30);
+  assert.equal(castsOf(bot).length, 0);
+  assert.ok(bot.infos.includes("The 段位播报 of match ranked-trio was dropped: the report's text was not posted."), bot.infos.join("\n"));
+});
+
 test("a /bind or /unbind forgets the member's kept baselines, also when it races a queued reconciliation", async () => {
   // Unbound and bound again while away, before any reconciliation ran: the store looks unchanged to the monitor.
   const away = harness("forget-away-guild");
