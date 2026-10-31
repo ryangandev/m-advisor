@@ -163,11 +163,7 @@ export class ReportScheduler {
       if (this.stopping) return;
       try {
         if (!this.deps.inGuild(settings.guildId)) {
-          // Said once per server and process; the destination stays stored, so the reports resume if the bot is added back.
-          if (!this.skippedGuilds.has(settings.guildId)) {
-            this.skippedGuilds.add(settings.guildId);
-            logInfo(`Skipping the 马报 of server ${settings.guildId}: the bot is not in that server.`);
-          }
+          this.noteSkipped(settings.guildId);
           continue;
         }
         this.skippedGuilds.delete(settings.guildId);
@@ -178,6 +174,13 @@ export class ReportScheduler {
         logError(`Report for server ${settings.guildId} failed: ${errorName(error)}`);
       }
     }
+  }
+
+  /** Said once per server and process; the destination stays stored, so the reports resume if the bot is added back. */
+  private noteSkipped(guildId: string): void {
+    if (this.skippedGuilds.has(guildId)) return;
+    this.skippedGuilds.add(guildId);
+    logInfo(`Skipping the 马报 of server ${guildId}: the bot is not in that server.`);
   }
 
   /**
@@ -236,6 +239,13 @@ export class ReportScheduler {
         nonce: reportNonce(guildId, mock, kind, posted.range.start),
       });
     } catch (error) {
+      // The bot was removed while the send was in flight, so Discord answers 50001 or 10003. That is not a problem with
+      // the channel: leave the period open and forget its failure clock, so the normal catch-up posts it after a re-add.
+      if (!this.deps.inGuild(guildId)) {
+        this.firstFailure.delete(key);
+        this.noteSkipped(guildId);
+        return;
+      }
       // A failure is stamped when the send has failed, and the gap is measured from that to the start of the next
       // attempt, so a send that hangs for minutes before failing never looks like a sleep.
       const failedAt = this.deps.now();

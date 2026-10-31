@@ -83,6 +83,7 @@ A missing channel, missing access or missing permissions give up on that period 
 A server that fails never blocks the other servers.
 A server the bot is no longer in (`client.guilds.cache` does not hold it, which only a real removal causes and not a Discord outage) is skipped, so it neither fails every day nor logs a give-up warning; one info line says so per process.
 Its settings and marks stay, so the reports resume with the normal catch-up if the bot is added back.
+This also holds when the removal happens while a send is in flight: Discord's missing-access or unknown-channel answer is then not given up on, the period stays open, and the failure clock for it is cleared.
 When the bot is removed, `src/events/guildDelete.ts` also stops that server's monitoring session, so the match poll and the game-start watcher stop calling Riot for it.
 
 Every report is sent with a nonce derived from the server, data mode, kind and period and with `enforceNonce: true`, which discord.js 14.27 supports.

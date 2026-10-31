@@ -839,6 +839,74 @@ test("a server the bot was removed from is skipped with no send, no give-up warn
   assert.deepEqual(titles(state.sent), ["每日马报 · 2026-10-27 周二"]);
 });
 
+test("a bot removed while the send is in flight does not lose the period: no mark, no give-up warning, and it posts after a re-add", async () => {
+  seedGames(DUE_DAY.start + HOUR);
+  setReportKindEnabled(GUILD, "week", false);
+  const { state, deps, scheduler } = harness();
+  let attempts = 0;
+  deps.send = async (guildId, channelId, payload) => {
+    attempts += 1;
+    if (state.removedGuilds.size === 0 && attempts === 1) {
+      state.removedGuilds.add(GUILD);
+      throw discordError(50001, "Missing Access");
+    }
+    state.sent.push({ guildId, channelId, payload });
+  };
+  await scheduler.runDue();
+  assert.deepEqual(state.sent, []);
+  assert.equal(getReportMark(GUILD, false, "day"), undefined, "the period is not settled");
+  assert.ok(!output.some((line) => line.includes("giving up") || line.includes("will keep retrying")), "no warning for a removal");
+  assert.ok(output.some((line) => line.includes("not in that server")), "the removal is said once, as for any removed server");
+
+  // Added back an hour later: the normal catch-up posts the period, and the old failure does not count against it.
+  state.removedGuilds.clear();
+  state.now = NOW + HOUR;
+  await scheduler.runDue();
+  assert.deepEqual(titles(state.sent), ["每日马报 · 2026-10-27 周二"]);
+  assert.equal(getReportMark(GUILD, false, "day"), DUE_DAY.start);
+});
+
+test("a removal mid-send also leaves a weekly period open, and the failure clock starts fresh after the re-add", async () => {
+  seedGames(DUE_WEEK.start + HOUR);
+  setReportKindEnabled(GUILD, "day", false);
+  const { state, deps, scheduler } = harness();
+  let removing = true;
+  deps.send = async (guildId, channelId, payload) => {
+    if (removing) {
+      removing = false;
+      state.removedGuilds.add(GUILD);
+      throw discordError(10003, "Unknown Channel");
+    }
+    const failure = state.failures.shift();
+    if (failure) throw failure;
+    state.sent.push({ guildId, channelId, payload });
+  };
+  await scheduler.runDue();
+  assert.equal(getReportMark(GUILD, false, "week"), undefined);
+  assert.ok(!output.some((line) => line.includes("giving up")));
+
+  // Back after more than the give-up window: one new failure must be treated as the first, not as a six hour old one.
+  state.removedGuilds.clear();
+  state.now = NOW + 7 * HOUR;
+  state.failures.push(new Error("still down"));
+  await scheduler.runDue();
+  assert.equal(getReportMark(GUILD, false, "week"), undefined, "a first failure after the re-add only retries");
+  assert.ok(!output.some((line) => line.includes("giving up")));
+  state.now += 60_000;
+  await scheduler.runDue();
+  assert.equal(reports(state.sent).length, 1);
+});
+
+test("a genuine missing-access failure while the bot is still in the server still gives up on the period", async () => {
+  seedGames(DUE_DAY.start + HOUR);
+  setReportKindEnabled(GUILD, "week", false);
+  const { state, scheduler } = harness();
+  state.failures.push(discordError(50001, "Missing Access"));
+  await scheduler.runDue();
+  assert.equal(getReportMark(GUILD, false, "day"), DUE_DAY.start, "the period is closed");
+  assert.ok(output.some((line) => line.includes("giving up") && line.includes("code 50001")));
+});
+
 test("when the database refuses marks, a catch-up post is not repeated the next day", async () => {
   seedGames(MONDAY_EVENING, 3);
   setReportKindEnabled(GUILD, "week", false);
