@@ -1433,3 +1433,57 @@ test("a game's start-read bookkeeping goes when its accounts leave the game, lea
   startWatcher(stopped.bot).stop();
   assert.equal(startWatcher(stopped.bot).rankStarts.size, 0);
 });
+
+// A quick requeue: the account's old game ends and the next one is found by a recheck, not by a "no game" answer in between.
+
+test("a different game at the in-game recheck is a fresh start: a requeue 30 s in is announced, one over a minute in is not", async () => {
+  const bot = harness([{ id: A, puuids: ["acct-a"], channel: "voice-1" }]);
+  const first = spectatorGame(5101, [{ puuid: "acct-a", teamId: 100, championId: AHRI }]);
+  bot.enter(first);
+  assert.equal((await bot.start()).started, 1);
+  for (let tick = 2; tick <= 6; tick++) await bot.tick();
+  assert.equal(bot.requests.length, 1, "the account is not asked again before the sixth tick");
+  // Game 1 ended and the account queued again: the next game is 30 s in when the recheck finds it.
+  bot.leaveGame(first);
+  bot.enter(spectatorGame(5102, [{ puuid: "acct-a", teamId: 100, championId: AHRI }], { start: 1_899_999_990_000, length: 30 }));
+  assert.equal((await bot.tick()).started, 1, "the recheck announces the new game");
+  assert.equal(bot.requests.length, 2);
+  assert.ok(bot.infos.some((line) => line.includes("Detected game start NA1_5102: 30 s in")));
+  assert.ok(!bot.infos.some((line) => line.includes("NA1_5102 is not announced")));
+  assert.equal(bot.sent.length, 2);
+  // The same rule keeps its minute limit: a third game already 90 s in stays silent.
+  for (let tick = 0; tick < 5; tick++) await bot.tick();
+  bot.enter(spectatorGame(5103, [{ puuid: "acct-a", teamId: 100, championId: AHRI }], { start: 1_899_999_900_000, length: 90 }));
+  assert.equal((await bot.tick()).started, 0);
+  assert.ok(bot.infos.some((line) => line.includes("NA1_5103 is not announced at its start: it was already 90 s in")));
+  assert.equal(bot.sent.length, 2);
+});
+
+test("an in-game account is rechecked as soon as its old match is finished, and only once while the old game lingers", async () => {
+  const bot = harness([{ id: A, puuids: ["acct-a"], channel: "voice-1" }]);
+  const first = spectatorGame(5111, [{ puuid: "acct-a", teamId: 100, championId: AHRI }]);
+  bot.enter(first);
+  assert.equal((await bot.start()).started, 1);
+  await bot.tick();
+  assert.equal(bot.requests.length, 1, "a running game is not asked again before the sixth tick");
+  // The match poll announces the finished match, and Riot still lists the old game for a moment.
+  await finishGame(bot, "NA1_5111", ["acct-a"]);
+  assert.equal((await bot.tick()).started, 0);
+  assert.equal(bot.requests.length, 2, "the finished match makes the account due at once");
+  await bot.tick();
+  await bot.tick();
+  assert.equal(bot.requests.length, 2, "a lingering old game is asked again only on the normal cadence");
+  assert.equal(bot.sent.filter((entry) => !isReport(entry.message)).length, 1, "the old game is never announced twice");
+});
+
+test("an account whose old match finished finds the loading requeue on the very next tick", async () => {
+  const bot = harness([{ id: A, puuids: ["acct-a"], channel: "voice-1" }]);
+  const first = spectatorGame(5121, [{ puuid: "acct-a", teamId: 100, championId: AHRI }]);
+  bot.enter(first);
+  assert.equal((await bot.start()).started, 1);
+  await finishGame(bot, "NA1_5121", ["acct-a"]);
+  bot.leaveGame(first);
+  bot.enter(spectatorGame(5122, [{ puuid: "acct-a", teamId: 100, championId: AHRI }]));
+  assert.equal((await bot.tick()).started, 1, "no waiting for the sixth tick");
+  assert.equal(bot.requests.length, 2);
+});

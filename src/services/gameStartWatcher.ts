@@ -16,7 +16,10 @@ import type { RankTracking } from "./rankTracker";
 
 /** How often present members' accounts are asked whether they are in a game. */
 export const GAME_START_INTERVAL_MS = 20_000;
-/** An account already seen in a game is asked again only every this many ticks (2 minutes), until it is out of it. */
+/**
+ * An account already seen in a game is asked again only every this many ticks (2 minutes), until it is out of it,
+ * or earlier once the match it was seen in is finished.
+ */
 export const IN_GAME_RECHECK_TICKS = 6;
 /** A line that has not started playing this long after detection is dropped: the loading screen is over by then. */
 export const GAME_START_WINDOW_MS = 90_000;
@@ -125,7 +128,14 @@ export function recallPick(memory: GameStartMemory, matchId: string, now: number
 type PresenceState =
   | { kind: "unknown" }
   | { kind: "notInGame" }
-  | { kind: "inGame"; gameId: number; checkedTick: number };
+  | {
+    kind: "inGame";
+    gameId: number;
+    matchId: string;
+    checkedTick: number;
+    /** The game's match was already finished at this check, so the early recheck it earns has been spent. */
+    sawFinished: boolean;
+  };
 
 interface AccountPresence {
   /** The member who owned the account when the watcher first saw it; another owner means a fresh presence. */
@@ -379,7 +389,10 @@ export class GameStartWatcher {
         continue;
       }
       const { state } = presence;
-      if (state.kind === "inGame" && tick - state.checkedTick < IN_GAME_RECHECK_TICKS) continue;
+      // A game whose finished match is known is over: the account may already be in the next one, so it is due once now.
+      // If Riot still lists the old game at that check, the normal cadence resumes.
+      if (state.kind === "inGame" && tick - state.checkedTick < IN_GAME_RECHECK_TICKS
+        && (state.sawFinished || !this.host.finished(state.matchId))) continue;
       // The hard budget: an account is asked at most once per interval, counted across sessions of the guild,
       // so an early check for a member who joins, leaves and rejoins never adds requests.
       const asked = this.host.memory.checked.get(puuid);
@@ -422,18 +435,20 @@ export class GameStartWatcher {
 
   /**
    * One account was seen in a game. Returns true when this decided to announce it:
-   * the game is still loading, or this account's previous check in this presence found no game and the game is at most a minute old.
+   * the game is still loading, or this account was not in this game at its previous check in this presence
+   * (no game then, or another game: a quick requeue found by the in-game recheck) and the game is at most a minute old.
    */
   private observe(presence: AccountPresence, puuid: string, game: ActiveGame, tick: number, requiredChannelId?: string): boolean {
-    const previous = presence.state.kind;
-    presence.state = { kind: "inGame", gameId: game.gameId, checkedTick: tick };
     const matchId = matchIdOf(game);
+    const { state } = presence;
+    const notInThisGame = state.kind === "notInGame" || (state.kind === "inGame" && state.matchId !== matchId);
+    presence.state = { kind: "inGame", gameId: game.gameId, matchId, checkedTick: tick, sawFinished: this.host.finished(matchId) };
     const known = this.gameStarts.get(matchId);
     // LP does not move during a game, so its start, announced or skipped, is the best before-value; it absorbs a
     // dodge or decay since the last read. A read that failed or was skipped is tried again on the later in-game rechecks.
     this.readRankStart(game, matchId, puuid, !known);
     if (known?.status === "started") return false;
-    const fresh = isLoading(game) || (previous === "notInGame" && game.gameLength <= FRESH_GAME_SECONDS);
+    const fresh = isLoading(game) || (notInThisGame && game.gameLength <= FRESH_GAME_SECONDS);
     const reason = !isAnnouncedGame(game) ? `queue ${game.gameQueueConfigId ?? "unknown"} on map ${game.mapId ?? "unknown"} is not announced`
       : this.host.finished(matchId) ? "it has already finished"
         : this.host.memory.announced.has(matchId) ? "its 锦囊 already went out in an earlier monitoring session"
