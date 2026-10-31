@@ -458,6 +458,35 @@ test("a role created before a failure is remembered, and the next try reuses it"
   assert.equal(getReportSettings(GUILD)?.rolesEnabled, true);
 });
 
+test("reusing the saved none role as top-role says the two roles must differ instead of blaming the role order", async () => {
+  const roles = new FakeRoleGuild();
+  roles.addRole("role-a", TOP_ROLE_NAME, 2);
+  roles.addRole("role-b", NONE_ROLE_NAME, 3);
+  setReportChannel(GUILD, "channel-1");
+  setReportRoles(GUILD, { enabled: true, topRoleId: "role-a", noneRoleId: "role-b" });
+  const { replies } = await run("roles", { enabled: true, top: "role-b" }, { roles });
+  assert.match(replies[0].content!, /「本周特等马」和「本周没有马」必须是两个不同的身份组/);
+  assert.ok(replies[0].content!.includes("<@&role-b>"), "the clashing role is named");
+  assert.ok(!replies[0].content!.includes(HIERARCHY_PROBLEM));
+  assert.deepEqual(replies[0].allowedMentions, NO_MENTIONS);
+  assert.deepEqual(roles.changes, []);
+  const settings = getReportSettings(GUILD)!;
+  assert.deepEqual([settings.topRoleId, settings.noneRoleId], ["role-a", "role-b"]);
+});
+
+test("reusing the saved top role as none-role is refused the same way", async () => {
+  const roles = new FakeRoleGuild();
+  roles.addRole("role-a", TOP_ROLE_NAME, 2);
+  roles.addRole("role-b", NONE_ROLE_NAME, 3);
+  setReportChannel(GUILD, "channel-1");
+  setReportRoles(GUILD, { enabled: true, topRoleId: "role-a", noneRoleId: "role-b" });
+  const { replies } = await run("roles", { enabled: true, none: "role-a" }, { roles });
+  assert.match(replies[0].content!, /必须是两个不同的身份组/);
+  assert.ok(replies[0].content!.includes("<@&role-a>"));
+  assert.deepEqual(roles.changes, []);
+  assert.equal(getReportSettings(GUILD)?.noneRoleId, "role-b");
+});
+
 test("two overlapping roles enables create one pair of roles and both replies name it", async () => {
   const roles = new FakeRoleGuild();
   setReportChannel(GUILD, "channel-1");
