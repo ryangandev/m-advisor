@@ -98,8 +98,11 @@ export class ReportScheduler {
   private readonly firstFailure = new Map<string, { first: number; last: number }>();
   /** Servers already logged as skipped because the bot is not in them. */
   private readonly skippedGuilds = new Set<string>();
-  /** Periods this process must not touch again, because they were posted or given up but could not be marked in the database. */
-  private readonly settled = new Set<string>();
+  /**
+   * Per server, data mode and kind, the latest period start this process settled but could not mark in the database.
+   * It acts like a stored mark: the effective mark is the larger of the two, so nothing at or before it is touched again.
+   */
+  private readonly settledMarks = new Map<string, number>();
 
   constructor(private readonly deps: ReportSchedulerDeps) {}
 
@@ -181,11 +184,12 @@ export class ReportScheduler {
    * Records that a period is done. If the database refuses, the period is remembered in memory instead, so a successful
    * post is never repeated every minute; after a restart the mark is missing and the period could post once more.
    */
-  private settle(key: string, guildId: string, mock: boolean, kind: ReportKind, periodStart: number, now: number): void {
+  private settle(guildId: string, mock: boolean, kind: ReportKind, periodStart: number, now: number): void {
     try {
       markReportHandled(guildId, mock, kind, periodStart, now);
     } catch (error) {
-      this.settled.add(key);
+      const memoryKey = `${guildId}:${mock ? 1 : 0}:${kind}`;
+      this.settledMarks.set(memoryKey, Math.max(this.settledMarks.get(memoryKey) ?? periodStart, periodStart));
       logError(`Could not record the ${kindName(kind)} 马报 of server ${guildId} as handled (${errorName(error)}); it will not be touched again until the bot restarts.`);
     }
   }
@@ -196,9 +200,9 @@ export class ReportScheduler {
     // The latest finished period is the one that gets marked. The report posted may be an older missed period that has
     // games (see catchUpPeriods), but never more than one post per kind per check, so an outage never floods the channel.
     const latest = latestDuePeriod(kind, now);
-    const latestKey = `${guildId}:${mock ? 1 : 0}:${kind}:${latest.start}`;
-    if (this.settled.has(latestKey)) return;
-    const mark = getReportMark(guildId, mock, kind);
+    const storedMark = getReportMark(guildId, mock, kind);
+    const memoryMark = this.settledMarks.get(`${guildId}:${mock ? 1 : 0}:${kind}`);
+    const mark = storedMark === undefined || memoryMark === undefined ? (storedMark ?? memoryMark) : Math.max(storedMark, memoryMark);
     if (mark !== undefined && mark >= latest.start) return;
 
     // Newest first: the first period with games is the one posted.
@@ -208,7 +212,7 @@ export class ReportScheduler {
       if (loaded.totalGames > 0) { data = loaded; break; }
     }
     if (!data) {
-      this.settle(latestKey, guildId, mock, kind, latest.start, now);
+      this.settle(guildId, mock, kind, latest.start, now);
       // Nothing is posted for an empty week, but its roles still move on: last week's holders lose them and nobody gains any.
       if (kind === "week") await this.rotateRoles(settings, [], [], mock, { quiet: true });
       return;
@@ -217,6 +221,14 @@ export class ReportScheduler {
     const key = `${guildId}:${mock ? 1 : 0}:${kind}:${posted.range.start}`;
 
     if (this.stopping) return;
+    // Roles follow the latest finished week. When that week had no games and an older one is posted, nobody earns the
+    // roles, so the old holders lose them now: whether the older report ever gets through must not decide that.
+    // The report itself never mentions roles, so it stays true either way. A retry finds no holders and does nothing.
+    const current = posted.range.start === latest.start;
+    if (kind === "week" && !current) {
+      await this.rotateRoles(settings, [], [], mock, { quiet: true });
+      if (this.stopping) return;
+    }
     try {
       await this.deps.send(guildId, settings.channelId!, {
         embeds: [buildReportEmbed(posted, { final: true })],
@@ -224,39 +236,33 @@ export class ReportScheduler {
         nonce: reportNonce(guildId, mock, kind, posted.range.start),
       });
     } catch (error) {
+      // A failure is stamped when the send has failed, and the gap is measured from that to the start of the next
+      // attempt, so a send that hangs for minutes before failing never looks like a sleep.
+      const failedAt = this.deps.now();
       const previous = this.firstFailure.get(key);
       // A gap far longer than the tick means the process was asleep, so the failure clock restarts: only time spent
       // awake and failing counts toward giving up.
       const awake = previous !== undefined && now - previous.last <= FAILURE_GAP_RESET_MS;
-      const first = awake ? previous.first : now;
-      this.firstFailure.set(key, { first, last: now });
-      const giveUp = isPermanent(error) || (previous !== undefined && now - first >= GIVE_UP_AFTER_MS);
+      const first = awake ? previous.first : failedAt;
+      this.firstFailure.set(key, { first, last: failedAt });
+      const giveUp = isPermanent(error) || (previous !== undefined && failedAt - first >= GIVE_UP_AFTER_MS);
       // One line when the trouble starts and one when the period is dropped; the retries in between stay quiet.
       if (previous === undefined || giveUp) {
         logWarn(`Could not post the ${kindName(kind)} 马报 for ${periodLabel(posted)} in server ${guildId} (${errorName(error)}, code ${discordErrorCode(error) ?? "none"})${giveUp ? "; giving up on this period. Check the report channel and the bot's permissions there." : "; will keep retrying."}`);
       }
       if (giveUp) {
         this.firstFailure.delete(key);
-        this.settle(latestKey, guildId, mock, kind, latest.start, now);
+        this.settle(guildId, mock, kind, latest.start, now);
       }
       return;
     }
     this.firstFailure.delete(key);
     // Recorded right after the send so a restart never posts the same period twice.
-    this.settle(latestKey, guildId, mock, kind, latest.start, now);
+    this.settle(guildId, mock, kind, latest.start, now);
     logInfo(`Posted the ${kindName(kind)} 马报 for ${periodLabel(posted)} in server ${guildId}${mock ? " (mock data)" : ""}.`);
 
-    if (kind === "week") {
-      // Roles follow the latest finished week. When that week had no games and an older one was posted, nobody earns
-      // the roles, so the old holders lose them. The report itself never mentions roles, so it stays true either way.
-      const current = posted.range.start === latest.start;
-      await this.rotateRoles(
-        settings,
-        current ? posted.topHorses.map((member) => member.discordUserId) : [],
-        current ? posted.noneHorses.map((member) => member.discordUserId) : [],
-        mock,
-        { quiet: !current },
-      );
+    if (kind === "week" && current) {
+      await this.rotateRoles(settings, posted.topHorses.map((member) => member.discordUserId), posted.noneHorses.map((member) => member.discordUserId), mock, { quiet: false });
     }
   }
 

@@ -180,7 +180,7 @@ Two other kinds of copy stay until the host deletes them by hand:
 The `/stable-erase` reply says this in one sentence, and the site's privacy page (`site/src/content/docs/privacy.md`) says it to players.
 
 Removing the bot from a server deletes nothing either.
-Every row for that server stays, and the log records the removal once (`src/events/guildDelete.ts`).
+Every row for that server stays, the log records the removal once and that server's monitoring session is stopped (`src/events/guildDelete.ts`).
 With the bot gone, `/stable-erase` can no longer be run for that server, so the host deletes the rows on request.
 To do it by hand, stop the bot and open the database with the `sqlite3` shell.
 Run `PRAGMA secure_delete = ON;` first so the deleted content is overwritten (or run `VACUUM;` afterwards), then delete the server's rows from every table that holds its `guild_id`:
@@ -226,5 +226,5 @@ They also check the automatic backup (present, mode `0600`, holding the version 
 `tests/appealStore.test.ts` holds the version 5 to 6 migration tests (a literal version 5 file upgraded by a separate process, the `.v5.bak` backup, a failing step that rolls back to version 5) and the appeal case API, including survival across processes, pruning and erasing.
 `tests/store.test.ts` also stores marker match IDs as horse records, LP results and appeal cases, erases them, and checks that the marker is gone from the database file and the WAL and that the WAL is empty.
 Further tests cover rows already checkpointed into the main file, and with a second connection holding a read transaction, where the erase must return in well under a second and still commit.
-`tests/guildDelete.test.ts` pins the removal log line.
+`tests/guildDelete.test.ts` pins the removal log line and the monitoring stop.
 The tests do not write to the bot's actual data directory.

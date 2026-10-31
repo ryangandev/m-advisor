@@ -75,7 +75,8 @@ Reports then start with the next period instead of replaying yesterday, and `/re
 Switching a report on when it is already on changes nothing, so it never drops a report that is due.
 
 A failed send does not mark the period, and it is retried on every check until it has kept failing for 6 hours (`GIVE_UP_AFTER_MS`), counted from the first failure in this process.
-Only time the bot was awake counts: a failed retry more than 5 minutes after the previous failed attempt (`FAILURE_GAP_RESET_MS`) means the computer slept, so the 6 hours start again from that retry.
+Only time the bot was awake counts: a check that starts more than 5 minutes after the previous failure ended (`FAILURE_GAP_RESET_MS`) means the computer slept, so the 6 hours start again from that retry.
+A send that hangs for minutes before failing does not count as a sleep.
 Network and timeout errors therefore never use up attempts: a Mac that wakes without Wi-Fi for a few minutes still posts once the network is back.
 The log gets one line when a send starts failing and one when the period is given up.
 A missing channel, missing access or missing permissions give up on that period at once.
@@ -87,7 +88,7 @@ When the bot is removed, `src/events/guildDelete.ts` also stops that server's mo
 Every report is sent with a nonce derived from the server, data mode, kind and period and with `enforceNonce: true`, which discord.js 14.27 supports.
 If a request times out after Discord already accepted it, the retry carries the same nonce and Discord returns the first message instead of posting a second one.
 Discord only remembers a nonce for a few minutes, so a restart is protected by the stored marks and not by the nonce.
-If the database refuses the mark after a successful send, the period is remembered in memory and logged, so it is not reposted every minute; after a restart it could post once more.
+If the database refuses the mark after a successful send, the latest handled period is remembered in memory as a mark and logged, so nothing at or before it is posted again while the bot runs; after a restart it could post once more.
 
 ### Startup and shutdown hook
 
@@ -126,7 +127,7 @@ When creating the two roles fails after the first one was made, that role is kep
 When nobody was named, the old holders lose the roles and nobody gains them.
 A week with no games posts nothing, but the roles still rotate silently to nobody, so a stale 本周特等马 never lingers; a failure there is only logged.
 Roles always follow the latest finished week.
-When that week was empty and a catch-up posts an older week instead, the roles rotate silently to nobody as for an empty week, and the older report does not mention roles, so it never claims that anyone holds one.
+When that week was empty and a catch-up posts an older week instead, the roles rotate silently to nobody as for an empty week, before that older report is sent, so a report that keeps failing or is given up cannot leave last week's holders in place, and the older report does not mention roles, so it never claims that anyone holds one.
 Roles are only changed for real data: in mock mode the report is posted and the roles are left alone.
 
 Any Discord failure is logged and collected, never thrown, so it cannot block the report, which is posted first.
