@@ -90,7 +90,7 @@ The test commands refuse the AFK channel and a full channel the same way.
 
 If none of a match's players is in a channel the voice can use, but some are in a voice channel the bot can see and post in, the text report is still posted there, in the channel the same rules choose among those, and the voice is skipped.
 The choice is made again after the timeline wait, so a player who reached a channel the voice can use meanwhile gets the voice report there instead.
-That covers a full channel, the AFK channel and a channel where the bot lacks Connect or Speak; the bot needs only View Channel and Send Messages in it.
+That covers a full channel, the AFK channel and a channel where the bot lacks Connect or Speak; the bot needs View Channel, Send Messages and Embed Links in it, because the reports are embeds.
 The match is consumed with one info line, `Announced match <id> as text only`, and nothing counts as a voice failure.
 A text that cannot be posted is retried on the next poll, counted toward the same attempt cap.
 The 锦囊 and the 段位播报 text follow the same rule, and the 锦囊 has no voice line then.

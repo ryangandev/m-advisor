@@ -1628,12 +1628,12 @@ export function resolveMonitoredVoiceChannel(client: Client, guildId: string, us
   return channel && isUsableVoiceChannel(channel) ? channel : null;
 }
 
-/** The member's channel for the text report when the voice cannot use it: the bot only needs View Channel and Send Messages there. */
+/** The member's channel for the text report when the voice cannot use it: the bot needs View Channel, Send Messages and Embed Links there, because the reports are embeds. */
 export function resolveMonitoredTextChannel(client: Client, guildId: string, userId: string): VoiceChannel | null {
   const channel = allowedMemberChannel(client, guildId, userId);
   if (!channel) return null;
   const permissions = channel.permissionsFor(client.user!);
-  return permissions?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages]) ? channel : null;
+  return permissions?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.EmbedLinks]) ? channel : null;
 }
 
 /** The game start watcher's errors, with their own prefix so they are never read as a failed match poll. */
