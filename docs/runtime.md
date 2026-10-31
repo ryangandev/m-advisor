@@ -81,7 +81,7 @@ Daily files older than 14 days are deleted at startup and when a new day begins;
 Any message that quotes the Discord token or Riot key has it replaced with `[DISCORD_TOKEN]` or `[RIOT_API_KEY]`.
 If the file cannot be written, the terminal shows one warning and still shows every message.
 Only the bot entry point writes log files; tests, the doctor and the verifiers print to the terminal only.
-Logs contain Riot IDs, Discord usernames and server names, so keep them local like the database.
+Logs contain Riot IDs, Discord usernames, server and channel names and match IDs, so keep them local like the database.
 
 The bot requests the standard Guilds and GuildVoiceStates intents.
 Its current commands do not require privileged Presence or Server Members gateway intents.
