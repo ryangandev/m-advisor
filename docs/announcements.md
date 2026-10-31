@@ -415,7 +415,7 @@ Each message has one short plain voice job in the shared voice queue, with one a
 - It speaks tiers as `黄金二`, for example `军师贺喜！小明单双排升到铂金四了。` or `小明单双排掉回黄金一，别急，军师陪你重新上马。`
 - Each sentence is chosen from a small pool, seeded by `rank:<matchId>:<puuid>`, so the same match always says the same thing.
 - A line has at most two sentences. Further members of the same message are in the text only. The names of one line share a budget of 12 characters, so a line stays at about 15 seconds or less.
-- Two names that would sound the same after trimming to the budget keep their distinct ends instead, so two members are never spoken as one.
+- Two names that would sound the same after trimming to the budget keep their distinct ends instead, and two identical names are spoken as their champions, like the 车队内战 sentence, so two members are never spoken as one.
 - Mock lines start with `模拟段位播报，`.
 - A voice failure, or any failure on this path, is logged and never counts toward the report's voice attempts or replays the report: the line is handled after the match was consumed.
 

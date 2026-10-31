@@ -14,7 +14,7 @@ import {
 } from "../store/announcerStore";
 import { getLatestSRMatchId, getMatchDetail } from "../utils/riotMatchApi";
 import { getRiotMode, RiotApiError } from "./riotData";
-import { buildMatchAnnouncement } from "./announcementText";
+import { buildMatchAnnouncement, championLabel } from "./announcementText";
 import { buildPregameRecap } from "./pregameRecap";
 import type { MatchAnnouncement } from "./announcementText";
 import { fetchMatchEvents } from "./matchEvents";
@@ -1448,10 +1448,10 @@ export class GameMonitor {
       // Marked before anything is awaited, so the first reads and the late update can never announce the same member.
       for (const move of moves) cast.announced.add(move.puuid);
       const mock = this.dependencies.mock();
-      const spoken: RankVoiceMove[] = moves.map((move) => ({
-        ...move,
-        name: cast.detail.info.participants.find((participant) => participant.puuid === move.puuid)?.riotIdGameName ?? "",
-      }));
+      const spoken: RankVoiceMove[] = moves.map((move) => {
+        const participant = cast.detail.info.participants.find((candidate) => candidate.puuid === move.puuid);
+        return { ...move, name: participant?.riotIdGameName ?? "", champion: participant ? championLabel(participant) : undefined };
+      });
       const line = buildRankVoiceLine({ matchId: cast.matchId, mock, moves: spoken });
       try {
         await cast.channel.send({ embeds: [buildRankAnnouncementEmbed(lines, mock)], allowedMentions: NO_MENTIONS });

@@ -153,6 +153,8 @@ export interface RankVoiceMove extends RankMove {
   puuid: string;
   /** The name the report shows for the player; sanitized here. */
   name: string;
+  /** The champion the report shows, spoken in place of the names when members share one; none when it is unknown. */
+  champion?: string;
 }
 
 /**
@@ -170,8 +172,11 @@ export function buildRankVoiceLine(input: { matchId: string; mock: boolean; move
   }
   if (spoken.length === 0) return "";
   // Long names share a speech budget, so two 16-letter names cannot stretch the line past about 15 seconds.
-  // Two members must still sound different after trimming, so names that collide keep their ends instead.
-  const names = spokenNames(spoken.map(({ move }) => readableName(move.name)), SPOKEN_NAME_BUDGET);
+  // Two members must still sound different after trimming, so names that collide keep their ends instead,
+  // and names that are the same fall back to the champions, as the 车队内战 sentence does.
+  const names = spokenNames(
+    spoken.map(({ move }) => readableName(move.name)), SPOKEN_NAME_BUDGET, spoken.map(({ move }) => readableName(move.champion ?? "")),
+  );
   const sentences = spoken.map(({ move, queue, rank }, index) => {
     const choose = seededChooser(`rank:${input.matchId}:${move.puuid}`);
     const phrase = choose(move.kind === "promoted" ? PROMOTION_PHRASES : DEMOTION_PHRASES);
