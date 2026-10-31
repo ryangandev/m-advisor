@@ -241,13 +241,32 @@ test("the embed shows the leaderboard, the named horses and safe mentions", () =
   assert.match(field("当周特等马"), /^<@111>：当周 3 局均分 9\.0/);
   assert.match(field("当周没有马"), /^<@222>：当周 3 局均分只有 1\.2/);
   assert.match(field("单局之最"), /最佳：<@111>.*9\.5 分\n🪦 最差：<@222>.*0\.5 分/);
-  assert.match(field("军师总评"), /共鉴定 6 局：👑3 🐎0 🐴0 🫏0 🪦3/);
+  assert.match(field("军师总评"), /共鉴定 6 匹马：👑3 🐎0 🐴0 🫏0 🪦3/);
   // Same input, same words; a different week may read differently.
   assert.deepEqual(buildReportEmbed(data, { final: true }).toJSON(), json);
   for (const text of [json.title, json.description, ...json.fields!.map((entry) => entry.value)]) {
     assert.ok(!text!.includes("\u2014"), "copy never uses an em dash");
     assert.ok(!text!.includes("@everyone") && !text!.includes("@here"));
   }
+});
+
+test("a match shared by several friends counts as one game, while the tier totals stay appraisals", () => {
+  const shared = (user: string, matchId: string, at: number) => game(user, "没有马", 1, at, { matchId });
+  const records = ["a", "b", "c"].flatMap((user) => [shared(user, "NA1_SHARED_1", DAY.start + HOUR), shared(user, "NA1_SHARED_2", DAY.start + 2 * HOUR)]);
+  const data = buildReportData({ kind: "day", range: DAY, mock: false, records, memberIds: ["a", "b", "c"] });
+  assert.equal(data.totalGames, 2);
+  assert.equal(data.tierTotals["没有马"], 6, "every member's horse is still appraised");
+  assert.deepEqual(data.members.map((member) => member.games), [2, 2, 2], "each member's own line still counts their own games");
+  const json = buildReportEmbed(data, { final: true }).toJSON();
+  assert.equal(json.description, "共 **2** 局 · **3** 位出战");
+  const summary = json.fields!.find((entry) => entry.name === "军师总评")!.value;
+  assert.match(summary, /^共鉴定 6 匹马：👑0 🐎0 🐴0 🫏0 🪦6\n/, "the 总评 line counts horses, not games");
+  assert.match(summary, /才鉴定了几局|样本太少/, "two matches are still too few to judge, however many friends played them");
+  // Three shared matches reach the sample bar, and the rate remark then reads the appraisals.
+  const three = [...records, ...["a", "b", "c"].map((user) => shared(user, "NA1_SHARED_3", DAY.start + 3 * HOUR))];
+  const enough = buildReportEmbed(buildReportData({ kind: "day", range: DAY, mock: false, records: three, memberIds: ["a", "b", "c"] }), { final: true }).toJSON();
+  assert.equal(enough.description, "共 **3** 局 · **3** 位出战");
+  assert.doesNotMatch(enough.fields!.find((entry) => entry.name === "军师总评")!.value, /才鉴定了几局|样本太少/);
 });
 
 test("a mock report is visibly labeled and an unfinished period says so", () => {

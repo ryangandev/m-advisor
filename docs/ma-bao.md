@@ -31,6 +31,7 @@ A member removed with `/unbind` keeps their history but is left out of reports, 
 | Best and worst single game | Yes, over everyone | Yes, over everyone |
 | 军师总评 | Tier totals and a closing remark | Tier totals, busiest member, longest 特等马 and 没有马 streak inside the week and a closing remark |
 
+The header's 局 and the sample bar of the closing remark count distinct match IDs, so a match several friends played together is one game; the 军师总评 tier line counts appraisals (one horse per member per match) and says 匹马, and the tier-rate remarks use that same appraisal total.
 When the period holds a single game, the best and the worst single game are the same record, so 单局之最 lists it once as 唯一一局.
 
 The weekly bar is 3 games, the same bar the 马厩 uses before it calls a dimension a strength, so that one lucky or unlucky game cannot decide the week.

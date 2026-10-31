@@ -90,7 +90,9 @@ export interface ReportData {
   range: TimeRange;
   mock: boolean;
   minGames: number;
+  /** Distinct matches in the period: a match several friends played together counts once. */
   totalGames: number;
+  /** Appraisals per tier: one per member per match, so friends who shared a match each add one. */
   tierTotals: Record<HorseTier, number>;
   /** Ranked members first, best average first; members below the games bar follow, most games first. */
   members: MemberReport[];
@@ -182,7 +184,7 @@ export function buildReportData(input: ReportInput): ReportData {
     range,
     mock,
     minGames,
-    totalGames: records.length,
+    totalGames: new Set(records.map((record) => record.matchId)).size,
     tierTotals: Object.fromEntries(HORSE_TIERS.map((tier) => [tier, records.filter((record) => record.tier === tier).length])) as Record<HorseTier, number>,
     members,
     topHorses: separated ? ranked.filter((member) => printedAverage(member) === topAverage) : [],
