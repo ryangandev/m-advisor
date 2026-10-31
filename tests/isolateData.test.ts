@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -27,6 +27,34 @@ test("the temporary directory of a test process, and of the children it starts, 
   assert.equal(path.resolve(os.tmpdir()), path.resolve(folder));
   const child = spawnSync(process.execPath, ["--eval", "console.log(require('node:os').tmpdir())"], { encoding: "utf8" });
   assert.equal(path.resolve(child.stdout.trim()), path.resolve(folder));
+});
+
+test("a folder is named with its process id, and the next run removes the stale ones of stopped processes only", () => {
+  assert.match(path.basename(process.env.M_ADVISOR_TEST_AUTO_DATA_DIR ?? ""), new RegExp(`^m-advisor-test-data-${process.pid}-[A-Za-z0-9]{6}$`));
+  const host = mkdtempSync(path.join(os.tmpdir(), "m-advisor-host-"));
+  try {
+    const dead = spawnSync(process.execPath, ["-e", ""]).pid;
+    const make = (name: string) => { const target = path.join(host, name); mkdirSync(target); writeFileSync(path.join(target, "left.sqlite3"), "x"); return target; };
+    const stale = make(`m-advisor-test-data-${dead}-aaaaaa`);
+    const running = make(`m-advisor-test-data-${process.pid}-bbbbbb`);
+    const survivors = [running,
+      make(`m-advisor-test-data-extra-${dead}-cccccc`), make(`m-advisor-test-data-${dead}-dddddd-x`), make(`m-advisor-test-data-${dead}-short`),
+      make(`m-advisor-tts-${dead}-eeeeee`), make(`other-${dead}-ffffff`)];
+    const outside = make("outside");
+    symlinkSync(outside, path.join(host, `m-advisor-test-data-${dead}-gggggg`));
+    survivors.push(outside, path.join(host, `m-advisor-test-data-${dead}-gggggg`));
+
+    const run = spawnSync(process.execPath, ["--import", tsx, "--import", pathToFileURL(path.join(repo, "tests", "setup", "isolateData.ts")).href, "--eval",
+      "console.log(require('node:os').tmpdir())"], { env: { ...process.env, TMPDIR: host }, encoding: "utf8" });
+    assert.equal(run.status, 0, run.stderr);
+    assert.match(path.basename(run.stdout.trim()), /^m-advisor-test-data-\d+-[A-Za-z0-9]{6}$/);
+    assert.ok(path.resolve(run.stdout.trim()).startsWith(path.resolve(host) + path.sep), "the child's folder is not inside the host temp directory it started with");
+
+    assert.equal(existsSync(stale), false, "the folder of a stopped process was not removed");
+    for (const survivor of survivors) assert.ok(existsSync(survivor), `${survivor} must not be removed`);
+    assert.ok(existsSync(path.join(outside, "left.sqlite3")), "a symlink was followed");
+    assert.equal(readdirSync(host).filter((name) => name.startsWith(`m-advisor-test-data-${run.pid}-`)).length, 0, "the child's own folder was left behind");
+  } finally { rmSync(host, { recursive: true, force: true }); }
 });
 
 test("host credentials and the data mode are not inherited by a test process", () => {
