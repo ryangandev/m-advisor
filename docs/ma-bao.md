@@ -131,6 +131,10 @@ When nobody was named, the old holders lose the roles and nobody gains them.
 A week with no games posts nothing, but the roles still rotate silently to nobody, so a stale 本周特等马 never lingers; a failure there is only logged.
 Roles always follow the latest finished week.
 When that week was empty and a catch-up posts an older week instead, the roles rotate silently to nobody as for an empty week, before that older report is sent, so a report that keeps failing or is given up cannot leave last week's holders in place, and the older report does not mention roles, so it never claims that anyone holds one.
+When the current week's report is given up, because the channel is gone, access was lost or sends kept failing for 6 hours, the roles rotate silently to nobody in the same way, so a deleted report channel cannot freeze 本周特等马 on last week's winner.
+A report that is only being retried leaves the roles untouched.
+The rotation runs in the same per-server queue as `/report-settings`, and reads the role settings again when its turn comes.
+So roles an administrator switched off or changed while the report was being sent are respected, and the rotation never hands out a role that nothing will take back.
 Roles are only changed for real data: in mock mode the report is posted and the roles are left alone.
 
 Any Discord failure is logged and collected, never thrown, so it cannot block the report, which is posted first.
