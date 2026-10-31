@@ -27,6 +27,8 @@ export const SENTENCE_PAUSE_MS = 350;
 /** A short ramp at each chunk edge prevents a click if a chunk starts or ends away from zero. */
 const FADE_FRAMES = 120;
 const MAX_DECODED_BYTES = 64 * 1024 * 1024;
+/** How long a voice resume or server change may keep the connection out of Ready before the announcement fails. */
+export const RECONNECT_GRACE_MS = 5_000;
 
 const execFileAsync = promisify(execFile);
 
@@ -68,6 +70,8 @@ export interface VoicePlaybackDependencies {
   createResource: typeof createAudioResource;
   enter: typeof entersState;
   decode: (path: string, signal: AbortSignal) => Promise<Buffer>;
+  /** Overrides RECONNECT_GRACE_MS, for tests. */
+  reconnectGraceMs?: number;
 }
 
 /**
@@ -103,9 +107,33 @@ export function createVoicePlayback(dependencies: VoicePlaybackDependencies) {
       operation.abort(reason);
     };
     const fail = (message: string, error?: Error) => failWith(new Error(message, { cause: error }));
+    // A voice WebSocket resume or server change briefly leaves Ready for Signalling or Connecting.
+    // The paused player keeps its place meanwhile, but the pause must stay bounded.
+    const reconnectGraceMs = dependencies.reconnectGraceMs ?? RECONNECT_GRACE_MS;
+    let wasReady = false;
+    let graceTimer: NodeJS.Timeout | undefined;
+    const clearGrace = () => {
+      clearTimeout(graceTimer);
+      graceTimer = undefined;
+    };
     const onConnectionState = (_old: VoiceConnectionState, next: VoiceConnectionState) => {
-      if (next.status === VoiceConnectionStatus.Disconnected || next.status === VoiceConnectionStatus.Destroyed) {
-        fail("Discord voice connection ended before playback completed.");
+      switch (next.status) {
+        case VoiceConnectionStatus.Disconnected:
+        case VoiceConnectionStatus.Destroyed:
+          clearGrace();
+          fail("Discord voice connection ended before playback completed.");
+          break;
+        case VoiceConnectionStatus.Signalling:
+        case VoiceConnectionStatus.Connecting:
+          // Joining is bounded by its own 15 second wait; the grace only covers a connection that was already Ready.
+          if (wasReady && !graceTimer) graceTimer = setTimeout(() => fail("Discord voice connection did not recover in time."), reconnectGraceMs);
+          break;
+        case VoiceConnectionStatus.Ready:
+          wasReady = true;
+          clearGrace();
+          // Never continue an announcement in a channel the bot was moved to.
+          if (connection && connection.joinConfig.channelId !== channel.id) fail("Discord voice connection moved to another channel.");
+          break;
       }
     };
     const wait = async (target: VoiceConnection | AudioPlayer, status: VoiceConnectionStatus | AudioPlayerStatus, timeoutMs: number) => {
@@ -152,10 +180,12 @@ export function createVoicePlayback(dependencies: VoicePlaybackDependencies) {
       connection.on("error", (error: Error) => fail("Discord voice connection failed.", error));
       connection.on("stateChange", onConnectionState);
       // A gap while the next sentence is generated must not end playback, so missed frames never stop the player.
-      player = dependencies.createPlayer({ behaviors: { noSubscriber: NoSubscriberBehavior.Stop, maxMissedFrames: Infinity } });
+      // Pause keeps the stream through a brief reconnect; the grace, the playback timeout and cleanup bound the pause.
+      player = dependencies.createPlayer({ behaviors: { noSubscriber: NoSubscriberBehavior.Pause, maxMissedFrames: Infinity } });
       player.on("error", (error: Error) => fail("Discord audio playback failed.", error));
 
       await wait(connection, VoiceConnectionStatus.Ready, 15_000);
+      wasReady = true;
       operationSignal.throwIfAborted();
       if (!connection.subscribe(player)) throw new Error("Discord voice connection could not subscribe to audio.");
       resource = dependencies.createResource(source, { inputType: StreamType.Raw });
@@ -170,6 +200,7 @@ export function createVoicePlayback(dependencies: VoicePlaybackDependencies) {
       if (!fed) throw new Error("Announcement audio stopped before every sentence was played.");
     } finally {
       closing = true;
+      clearGrace();
       operation.abort(new Error("Voice playback finished."));
       player?.stop(true);
       resource?.playStream.destroy();
