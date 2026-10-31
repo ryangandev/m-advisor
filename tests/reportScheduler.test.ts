@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
 import { setMemberAccounts } from "../src/store/bindingStore";
-import { closeDatabase, getDatabase } from "../src/store/database";
+import { closeDatabase, getDatabase, shutdownDatabase } from "../src/store/database";
 import type { HorseRecord } from "../src/store/horseRecordStore";
 import type { HorseTier } from "../src/services/horseRanking";
 import { FAILURE_GAP_RESET_MS, GIVE_UP_AFTER_MS, ReportChannelError, ReportScheduler, REPORT_TICK_MS, reportNonce } from "../src/services/reportScheduler";
@@ -975,4 +975,21 @@ test("a send that takes minutes before failing does not look like a sleep", asyn
   }
   assert.equal(getReportMark(GUILD, false, "day"), DUE_DAY.start, "given up after about six hours of failing");
   assert.ok(output.some((line) => line.includes("giving up")));
+});
+
+// Keep this test last: shutting the database down cannot be undone in a process, so later tests here could not open it.
+test("a send that finishes after shutdown closed the database says so, instead of claiming the period is settled", async () => {
+  seedGames(DUE_DAY.start + HOUR);
+  setReportKindEnabled(GUILD, "week", false);
+  const { state, deps, scheduler } = harness();
+  deps.send = async (guildId, channelId, payload) => {
+    state.sent.push({ guildId, channelId, payload });
+    shutdownDatabase();
+  };
+  await scheduler.runDue();
+  assert.equal(state.sent.length, 1);
+  const lines = output.filter((line) => line.includes("Bot stopped before"));
+  assert.equal(lines.length, 1, output.join("\n"));
+  assert.match(lines[0], /Bot stopped before the .* 马报 of server scheduler-guild was recorded; it may be posted again after restart\./);
+  assert.ok(!output.some((line) => line.includes("until the bot restarts")));
 });

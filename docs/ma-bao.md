@@ -99,6 +99,7 @@ It calls `startReportScheduler(client)`, whose first check is the restart catch-
 `src/index.ts` calls `haltReportScheduler()` first in graceful shutdown, which cancels the timer and stops any new check or send at once without waiting.
 Just before the database closes it calls `finishReportScheduler()`, which waits at most 3 seconds (`SHUTDOWN_WAIT_MS`) for a report that is still being sent.
 Role calls and a hung send therefore cannot hold up the voice, speech and client cleanup.
+If a send finishes only after the database has closed, the period cannot be marked as handled, so the log says "Bot stopped before the ... 马报 ... was recorded; it may be posted again after restart." and the period can post once more on the next start.
 
 ## Commands
 
