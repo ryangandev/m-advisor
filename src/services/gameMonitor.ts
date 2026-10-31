@@ -1216,11 +1216,11 @@ export class GameMonitor {
       progress.posting = undefined;
       // A session that gave up waiting may post it after all if it retries; one that already spoke does not.
       progress.postUnknown = false;
-      // A match consumed meanwhile, for instance spoken while this send was unknown, is not posted again: its 段位播报 goes too.
-      const entry = this.handled.get(guildId)?.get(matchId);
-      const consumed = entry?.progress === progress && entry.consumed;
       this.forgetPost(guildId, matchId, progress);
-      if (consumed && progress.rankCast) this.finishRankVoice(progress.rankCast, "dropped");
+      // A match consumed meanwhile, for instance spoken while this send was unknown, is not posted again: its 段位播报 goes
+      // too. Every consume is followed by finishRankVoice, so a finished report voice means consumed, whatever the guild remembers.
+      const cast = progress.rankCast;
+      if (cast && cast.reportVoice !== "pending" && cast.reportVoice !== "dropped") this.finishRankVoice(cast, "dropped");
       settle();
       result.errors++;
       this.report(guildId, error);
