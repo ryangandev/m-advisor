@@ -120,7 +120,7 @@ function settingsInteraction(subcommand: string, values: { channel?: string; ena
     deferReply: async () => { deferred = true; },
     editReply: async (payload: Reply) => { replies.push({ ...payload, flags: MessageFlags.Ephemeral }); },
   };
-  return { stub: stub as unknown as Parameters<typeof reportSettingsCommand.execute>[0], replies, fake };
+  return { stub: stub as unknown as Parameters<typeof reportSettingsCommand.execute>[0], replies, fake, wasDeferred: () => deferred };
 }
 
 const run = async (...args: Parameters<typeof settingsInteraction>) => {
@@ -456,4 +456,40 @@ test("a role created before a failure is remembered, and the next try reuses it"
   assert.deepEqual(roles.changes, [`create:${NONE_ROLE_NAME}`], "the first role is reused, not created twice");
   assert.match(second.replies[0].content!, /<@&created-1> 和 <@&created-2>/);
   assert.equal(getReportSettings(GUILD)?.rolesEnabled, true);
+});
+
+test("two overlapping roles enables create one pair of roles and both replies name it", async () => {
+  const roles = new FakeRoleGuild();
+  setReportChannel(GUILD, "channel-1");
+  const [a, b] = await Promise.all([run("roles", { enabled: true }, { roles }), run("roles", { enabled: true }, { roles })]);
+  assert.deepEqual(roles.changes, [`create:${TOP_ROLE_NAME}`, `create:${NONE_ROLE_NAME}`], "the second run reuses the roles the first one made");
+  const settings = getReportSettings(GUILD)!;
+  assert.deepEqual([settings.topRoleId, settings.noneRoleId], ["created-1", "created-2"]);
+  for (const made of [a, b]) {
+    assert.ok(made.wasDeferred(), "deferred before waiting for the other run, so Discord's 3 second deadline holds");
+    assert.match(made.replies[0].content!, /已开启每周身份组：<@&created-1> 和 <@&created-2>/);
+  }
+});
+
+test("clearing the channel while another run is enabling roles waits for it and then releases them", async () => {
+  const roles = new FakeRoleGuild();
+  setReportChannel(GUILD, "channel-1");
+  const [enable, clear] = await Promise.all([run("roles", { enabled: true }, { roles }), run("channel-clear", {}, { roles })]);
+  assert.ok(clear.wasDeferred(), "deferred before waiting for the other run");
+  assert.match(enable.replies[0].content!, /已开启每周身份组/);
+  assert.match(clear.replies[0].content!, /每周身份组跟着每周马报换人，所以也一并关闭了/);
+  const settings = getReportSettings(GUILD)!;
+  assert.deepEqual([settings.channelId, settings.rolesEnabled], [null, false]);
+});
+
+test("a failed run does not block the next one for the same server", async () => {
+  const roles = new FakeRoleGuild();
+  roles.failures.create = discordError(50013);
+  setReportChannel(GUILD, "channel-1");
+  const [failed, later] = await Promise.all([run("roles", { enabled: true }, { roles }), run("roles", { enabled: true }, { roles })]);
+  assert.match(failed.replies[0].content!, /没能完成身份组设置/);
+  assert.match(later.replies[0].content!, /没能完成身份组设置/);
+  roles.failures.create = undefined;
+  const third = await run("roles", { enabled: true }, { roles });
+  assert.match(third.replies[0].content!, /已开启每周身份组/);
 });
