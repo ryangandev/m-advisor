@@ -61,7 +61,7 @@ Module._load = function(request, parent, ...args) {
       "./services/riotData": { getRiotMode: () => "mock" },
       "./services/gameMonitor": { stopAllPolling: () => trace.push("stop-monitoring") },
       "./utils/tts": { shutdownTTS: async () => trace.push("stop-speech") },
-      "./store/database": { closeDatabase: () => trace.push("close-database") },
+      "./store/database": { shutdownDatabase: () => trace.push("close-database") },
       "@discordjs/voice": { getVoiceConnections: () => new Map([
         ["first", { destroy: () => {
           trace.push("first-connection-destroy");

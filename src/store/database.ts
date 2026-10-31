@@ -183,6 +183,15 @@ const MIGRATIONS: readonly string[] = [
 export const SCHEMA_VERSION = MIGRATIONS.length;
 const BUSY_TIMEOUT_MS = 5000;
 let database: Database.Database | undefined;
+let shutDown = false;
+
+/** A store call arrived after `shutdownDatabase()`: the bot is stopping, and no new connection may be opened. */
+export class DatabaseClosedError extends Error {
+  constructor() {
+    super("The bot database is closed because the bot is shutting down.");
+    this.name = "DatabaseClosedError";
+  }
+}
 
 /** Resolved lazily so importing a store does not create a database. */
 export function getDatabasePath(): string {
@@ -221,6 +230,9 @@ function backUpBeforeMigration(connection: Database.Database, filePath: string, 
 export function getDatabase(): Database.Database {
   if (database) {
     return database;
+  }
+  if (shutDown) {
+    throw new DatabaseClosedError();
   }
 
   const filePath = getDatabasePath();
@@ -289,7 +301,10 @@ export function truncateWal(connection: Database.Database = getDatabase()): bool
   }
 }
 
-/** Close during graceful shutdown; a later store operation opens a new connection. */
+/**
+ * Closes the connection. The next store operation opens a new one, which is what tests and one-shot scripts rely on
+ * when they switch `DATABASE_PATH` or reopen the same file. The bot itself shuts down with `shutdownDatabase()`.
+ */
 export function closeDatabase(): void {
   if (database) {
     // One last attempt, so rows erased while another process held the database leave the WAL when the bot shuts down.
@@ -301,4 +316,14 @@ export function closeDatabase(): void {
     database.close();
   }
   database = undefined;
+}
+
+/**
+ * Closes the connection for good during graceful shutdown. A late store call (for example a command still waiting on
+ * Riot when the bot is stopped) then throws `DatabaseClosedError` instead of silently opening a connection nobody closes.
+ * Only a new process opens the database again.
+ */
+export function shutdownDatabase(): void {
+  shutDown = true;
+  closeDatabase();
 }
