@@ -9,7 +9,7 @@ import { test } from "node:test";
 // is stubbed before it loads. No tokens, network calls or GPU imports are used.
 // Log files go to a temporary data directory and are returned as one string.
 function spawnEntryPoint(
-  scenario: "before-commands" | "during-commands" | "during-login" | "crash" | "hangup" | "hangup-eio" | "double-sigint" | "late-sigint",
+  scenario: "before-commands" | "during-commands" | "during-login" | "crash" | "hangup" | "hangup-eio" | "double-sigint" | "late-sigint" | "sigint-then-hangup",
   failures: { client?: boolean; connection?: boolean } = {},
 ) {
   const root = path.resolve(__dirname, "..");
@@ -37,7 +37,7 @@ class FakeClient extends EventEmitter {
     trace.push("destroy-begin");
     // The double-delivery run is still cleaning up when the repeat arrives; the late run never finishes cleaning up.
     if (scenario === "late-sigint") await new Promise(() => {});
-    await delay(scenario === "double-sigint" ? 300 : 15);
+    await delay(scenario === "double-sigint" ? 300 : scenario === "sigint-then-hangup" ? 2500 : 15);
     if (failures.client) {
       trace.push("destroy-failed");
       throw new Error("offline client destruction failure");
@@ -85,11 +85,17 @@ if (scenario === "hangup-eio") {
 }
 if (scenario === "hangup" || scenario === "hangup-eio") process.kill(process.pid, "SIGHUP");
 // npm start forwards Ctrl+C that the terminal already sent to the whole process group, so SIGINT arrives twice.
-if (scenario === "double-sigint" || scenario === "late-sigint") {
+if (scenario === "double-sigint") {
+  setTimeout(() => process.kill(process.pid, "SIGINT"), 20);
+  setTimeout(() => process.kill(process.pid, "SIGINT"), 80);
+}
+// The later signal is sent relative to the moment the first one was handled, so a stalled machine cannot shrink the gap.
+if (scenario === "late-sigint" || scenario === "sigint-then-hangup") {
   // The real bot's sockets keep its event loop alive; the stuck fake client alone would not.
   if (scenario === "late-sigint") setInterval(() => {}, 1000);
+  const second = scenario === "late-sigint" ? "SIGINT" : "SIGHUP";
+  process.once("SIGINT", () => setTimeout(() => process.kill(process.pid, second), 1500));
   setTimeout(() => process.kill(process.pid, "SIGINT"), 20);
-  setTimeout(() => process.kill(process.pid, "SIGINT"), scenario === "double-sigint" ? 80 : 1500);
 }
 if (scenario === "crash") {
   process.emitWarning("offline test warning");
@@ -174,8 +180,17 @@ test("a later deliberate SIGINT while cleanup is stuck ends the process at once"
   assert.equal(child.status, 1, child.stderr);
   assert.ok(Date.now() - started < 8_000, "ended by the second signal, not by the 15 second deadline");
   assert.ok(!readTrace(child.stdout).includes("close-database"));
-  assert.match(log, / ERROR Stop signal received again while stopping; ending the process now\.\n$/);
+  assert.match(log, / ERROR SIGINT received again while stopping; ending the process now\.\n$/);
   assert.doesNotMatch(log, /Bot stopped/);
+});
+
+test("closing the launcher window (SIGHUP) while Ctrl+C is still cleaning up joins the shutdown instead of ending it", () => {
+  const { child, log } = spawnEntryPoint("sigint-then-hangup");
+  assert.equal(child.error, undefined);
+  assert.equal(child.status, 0, child.stderr);
+  assert.ok(readTrace(child.stdout).includes("close-database"));
+  assert.match(log, / INFO Bot stopped; speech process and database closed\.\n$/);
+  assert.doesNotMatch(log, /received again/);
 });
 
 test("an error logged during a SIGHUP shutdown with a dead terminal still completes the shutdown", () => {

@@ -122,20 +122,25 @@ for (const stream of [process.stdout, process.stderr]) stream.on("error", () => 
 // also forwards it to its child. A person pressing Ctrl+C again takes longer than this.
 const REPEAT_SIGNAL_WINDOW_MS = 1_000;
 const SHUTDOWN_DEADLINE_MS = 15_000;
-let firstSignalAt: number | undefined;
+const firstArrival = new Map<NodeJS.Signals, number>();
+let deadline: NodeJS.Timeout | undefined;
 
 // SIGHUP is what closing the launcher's Terminal window sends; its default would exit without any cleanup.
 // The listeners stay registered (`on`, not `once`): a signal with no listener takes its default action and would kill
 // the process in the middle of cleanup.
-function handleStopSignal(): void {
+// Arrivals are tracked per signal: a different signal (closing the window while Ctrl+C is cleaning up) joins the
+// running shutdown, and only a repeat of the same signal after the window ends the process at once.
+function handleStopSignal(signal: NodeJS.Signals): void {
   const now = performance.now();
-  if (firstSignalAt !== undefined) {
-    if (now - firstSignalAt < REPEAT_SIGNAL_WINDOW_MS) return;
-    logError("Stop signal received again while stopping; ending the process now.");
+  const earlier = firstArrival.get(signal);
+  if (earlier !== undefined) {
+    if (now - earlier < REPEAT_SIGNAL_WINDOW_MS) return;
+    logError(`${signal} received again while stopping; ending the process now.`);
     process.exit(1);
   }
-  firstSignalAt = now;
-  const deadline = setTimeout(() => process.exit(1), SHUTDOWN_DEADLINE_MS).unref();
+  firstArrival.set(signal, now);
+  if (deadline) return;
+  deadline = setTimeout(() => process.exit(1), SHUTDOWN_DEADLINE_MS).unref();
   void shutdown().then(() => { clearTimeout(deadline); }).catch(() => { process.exitCode = 1; });
 }
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, handleStopSignal);
