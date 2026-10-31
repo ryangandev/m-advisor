@@ -35,10 +35,21 @@ export const RIOT_PACING_WINDOWS: readonly PacingWindow[] = [
 /** While a request waits, the pacer looks at least this often whether the bot started stopping. */
 export const PACING_STOP_CHECK_MS = 1_000;
 
+/**
+ * How long a request is remembered after it leaves the longest window, so that a slow answer is compared with what
+ * was counted when its request was sent (see `RiotPacer.observe`). Longer than any request timeout.
+ */
+export const PACING_MEMORY_MS = 15_000;
+
 export interface RiotPacerOptions {
   windows?: readonly PacingWindow[];
   now?: () => number;
-  /** Schedules the next check; the default timer is unref'd, so a waiting request never keeps the process alive. */
+  /**
+   * Keeps the process alive while a request waits. Off in the bot, whose shutdown must not wait on Riot; on for a
+   * one-shot script, which would otherwise exit in the middle of a wait as if it had finished.
+   */
+  keepAlive?: boolean;
+  /** Schedules the next check; the default timer is unref'd unless `keepAlive` is set. */
   setTimer?: (callback: () => void, delayMs: number) => unknown;
   clearTimer?: (timer: unknown) => void;
   /** Whether the bot is stopping; a waiting request is then rejected instead of sent. */
@@ -52,8 +63,8 @@ export interface AcquireOptions {
   maxWaitMs?: number;
 }
 
-/** A granted turn. `refund` gives it back when the request was not sent after all. */
-export interface PacingSlot { refund(): void }
+/** A granted turn: when it was granted, and `refund` to give it back when the request was not sent after all. */
+export interface PacingSlot { sentAt: number; refund(): void }
 
 interface Sent { at: number; bulk: boolean }
 interface Waiter {
@@ -114,7 +125,9 @@ export class RiotPacer {
   constructor(options: RiotPacerOptions = {}) {
     this.windows = [...(options.windows ?? RIOT_PACING_WINDOWS)].sort((left, right) => left.windowMs - right.windowMs);
     this.now = options.now ?? Date.now;
-    this.setTimer = options.setTimer ?? ((callback, delayMs) => setTimeout(callback, delayMs).unref());
+    this.setTimer = options.setTimer ?? (options.keepAlive
+      ? (callback, delayMs) => setTimeout(callback, delayMs)
+      : (callback, delayMs) => setTimeout(callback, delayMs).unref());
     this.clearTimer = options.clearTimer ?? ((timer) => clearTimeout(timer as NodeJS.Timeout));
     this.stopping = options.stopping ?? isStopping;
     this.stopCheckMs = options.stopCheckMs ?? PACING_STOP_CHECK_MS;
@@ -134,24 +147,30 @@ export class RiotPacer {
   }
 
   /**
-   * Takes Riot's own count from a response's `X-App-Rate-Limit-Count`. When Riot has counted more than the pacer, such
-   * as requests from before a restart or from another process on the same key, the difference is counted as sent.
+   * Takes Riot's own count for the longest window from a response's `X-App-Rate-Limit-Count`. When Riot has counted
+   * more than the pacer, such as requests from before a restart or from another process on the same key, the
+   * difference is counted as sent. `sentAt` is when the answered request was sent: Riot counted only requests that
+   * reached it before that one did, so the pacer compares with what it counted from `sentAt` back.
+   *
+   * Only the longest window is synced. Riot's short window is a fixed second from its first request, which a round trip
+   * of a few hundred milliseconds shifts against the pacer's, so its count would look higher than the pacer's even when
+   * nothing is missing. The extras would then also fill the long window and eat the share bulk requests cannot take.
+   * The short window empties itself within 1.2 s anyway; the long one is where unknown requests do harm.
    */
-  observe(host: string, countHeader: string | null): void {
-    const counts = parseCounts(countHeader);
-    if (counts.size === 0) return;
+  observe(host: string, countHeader: string | null, sentAt = this.now()): void {
+    const longest = this.windows.at(-1);
+    const riotCount = longest && parseCounts(countHeader).get(longest.riotSeconds);
+    if (!longest || riotCount === undefined) return;
     const state = this.state(host);
     const now = this.now();
     this.prune(state, now);
-    // Riot does not say when its requests were sent. Each window's are counted as sent just before every shorter
-    // window began, so they fill that window without also filling the shorter ones.
-    let shorterMs = 0;
-    for (const window of this.windows) {
-      const riotCount = counts.get(window.riotSeconds);
-      const missing = riotCount === undefined ? 0 : riotCount - this.inWindow(state, window, now).length;
-      if (missing > 0) this.record(state, ...Array.from({ length: missing }, () => ({ at: now - shorterMs, bulk: false })));
-      shorterMs = window.windowMs;
-    }
+    const counted = state.sent.filter((sent) => sent.at > sentAt - longest.windowMs).length;
+    // A count far above the limit can only mean the window is full; anything past the limit adds nothing.
+    const missing = Math.min(riotCount, longest.limit) - counted;
+    // Riot does not say when its requests were sent. They are counted as sent just before every shorter window
+    // began, so they fill the long window without also filling the shorter ones.
+    const at = now - (this.windows.at(-2)?.windowMs ?? 0);
+    if (missing > 0) this.record(state, ...Array.from({ length: missing }, () => ({ at, bulk: false })));
   }
 
   /** Rejects every waiting request and every later one, for shutdown. */
@@ -176,7 +195,10 @@ export class RiotPacer {
   }
 
   private prune(state: HostState, now: number): void {
-    const cutoff = now - this.longestMs;
+    // After the wall clock steps back, a request "sent in the future" counts as sent now, so it cannot hold a window
+    // for longer than the window itself.
+    for (let index = state.sent.length - 1; index >= 0 && state.sent[index].at > now; index--) state.sent[index].at = now;
+    const cutoff = now - this.longestMs - PACING_MEMORY_MS;
     let expired = 0;
     while (expired < state.sent.length && state.sent[expired].at <= cutoff) expired++;
     if (expired > 0) state.sent.splice(0, expired);
@@ -220,6 +242,7 @@ export class RiotPacer {
     const sent: Sent = { at: now, bulk: waiter.priority === "bulk" };
     this.record(state, sent);
     waiter.resolve({
+      sentAt: now,
       refund: () => {
         const index = state.sent.indexOf(sent);
         if (index < 0) return;

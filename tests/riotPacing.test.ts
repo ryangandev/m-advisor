@@ -144,15 +144,78 @@ test("Riot's own count teaches the pacer about requests it did not send, such as
   await spread(target, clock, LONG.limit - 85);
   const late = ask(target, clock);
   await idle(1);
-  assert.equal(late.grantedAt, undefined, "Riot's 85 count against the 90");
-  // A lower count, an unknown window and junk change nothing.
+  assert.equal(late.grantedAt, undefined, "Riot's 85 count against the 95");
+  // A lower count, the short window's count, an unknown window and junk change nothing.
   const other = pacer(fakeClock());
   other.observe(NA1, "0:1,0:120");
+  other.observe(NA1, "20:1");
   other.observe(NA1, "99:10,abc,:120,7");
   other.observe(NA1, null);
   const turns = Array.from({ length: SHORT.limit }, () => ask(other, clock, NA1));
   await idle(1);
   assert.ok(turns.every((turn) => turn.grantedAt !== undefined));
+});
+
+test("Riot's count is compared with what the pacer counted up to when the answered request was sent", async () => {
+  const clock = fakeClock();
+  const windows = [{ riotSeconds: 120, windowMs: 125_000, limit: 10, bulkLimit: 5 }];
+  const target = pacer(clock, { windows });
+  const slots = await Promise.all(Array.from({ length: 10 }, () => target.acquire(AMERICAS)));
+  // The answer to the last one comes back after all ten left the window. Riot counted them when it got the request.
+  clock.advance(125_001);
+  target.observe(AMERICAS, "10:120", slots[9].sentAt);
+  const next = ask(target, clock);
+  await idle(1);
+  assert.equal(next.grantedAt, clock.now(), "Riot's 10 is no news: nothing extra was counted");
+  // Compared at the answer's arrival instead, the same count would have looked like ten unknown requests.
+  const naive = pacer(clock, { windows });
+  await Promise.all(Array.from({ length: 10 }, () => naive.acquire(AMERICAS)));
+  clock.advance(125_001);
+  naive.observe(AMERICAS, "10:120");
+  const held = ask(naive, clock);
+  await idle(1);
+  assert.equal(held.grantedAt, undefined);
+});
+
+test("a huge or endless count from Riot fills the window and no more", async () => {
+  const clock = fakeClock();
+  const target = pacer(clock);
+  target.observe(AMERICAS, "99999999999999999999999:120");
+  const late = ask(target, clock);
+  await idle(1);
+  assert.equal(late.grantedAt, undefined);
+  clock.advance(LONG.windowMs);
+  await idle(1);
+  assert.ok(late.grantedAt !== undefined, "the window empties on time");
+});
+
+test("after the wall clock steps back, a full window empties within its own length", async () => {
+  let time = 100_000;
+  const clock = fakeClock();
+  const target = pacer(clock, { now: () => time });
+  for (let index = 0; index < SHORT.limit; index++) await target.acquire(AMERICAS);
+  time = 0;
+  const waiting = target.acquire(AMERICAS);
+  time = SHORT.windowMs;
+  clock.runNext();
+  const slot = await waiting;
+  assert.equal(slot.sentAt, SHORT.windowMs, "the requests sent in the future counted as sent at the step, not 100 s ahead");
+});
+
+test("a keep-alive pacer holds the process open while a request waits; the bot's pacer never does", async () => {
+  const windows = [{ riotSeconds: 120, windowMs: 60_000, limit: 1, bulkLimit: 1 }];
+  const timers = () => process.getActiveResourcesInfo().filter((resource) => resource === "Timeout").length;
+  for (const [keepAlive, held] of [[true, 1], [false, 0]] as const) {
+    const target = new RiotPacer({ windows, keepAlive, stopping: () => false });
+    await target.acquire(AMERICAS);
+    const before = timers();
+    const waiting = target.acquire(AMERICAS).catch((error: unknown) => error);
+    assert.equal(target.waiting(AMERICAS), 1);
+    assert.equal(timers() - before, held, keepAlive ? "a ref'd timer keeps a script alive" : "an unref'd timer lets the bot exit");
+    target.close();
+    assert.ok(await waiting instanceof PacingRejection);
+    assert.equal(timers(), before);
+  }
 });
 
 test("at shutdown a waiting request is refused within a second, and so is every later one", async () => {

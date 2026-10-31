@@ -3,7 +3,8 @@
 import "dotenv/config";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { createRiotRequester } from "../src/services/riotData";
+import { createRiotRequester, useRiotPacer } from "../src/services/riotData";
+import { RiotPacer } from "../src/services/riotPacing";
 
 const args = new Map(process.argv.slice(2).map((arg) => arg.replace(/^--/, "").split("=") as [string, string]));
 const tiers = (args.get("tiers") ?? "SILVER,GOLD,PLATINUM,EMERALD,DIAMOND").split(",");
@@ -16,6 +17,8 @@ const startTime = Math.floor(Date.now() / 1000) - maxAgeDays * 86_400;
 mkdirSync(outDir, { recursive: true });
 
 // Development keys allow 100 requests per two minutes; pace below that instead of relying on 429s.
+// The pacer's wait timers keep this one-shot script alive, so it never exits in the middle of a wait as if it had finished.
+useRiotPacer(new RiotPacer({ keepAlive: true }));
 const request = createRiotRequester({ maxRetryDelayMs: 130_000 });
 let lastRequest = 0;
 async function riot<T>(url: string): Promise<T> {

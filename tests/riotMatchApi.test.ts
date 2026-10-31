@@ -1,20 +1,18 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { after, afterEach, before, beforeEach, test } from "node:test";
+import { afterEach, beforeEach, test } from "node:test";
 import { getAccountByRiotId } from "../src/utils/riotApi";
 import { getLatestSRMatchId, getMatchDetail, parseMatchDetail } from "../src/utils/riotMatchApi";
-import { resetMockData, riotFetch, simulateMockMatch, useRiotPacer } from "../src/services/riotData";
-import { RiotPacer } from "../src/services/riotPacing";
+import { resetMockData, riotFetch, simulateMockMatch } from "../src/services/riotData";
 import { appealCustomId } from "../src/utils/whyEmbed";
+import { withoutRiotPacing } from "./helpers/unpacedRiot";
 
 const originalMode = process.env.RIOT_MODE;
 const originalKey = process.env.RIOT_API_KEY;
 const originalFetch = globalThis.fetch;
 
-// The cache tests send hundreds of requests to a fake Riot; pacing is tested in riotPacing.test.ts and recentPacing.test.ts.
-let restorePacer: () => void;
-before(() => { restorePacer = useRiotPacer(new RiotPacer({ windows: [] })); });
-after(() => { restorePacer(); });
+// The cache tests send hundreds of requests to a fake Riot.
+withoutRiotPacing();
 
 beforeEach(() => {
   delete process.env.RIOT_MODE;
@@ -185,4 +183,53 @@ test("the latest-match and match-detail helpers make one attempt per request wit
   globalThis.fetch = async () => { sent.push("detail"); throw new Error("offline"); };
   await assert.rejects(getMatchDetail("NA1_ONCE", { retry: false }), { code: "network" });
   assert.deepEqual(sent, ["detail"]);
+});
+
+// Concurrent /recent runs share the details they are fetching (#155).
+
+test("a detail already being fetched is shared with a caller it serves, and never makes a poll wait behind bulk", async () => {
+  process.env.RIOT_MODE = "real";
+  process.env.RIOT_API_KEY = "test-key";
+  const sent: string[] = [];
+  const answers: Array<() => void> = [];
+  globalThis.fetch = async (input) => {
+    const matchId = decodeURIComponent(new URL(input.toString()).pathname.split("/").at(-1)!);
+    sent.push(matchId);
+    await new Promise<void>((resolve) => { answers.push(resolve); });
+    if (matchId === "NA1_FAILS") return new Response(null, { status: 404 });
+    return Response.json({ metadata: { matchId }, info: { queueId: 420, participants: [{ puuid: "p", teamId: 100, win: true }] } });
+  };
+  const settleAll = async (requests: Array<Promise<unknown>>) => {
+    let done = false;
+    const all = Promise.all(requests.map((request) => request.catch((error: unknown) => error))).finally(() => { done = true; });
+    while (!done) {
+      answers.shift()?.();
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    return all;
+  };
+
+  // Two bulk callers share one request, and each gets its own copy.
+  // A normal caller does not wait for a bulk request's turn; a later bulk caller may wait for the normal request.
+  const [one, two] = await settleAll([
+    getMatchDetail("NA1_SHARED", { priority: "bulk" }),
+    getMatchDetail("NA1_SHARED", { priority: "bulk" }),
+    getMatchDetail("NA1_SHARED"),
+    getMatchDetail("NA1_SHARED", { priority: "bulk" }),
+  ]);
+  assert.deepEqual(sent, ["NA1_SHARED", "NA1_SHARED"], "one bulk request and one normal request");
+  assert.notEqual(one, two);
+  assert.deepEqual(one, two);
+
+  // A caller that retries does not take the answer of a request that does not.
+  sent.length = 0;
+  await settleAll([getMatchDetail("NA1_RETRY", { retry: false }), getMatchDetail("NA1_RETRY"), getMatchDetail("NA1_RETRY", { retry: false })]);
+  assert.deepEqual(sent, ["NA1_RETRY", "NA1_RETRY"]);
+
+  // A failure reaches every caller that shared the request, and the next caller asks again.
+  sent.length = 0;
+  const failures = await settleAll([getMatchDetail("NA1_FAILS"), getMatchDetail("NA1_FAILS")]);
+  for (const failure of failures) assert.equal((failure as { code?: string }).code, "not_found");
+  await settleAll([getMatchDetail("NA1_FAILS")]);
+  assert.deepEqual(sent, ["NA1_FAILS", "NA1_FAILS"]);
 });

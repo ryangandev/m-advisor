@@ -95,21 +95,40 @@ Riot's development key allows 20 requests per 1 s and 100 per 120 s on each rout
 Going past either answers 429 with a Retry-After of up to the rest of the 2-minute window, and the cooldown then fails every shared request on that host until it ends.
 `src/services/riotPacing.ts` paces requests so they wait for room instead of being sent and rejected.
 
-- One pacer is shared by every requester in the process: the shared requester behind `riotFetch`, the spectator, league and timeline requesters, and scripts that create their own. Every caller draws on one budget per host.
-- `RIOT_PACING_WINDOWS` keeps each host at most 16 requests per 1.2 s and 95 per 125 s. The counts are below Riot's 20 and 100, and the windows are longer than Riot's 1 s and 120 s, so a request that reaches Riot a little late is still inside the window it was counted in.
-- Every attempt takes a turn, retries included, because Riot counts each one. A request counts as sent when it gets its turn, and its timeout starts then.
-- Each response's `X-App-Rate-Limit-Count` tells the pacer Riot's own count. When Riot has counted more, for example requests from before a restart or from another process on the same key, the pacer counts the difference as sent. It never lowers its own count.
-- The Retry-After cooldown still applies on top: a request first waits out a short cooldown (or fails on a long one), then waits for its turn, and when a new 429 started a cooldown while it waited, it gives the turn back and honors that cooldown too.
-- A requester that never waits out a cooldown (spectator, league and timelines, `maxRetryDelayMs` 0) waits at most its 5 s timeout for a turn. When the turn would come later, the request is refused at once as `rate_limited` with the wait as `retryAfterMs` and is never sent. The game start watcher and the rank tracker already skip a `rate_limited` read quietly, and a refused timeline leaves the report on statistics only. Any other requester waits as long as its turn takes.
-- At shutdown a waiting request is refused within a second (`unavailable`, never sent), and so is every later one. Waiting uses unref'd timers, so it never keeps the process alive.
+- One pacer is shared by every requester in the process: the shared requester behind `riotFetch`, the spectator, league and timeline requesters, and scripts that create their own.
+  Every caller draws on one budget per host.
+- `RIOT_PACING_WINDOWS` keeps each host at most 16 requests per 1.2 s and 95 per 125 s.
+  The counts are below Riot's 20 and 100.
+  The windows are longer than Riot's 1 s and 120 s, so a request that reaches Riot a little late is still inside the window it was counted in.
+- Every attempt takes a turn, retries included, because Riot counts each one.
+  A request counts as sent when it gets its turn, and its timeout starts then.
+- Each response's `X-App-Rate-Limit-Count` tells the pacer Riot's count for the 120 s window.
+  When Riot has counted more, for example requests from before a restart or from another process on the same key, the pacer counts the difference as sent, at most up to its limit.
+  It compares with what it had counted from the moment the answered request was sent, so a slow answer is not mistaken for unknown requests, and it never lowers its own count.
+- Riot's 1 s count is not used.
+  That window is fixed from its first request, so a round trip of a few hundred milliseconds shifts it against the pacer's and its count looks higher than the pacer's even when nothing is missing.
+  Counting that difference also filled the long window and, at a 600 ms round trip, made polls wait more than 30 s behind `/recent`.
+  The short window empties itself within 1.2 s anyway.
+- The Retry-After cooldown still applies on top.
+  A request first waits out a short cooldown (or fails on a long one), then waits for its turn.
+  When a new 429 started a cooldown while it waited, it gives the turn back and honors that cooldown too.
+- A requester that never waits out a cooldown (spectator, league and timelines, `maxRetryDelayMs` 0) waits at most its 5 s timeout for a turn.
+  When the turn would come later, the request is refused at once as `rate_limited` with the wait as `retryAfterMs`, and it is never sent.
+  The game start watcher and the rank tracker already skip a `rate_limited` read quietly, and a refused timeline leaves the report on statistics only.
+  Any other requester waits as long as its turn takes.
+- At shutdown a waiting request is refused within a second (`unavailable`, never sent), and so is every later one.
+- Inside the bot, waiting uses unref'd timers, so a wait never keeps the process alive after shutdown.
+  A one-shot script needs the opposite, or it would exit in the middle of a wait as if it had finished: `scripts/sample-matches.ts` installs a pacer with `keepAlive`.
 
 Polling must not starve behind `/recent`, so requests have two priorities.
 `/recent` sends bulk requests; everything else is normal, including finished-match polling with its match detail and timeline, league and spectator reads, `/profile`, `/bind` and the key check.
 Bulk requests may use at most 10 turns per short window and 55 per long one, and a freed turn goes to a waiting normal request first.
 Normal requests therefore always have 6 per short window and 40 per long window that bulk cannot take, more than a 10-account poll needs (10 ID lists per 45 s, about 28 per 125 s, plus a detail and a timeline per finished match).
-A `/recent` burst can hold a poll's request back by at most one short window at a time, about a second, and never for the long window.
+While `/recent` is running, each poll request waits at most one short window (1.2 s) for its turn, and never for the long window.
 A smaller share was chosen over a strict priority queue so that `/recent` always makes progress, and over a cap on what `/recent` shows so that its reply stays the same.
 The cost is time: a cold `/recent count:10` over 10 accounts sends 55 requests within a few seconds and the rest after the first ones leave the window, so its reply comes after about 2 minutes, well inside the 15 minutes a deferred Discord reply allows.
+`getMatchDetail` shares a detail that is already being fetched, so `/recent` runs at the same time ask for each match once and only their ID lists add up.
+A caller only waits for a request that is at least as good for it: a normal caller never waits behind a bulk request's turn, and a caller that retries never takes the answer of a request that does not.
 On na1 there are no bulk requests; the worst case of spectator (60 per 2 minutes for 10 accounts) and league (30, see [Rank tracking](#rank-tracking)) leaves 5 turns for `/profile` and `/bind`, which otherwise wait for the window.
 
 ## Profile icons and visible labels

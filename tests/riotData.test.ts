@@ -4,6 +4,10 @@ import { getAccountByRiotId, getRankedEntries, getSummonerByPuuid } from "../src
 import { getLatestSRMatchId, getMatchDetail, getMatchTimeline, parseMatchDetail, SR_QUEUE_IDS, TIMELINE_REQUESTER_OPTIONS } from "../src/utils/riotMatchApi";
 import { fetchMatchEvents } from "../src/services/matchEvents";
 import { createRiotRequester, getRiotDataLabel, getRiotMode, isMockData, resetMockData, RiotApiError, simulateMockMatch } from "../src/services/riotData";
+import { withoutRiotPacing } from "./helpers/unpacedRiot";
+
+// These tests send many requests to a fake Riot on the real clock; pacing is tested in riotPacing.test.ts.
+withoutRiotPacing();
 
 const originalMode = process.env.RIOT_MODE;
 const originalKey = process.env.RIOT_API_KEY;
