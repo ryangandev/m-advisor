@@ -2,6 +2,7 @@ import type { RankedEntry, RankedQueueType } from "../types";
 import { classifyRankChange, entryForQueue, rankedQueueFor } from "./rankMath";
 import type { RankChange } from "./rankMath";
 import { RiotApiError } from "./riotData";
+import { riotErrorKind } from "./riotErrorKind";
 
 /** A retry of an after-read waits at least this long after the account's previous read. */
 export const RANK_RETRY_FLOOR_MS = 60_000;
@@ -148,7 +149,6 @@ interface MatchRead {
 type ReadOutcome = { entries: readonly RankedEntry[] } | { error: unknown };
 
 const errorMessage = (error: unknown): string => error instanceof Error ? error.message : "Unknown error";
-const errorKey = (error: unknown): string => error instanceof RiotApiError ? `${error.code}:${error.status ?? ""}` : "other";
 const isAuthError = (error: unknown) => error instanceof RiotApiError && (error.code === "unauthorized" || error.code === "forbidden");
 const isRateLimit = (error: unknown) => error instanceof RiotApiError && error.code === "rate_limited";
 const isTimeout = (error: unknown) => error instanceof RiotApiError && error.code === "timeout";
@@ -503,7 +503,7 @@ export class RankTracker implements RankTracking {
 
   /** Logs a failure once per kind until a read works again. */
   private failed(error: unknown): void {
-    const key = errorKey(error);
+    const key = riotErrorKind(error);
     if (this.loggedErrors.has(key)) return;
     this.loggedErrors.add(key);
     this.dependencies.log(new Error(`An LP read failed: ${errorMessage(error)} (logged once until a read works again)`));

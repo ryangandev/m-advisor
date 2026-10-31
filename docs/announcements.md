@@ -23,6 +23,7 @@ A latest match that ended after the member joined is announced instead of becomi
 An account added to a member who is already in voice also gets a fresh baseline before anything is announced, counted from when it was added.
 Accounts present when the session starts, at the first join or after a bot restart, take their latest match as the baseline without that check, so nothing is replayed.
 If such an account's first lookup fails, for example during a Riot outage, it counts from when the session started, like a joiner: the first lookup that works announces a latest match that ended after the session started, and a match that ended before it is the baseline.
+That start time is kept like a baseline when the member leaves voice and returns within the window, also when the leaving stopped the session, if the failed lookup was recent enough for a baseline to be kept.
 A member who leaves voice or is unbound drops out of the session, and their accounts' baselines are cleared with `clearLastMatchIds`.
 A member who leaves voice and still owns their accounts has those baselines kept in memory for 2 minutes (`KEEP_BASELINES_MS`), also when their leaving stops the session.
 If the same member returns within the window, their accounts take the kept baselines back instead of a new one, so a match they finished meanwhile is announced once.
@@ -62,8 +63,9 @@ Concurrent timer and command requests share that one poll instead of overlapping
 Manual simulation passes its authorized channel ID, and that restriction also applies when joining an existing automatic poll.
 A move outside the required channel cancels the simulation instead of following the member.
 A stopped guild returns zero counts.
-A failed Riot read in the match poll, of an account's latest match or of a match's detail, is logged once per kind of failure until a poll reads Riot again without one.
-Then one line says that match polling works again and which kinds of failure it had.
+A failed Riot read in the match poll, of an account's latest match or of a match's detail, is logged once per kind of failure.
+A kind is forgotten as soon as a poll that reads Riot has no failure of that kind, so a failure that never ends on one account does not mute a different kind on another account.
+Then one line says that match polling works again, or which kinds no longer fail and which still do.
 Every failed read still counts in `errors` and in the last error that `getMonitorStatus` reports, and each poll still retries it, so no match is consumed or skipped because of the quieter log.
 A Riot credential or configuration failure is always logged and still stops the session.
 The shared Riot requester still retries a failed read twice before it gives up, so each poll of an account can send up to three requests while Riot is down.
@@ -245,7 +247,8 @@ A 锦囊 counts as out once its card was attempted.
 When the only member in voice leaves during loading, the session stops; when they rejoin, the new session sees the same game loading and skips it with one log line, so nobody hears it twice.
 A game that was detected but never got a card, because nobody was in a usable channel, can still be announced by the next session.
 
-A spectator 401 or 403 turns the watcher off for the rest of the session with one log line; finished matches are still announced.
+A spectator 401 or 403 turns the watcher off for the rest of the session with one log line.
+The same key is used for match polling, so a rejected key also stops the match polling and the session.
 A spectator 429 skips that account for this tick quietly and is never shown to anyone.
 Any other failure, including a 404 that is not Riot's `NOT_FOUND`, is a failed check that leaves the account's state as it was, and it never turns the watcher off.
 Each kind of failure is logged once, and the first check that answers after that logs one line saying the checks work again, so a stuck watcher and a recovered one look different.

@@ -14,6 +14,7 @@ import {
 } from "../store/announcerStore";
 import { getLatestSRMatchId, getMatchDetail } from "../utils/riotMatchApi";
 import { getRiotMode, RiotApiError } from "./riotData";
+import { riotErrorKind } from "./riotErrorKind";
 import { buildMatchAnnouncement, championLabel } from "./announcementText";
 import { buildPregameRecap } from "./pregameRecap";
 import type { MatchAnnouncement } from "./announcementText";
@@ -209,16 +210,23 @@ interface AccountState {
   baselined: boolean;
   /** When the account's latest match was last read successfully. */
   readAt?: number;
+  /** When a first lookup last failed, for an account with no baseline yet; see `since`. */
+  failedAt?: number;
   /** Its member was bound or unbound since the session saw it, so its baseline is not kept when they leave. */
   noKeep?: boolean;
 }
 
-/** The baseline of an account whose member left voice: the latest match it had consumed, or none for a valid empty history. */
+/**
+ * The baseline of an account whose member left voice: the latest match it had consumed, or none for a valid empty history.
+ * An account whose first lookup only failed has no baseline; it keeps its `since` instead and `matchId` stays unset.
+ */
 interface KeptBaseline {
   owner: string;
   matchId: string | undefined;
+  /** Set only for an account with no baseline yet: the time its first successful lookup counts from. */
+  since?: number;
   keptAt: number;
-  /** When the account was last really read, carried over so leaving and returning again never extends its freshness. */
+  /** When the account was last really read, or for an account with no baseline last tried; carried over so leaving and returning again never extends its freshness. */
   readAt: number;
 }
 
@@ -311,7 +319,7 @@ interface MonitorSession {
   pollAgain?: boolean;
   /** Watches for games on their loading screen with its own timer; absent without spectator dependencies. */
   watcher?: GameStartWatcher;
-  /** The kinds of Riot read failures already logged, until a poll reads again without one; see `logOnce`. */
+  /** The kinds of Riot read failures already logged, until a poll reads again without a failure of that kind; see `reportRead`. */
   loggedReadErrors: Set<string>;
 }
 
@@ -325,11 +333,6 @@ function secondsSince(start: number): string {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Unknown error";
-}
-
-/** The kind of a Riot failure: its code and status, so a 503 and a timeout are logged separately but one 503 once. */
-function errorKind(error: unknown): string {
-  return error instanceof RiotApiError ? `${error.code}:${error.status ?? ""}` : "other";
 }
 
 function isCredentialFailure(error: unknown): boolean {
@@ -432,6 +435,13 @@ export class GameMonitor {
       for (const account of member.accounts) {
         if (session.accounts.has(account.puuid)) continue;
         const kept = this.takeKeptBaseline(guildId, account.puuid, member.discordUserId);
+        if (kept?.since !== undefined) {
+          // The first lookup had only failed: the account still counts from when the earlier session started.
+          session.accounts.set(account.puuid, { owner: member.discordUserId, since: kept.since, baselined: false, failedAt: kept.readAt });
+          this.dependencies.info(`Baseline for ${account.gameName}#${account.tagLine} still pending from before they left voice: `
+            + "a match that ended after monitoring started is announced.");
+          continue;
+        }
         if (kept) {
           // The same member is back within the window: the match they finished meanwhile is detected like any later one.
           if (kept.matchId) setLastMatchId(guildId, account.puuid, kept.matchId);
@@ -480,11 +490,17 @@ export class GameMonitor {
       && session.lastPollStartedAt !== undefined && now - session.lastPollAt <= KEEP_FRESH_MS;
     const kept = this.kept.get(guildId) ?? new Map<string, KeptBaseline>();
     for (const [puuid, state] of accounts) {
-      if (!state.baselined || state.noKeep || this.ownerOf(guildId, puuid) !== state.owner) continue;
-      if (state.readAt === undefined) continue;
-      const busy = session.inFlight !== undefined || (justPolled && state.readAt >= session.lastPollStartedAt!);
-      if (now - state.readAt > (busy ? KEEP_FRESH_BUSY_MS : KEEP_FRESH_MS)) continue;
-      kept.set(puuid, { owner: state.owner, matchId: getLastMatchId(guildId, puuid), keptAt: now, readAt: state.readAt });
+      if (state.noKeep || this.ownerOf(guildId, puuid) !== state.owner) continue;
+      // An account whose first lookup failed has no baseline to keep, only the time it counts from.
+      const pending = !state.baselined;
+      if (pending && state.since === undefined) continue;
+      const lastTry = pending ? state.failedAt : state.readAt;
+      if (lastTry === undefined) continue;
+      const busy = session.inFlight !== undefined || (justPolled && lastTry >= session.lastPollStartedAt!);
+      if (now - lastTry > (busy ? KEEP_FRESH_BUSY_MS : KEEP_FRESH_MS)) continue;
+      kept.set(puuid, pending
+        ? { owner: state.owner, matchId: undefined, since: state.since, keptAt: now, readAt: lastTry }
+        : { owner: state.owner, matchId: getLastMatchId(guildId, puuid), keptAt: now, readAt: lastTry });
     }
     if (kept.size > 0) this.kept.set(guildId, kept);
   }
@@ -714,11 +730,11 @@ export class GameMonitor {
 
   /**
    * A failed Riot read of the match poll. The status still shows the latest one, but the log gets one line per error kind
-   * until a poll reads again without failing, so an outage does not repeat for every account on every poll.
+   * until a poll reads again without a failure of that kind, so an outage does not repeat for every account on every poll.
    */
   private reportRead(guildId: string, session: MonitorSession, error: unknown): void {
     this.lastErrors.set(guildId, { message: errorMessage(error), at: Date.now() });
-    const kind = errorKind(error);
+    const kind = riotErrorKind(error);
     if (session.loggedReadErrors.has(kind)) return;
     session.loggedReadErrors.add(kind);
     this.dependencies.log(error instanceof Error
@@ -726,11 +742,18 @@ export class GameMonitor {
       : error);
   }
 
-  /** A poll read Riot without a failure after failures were logged: say so once, so an outage and its end look different. */
-  private readRecovered(session: MonitorSession): void {
-    if (session.loggedReadErrors.size === 0) return;
-    this.dependencies.info(`Match polling works again after ${[...session.loggedReadErrors].join(", ")} failures.`);
-    session.loggedReadErrors.clear();
+  /**
+   * A poll that read Riot, with the kinds of failure it had: a logged kind it no longer had is forgotten, so it is logged again
+   * if it returns, and one line says so, so an outage and its end look different. A kind that keeps failing on one account
+   * therefore never mutes a different kind on another.
+   */
+  private readRecovered(session: MonitorSession, failedKinds: ReadonlySet<string>): void {
+    const cleared = [...session.loggedReadErrors].filter((kind) => !failedKinds.has(kind));
+    if (cleared.length === 0) return;
+    for (const kind of cleared) session.loggedReadErrors.delete(kind);
+    this.dependencies.info(session.loggedReadErrors.size === 0
+      ? `Match polling works again after ${cleared.join(", ")} failures.`
+      : `Match polling no longer fails with ${cleared.join(", ")}; still failing with ${[...session.loggedReadErrors].join(", ")}.`);
   }
 
   private current(guildId: string, session: MonitorSession): boolean {
@@ -783,11 +806,11 @@ export class GameMonitor {
     const result = { announced: 0, errors: 0 };
     session.lastPollStartedAt = Date.now();
     // A failed match or match list read, which the next poll retries anyway.
-    let readFailed = false;
+    const failedKinds = new Set<string>();
     let readWorked = false;
     const fail = (error: unknown, read = false): boolean => {
       result.errors++;
-      if (read) readFailed = true;
+      if (read) failedKinds.add(riotErrorKind(error));
       // Credential failures stop the session and are always logged; a Riot outage is logged once per kind.
       if (read && !isCredentialFailure(error)) this.reportRead(guildId, session, error);
       else this.report(guildId, error);
@@ -842,7 +865,10 @@ export class GameMonitor {
           if (!this.current(guildId, session)) return result;
           // An account present at the session start has no baseline yet; the failed read must not turn a game that ends
           // during the outage into the baseline, so the next successful read counts from the session start like a joiner's.
-          if (!state.baselined) state.since ??= session.startedAt;
+          if (!state.baselined) {
+            state.since ??= session.startedAt;
+            state.failedAt = Date.now();
+          }
           if (fail(error, true)) return result;
           continue;
         }
@@ -925,7 +951,7 @@ export class GameMonitor {
         ready.push(match);
       }
       ready.sort(byGameEnd);
-      if (readWorked && !readFailed) this.readRecovered(session);
+      if (readWorked || failedKinds.size > 0) this.readRecovered(session, failedKinds);
 
       // Phase C: announce one at a time through the guild's voice queue.
       for (const match of ready) {
