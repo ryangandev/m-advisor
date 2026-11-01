@@ -231,7 +231,7 @@ An account already seen in a game is asked again only on every sixth tick (2 min
 Once the match it was seen in is finished it may already be in the next game, so it is asked on every tick like an account in no game, until spectator no longer lists the old game or lists a different one.
 No account is ever asked twice within 20 seconds, counted from the start of the tick that asked it and across monitoring sessions of the guild.
 So an early check for a member who joins only asks accounts that were not asked in the last 20 seconds, and a member flapping in and out of voice adds no requests.
-Ten accounts therefore cost at most 60 requests in any 2 minutes on na1, which counts its rate limit apart from americas.
+Ten accounts therefore cost at most 70 requests in the pacer's 125 second window on na1 (7 checks each), which counts its rate limit apart from americas; see [Request pacing](riot-data.md#request-pacing) for what happens when league reads come on top.
 
 Each account has a state for the current presence of its member: unknown, not in a game, or in a game.
 A member who leaves voice, is unbound or loses the account starts over as unknown when they are back.

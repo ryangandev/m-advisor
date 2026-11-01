@@ -130,7 +130,10 @@ A smaller share was chosen over a strict priority queue so that `/recent` always
 The cost is time: a cold `/recent count:10` over 10 accounts sends 55 requests within a few seconds and the rest after the first ones leave the window, so its reply comes after about 2 minutes, well inside the 15 minutes a deferred Discord reply allows.
 `getMatchDetail` shares a detail that is already being fetched, so `/recent` runs at the same time ask for each match once and only their ID lists add up.
 A caller only waits for a request that is at least as good for it: a normal caller never waits behind a bulk request's turn, and a caller that retries never takes the answer of a request that does not.
-On na1 there are no bulk requests; the worst case of spectator (60 per 2 minutes for 10 accounts) and league (30, see [Rank tracking](#rank-tracking)) leaves 5 turns for `/profile` and `/bind`, which otherwise wait for the window.
+On na1 there are no bulk requests, and `/profile` is the only command that uses it (`/bind` only reads the account on americas).
+Spectator asks each account at most once per 20 seconds, which is 7 times in the pacer's 125 second window, so 70 for 10 accounts; with league's 30 (see [Rank tracking](#rank-tracking)) that worst case is above the pacer's 95.
+It needs every account out of a game with its league after-reads pending, such as two full parties ending together.
+Then the game start watcher and the rank tracker skip a few reads quietly as `rate_limited` and read again later, and `/profile` waits for a turn, which the window frees about every 1.3 seconds.
 
 ## Profile icons and visible labels
 
@@ -247,7 +250,7 @@ It depends on an injected `readEntries(puuid)`, which is `getLeagueEntries` in p
 - Every read of an account comes at least 60 seconds after its previous read of any kind, failed reads included, checked when it is queued and again when its turn comes. The only exception is a match's first after-read, which goes out at detection.
 - While league-v4 has not caught up (`wins + losses` unchanged), the account is read again on that floor, at most 4 reads per account per match.
 - Only one snapshot read per account waits in the queue.
-- The worst case is therefore 3 reads per account in any 2 minutes (two reads a floor apart plus one first after-read), 30 for 10 accounts, and in practice about 2 per account. That leaves room under the na1 app limit of 100 per 2 minutes next to spectator's 60 for `/profile` and `/bind`, and inside the pacer's 95 (see [Request pacing](#request-pacing)).
+- The worst case is therefore 3 reads per account in any 2 minutes (two reads a floor apart plus one first after-read), 30 for 10 accounts, and in practice about 2 per account. Next to spectator's 70 per pacer window this can briefly fill the pacer's 95 on na1, which skips a few reads quietly (see [Request pacing](#request-pacing)).
 - `hasReadSince(puuid, since)` says whether a successful read was sent at or after `since`.
   It is true when nothing more will be read for the account, such as LP off or a saved mock account in real mode.
 - A ranked game's start is retried through it.
