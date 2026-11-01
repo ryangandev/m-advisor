@@ -4,7 +4,8 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import dotenv from "dotenv";
-import { Client, Events, GatewayIntentBits, PermissionFlagsBits, VoiceChannel } from "discord.js";
+import { Client, Events, GatewayIntentBits, VoiceChannel } from "discord.js";
+import { missingPermissionsMessage, requiredPermissionBits } from "./discordPreflight";
 import { getVoiceConnections } from "@discordjs/voice";
 import { getAccountByRiotId } from "../src/utils/riotApi";
 import { setMemberAccounts } from "../src/store/bindingStore";
@@ -54,7 +55,7 @@ async function verify(): Promise<void> {
     const member = await guild.members.fetch(memberId || guild.ownerId);
     if (member.user.bot || member.voice.channelId !== channelId) throw new Error("The test member must be in the authorized channel; TEST_MEMBER_ID defaults to the server owner.");
     const permissions = channel.permissionsFor(client.user!);
-    if (!permissions?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect, PermissionFlagsBits.Speak, PermissionFlagsBits.SendMessages])) throw new Error("The bot needs View Channel, Connect, Speak and Send Messages in the authorized channel.");
+    if (!permissions?.has(requiredPermissionBits())) throw new Error(missingPermissionsMessage());
     console.log("Actual Discord Gateway is ready; preparing installed local speech.");
     await prewarmTTS();
     const account = await getAccountByRiotId("MockWin", "NA1");
