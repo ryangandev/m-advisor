@@ -832,6 +832,36 @@ test("after logged failures, the first check that works says so once", async () 
   assert.equal(bot.errors.length, 2);
 });
 
+test("an account that keeps failing next to a working one is logged once and never reported as recovered", async () => {
+  const bot = harness([{ id: A, puuids: ["acct-a"], channel: "voice-1" }, { id: B, puuids: ["acct-b"], channel: "voice-1" }]);
+  bot.games.set("acct-a", new RiotApiError("Riot API returned an unexpected 404 for an active game lookup.", "invalid_response", 404));
+  await bot.start();
+  for (let tick = 0; tick < 4; tick++) await bot.tick();
+  assert.equal(bot.errors.length, 1);
+  assert.equal(bot.infos.filter((line) => line.includes("work again") || line.includes("no longer fail")).length, 0);
+  // Once it answers again, that is the one recovery line.
+  bot.games.delete("acct-a");
+  await bot.tick();
+  assert.equal(bot.infos.filter((line) => line.includes("Game start checks work again after invalid_response:404")).length, 1);
+});
+
+test("a kind that stopped failing is reported while another kind on another account keeps failing", async () => {
+  const bot = harness([{ id: A, puuids: ["acct-a"], channel: "voice-1" }, { id: B, puuids: ["acct-b"], channel: "voice-1" }]);
+  bot.games.set("acct-a", new RiotApiError("Riot API returned an unexpected 404 for an active game lookup.", "invalid_response", 404));
+  bot.games.set("acct-b", new RiotApiError("Riot API is unavailable.", "unavailable", 503));
+  await bot.start();
+  await bot.tick();
+  assert.equal(bot.errors.length, 2, "each kind is logged once, neither muting the other");
+  // The second account answers again while the first still fails with its own kind.
+  bot.games.delete("acct-b");
+  await bot.tick();
+  assert.equal(bot.errors.length, 2);
+  assert.equal(bot.infos.filter((line) => line.includes("Game start checks no longer fail with unavailable:503; still failing with invalid_response:404")).length, 1);
+  assert.equal(bot.infos.filter((line) => line.includes("work again")).length, 0);
+  await bot.tick();
+  assert.equal(bot.infos.filter((line) => line.includes("no longer fail")).length, 1, "said once");
+});
+
 test("the watcher's errors go to its own log, not the match monitor's", async () => {
   const watcherLog: string[] = [];
   const bot = harness([{ id: A, puuids: ["acct-a"], channel: "voice-1" }], { watcherLog });
