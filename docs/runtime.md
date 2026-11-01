@@ -52,6 +52,7 @@ Migration verifies that the bot belongs only to the authorized server and that a
 It preserves unrelated commands and context-menu commands.
 For a bot in multiple servers, migration refuses global changes so an administrator can plan a wider rollout separately.
 Repeating migration after completion is a no-op for globals.
+When a deletion fails partway, the error names the legacy commands this run already retired, and running migration again retires the rest.
 Reload the Discord client after migration if its command picker still caches removed definitions.
 If a cached retired `/testvc` remains visible, the handler replies privately with migration guidance and never starts a second voice-test control.
 
