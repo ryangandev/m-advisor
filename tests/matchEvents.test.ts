@@ -117,6 +117,32 @@ test("a won fight is praised from three takedowns for a teammate who survived it
     "the support died and the mid has only two takedowns");
 });
 
+const OFF_FIGHT = { x: DRAGON.x - 3200, y: DRAGON.y };
+
+test("repro: a death just outside the fight's radius still stops 全身而退", () => {
+  // The ADC kills at 600, assists at 606 and 610, but is caught 3200 units away at 604; the team takes the dragon.
+  const fight = (adcDeath: TimelineEvent[]) => events(kill(600, 5, 6), ...adcDeath, kill(606, 1, 7, [5]), kill(610, 2, 8, [5]), monster(640, 100));
+  const wonKinds = (list: MatchEvent[]) => kinds(list, "MOCK-ALLY-4").filter((kind) => kind === "wonFight");
+  assert.deepEqual(wonKinds(fight([kill(604, 7, 5, [], { at: OFF_FIGHT })])), [], "died out of range mid-fight");
+  assert.deepEqual(wonKinds(fight([kill(604, 7, 5, [], { at: null })])), [], "died without a position mid-fight");
+  assert.deepEqual(wonKinds(fight([kill(599, 7, 5, [], { at: OFF_FIGHT })])), ["wonFight"], "died before the fight began");
+  assert.deepEqual(wonKinds(fight([kill(610, 7, 5, [], { at: OFF_FIGHT })])), [], "died at the fight's last death");
+  assert.deepEqual(wonKinds(fight([kill(611, 7, 5, [], { at: OFF_FIGHT })])), ["wonFight"], "died after the fight's last death");
+  assert.deepEqual(wonKinds(fight([])), ["wonFight"], "survived");
+});
+
+test("repro: a teammate's death just outside the fight's radius means the victim did not fall first", () => {
+  // Support dies 3100 units away at 595, then the clustered deaths start with the jungle at 600 and the enemy takes the dragon.
+  const roasted = (earlier: TimelineEvent[]) => kinds(events(...earlier, kill(600, 6, 4), kill(605, 1, 8), kill(610, 7, 5), monster(650, 200)), "MOCK-ALLY-3");
+  const away = { x: DRAGON.x - 3100, y: DRAGON.y };
+  assert.deepEqual(roasted([kill(595, 9, 3, [], { at: away })]), [], "a teammate fell 5 seconds earlier");
+  assert.deepEqual(roasted([kill(595, 9, 3, [], { at: null })]), [], "a teammate fell without a position");
+  assert.deepEqual(roasted([kill(585, 9, 3, [], { at: away })]), [], "exactly 15 seconds earlier still counts");
+  assert.deepEqual(roasted([kill(584, 9, 3, [], { at: away })]), ["lostFightFirstDeath"], "16 seconds earlier does not");
+  assert.deepEqual(roasted([kill(595, 2, 7, [], { at: away })]), ["lostFightFirstDeath"], "an enemy death does not count");
+  assert.deepEqual(roasted([]), ["lostFightFirstDeath"]);
+});
+
 test("multi-kills count from a triple kill and shutdowns from 400 gold", () => {
   const multi = (length: number): TimelineEvent => ({ type: "multiKill", timestamp: 900_000 + length, killerId: 1, length });
   assert.deepEqual(events(multi(2)).filter((event) => event.kind === "multiKill"), []);

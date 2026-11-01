@@ -138,6 +138,7 @@ Every claim in a line must be true of the timeline, so moments are grouped by pl
 
 - A death joins a fight when it is at most 15 seconds after the fight's previous death, at most 60 seconds after its first death, and within 3000 map units of the previous death or the fight's centroid.
 - A fight counts from 3 deaths, and a death without a position never joins one.
+- Grouping uses the place filter, but the claims about one player use every death in the match whatever its position: 全身而退 needs that player to have no death between the fight's first and last death, and 第一个倒下 needs that no teammate of the victim died in the 15 seconds before the fight's first death.
 - A fight is named after a monster (小龙团, 大龙团) only when its centroid is within 3500 units of that monster's pit and the team took the monster between the first death and 45 seconds after the last.
   Otherwise it is 那波团战.
 - The pits are fixed: baron and herald at (5007, 10471), dragon and elder at (9866, 4414).
