@@ -100,11 +100,19 @@ npm run champions:update
 ```
 
 Sampling needs a valid `RIOT_API_KEY` and paces requests below the development-key limit of 100 requests per two minutes.
-It reads the most recent ranked solo match from the first page of players in each tier and division, limited to the last 60 days.
-Use `--tiers=`, `--divisions=`, `--per-division=` and `--max-age-days=` to change the sample.
+It reads the most recent ranked solo match from the first page of players in each tier and division, limited to the last 60 days by default.
+Use `--tiers=`, `--divisions=`, `--per-division=`, `--out=` and `--max-age-days=` to change the sample.
+Both scripts read flags strictly: only the `--name=value` form is accepted, split on the first `=`.
+Unknown or misspelled flags, the space form (`--max-age-days 90`), repeated flags, empty values and anything but a positive whole number for the numeric flags print one `error:` line and exit 1 before any request or write.
+The sampler records its `--max-age-days` in `sample-manifest.json` in the sample directory, written atomically after a run that saved matches or finished cleanly.
+`benchmarks:build` takes the age window from that manifest, so a plain build filters by the window the sample was collected with.
+Passing `--max-age-days=` to the build is allowed only when it equals the manifest's value; a different value is refused.
+A sample directory without a manifest keeps the 60-day default.
+The sampler stops with exit code 1 on a 401, 403 or 400 from Riot, because every later request would fail the same way.
+Other per-player failures are skipped and logged, and the run also exits 1 when nothing was saved and at least one player failed.
 Raw matches contain other players' identities, so they stay in the ignored `.data/benchmark-sample` directory.
 Only aggregated quantiles are committed to `src/data/roleBenchmarks.json`.
-The build skips remakes, aborted games, games under 10 minutes and games older than 60 days.
+The build skips remakes, aborted games, games under 10 minutes and games older than the sample's age window (60 days by default).
 
 Chinese champion names come from Data Dragon's `zh_CN` data, where `title` holds the short name such as 亚索.
 They are keyed by numeric champion ID because match data and Data Dragon disagree on some identifiers, such as `FiddleSticks`.

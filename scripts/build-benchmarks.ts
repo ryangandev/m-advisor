@@ -6,16 +6,22 @@ import { buildBenchmarks, HORSE_TIERS, rankTeam } from "../src/services/horseRan
 import { parseMatchDetail } from "../src/utils/riotMatchApi";
 import { POSITIONS } from "../src/types";
 import type { MatchDetail } from "../src/types";
+import { parseFlags, parseOrExit, readSampleManifest, resolveMaxAgeDays, sampleMatchFiles } from "./benchmarkArgs";
 
-const args = new Map(process.argv.slice(2).map((arg) => arg.replace(/^--/, "").split("=") as [string, string]));
-const sampleDir = path.resolve(args.get("sample") ?? ".data/benchmark-sample");
+const { sampleDir, maxAgeDays, source } = parseOrExit(() => {
+  const args = parseFlags(process.argv.slice(2), { sample: { kind: "string" }, "max-age-days": { kind: "positiveInt" } });
+  const dir = path.resolve((args.get("sample") as string | undefined) ?? ".data/benchmark-sample");
+  // The sampler records the window it collected for; a sample without a manifest keeps the default.
+  return { sampleDir: dir, ...resolveMaxAgeDays(args.get("max-age-days") as number | undefined, readSampleManifest(dir)) };
+});
 // Older games reflect outdated patches; the sampler keeps them on disk, so filter here as well.
-const oldest = Date.now() - Number(args.get("max-age-days") ?? 60) * 86_400_000;
+const oldest = Date.now() - maxAgeDays * 86_400_000;
+console.log(`Keeping games from the last ${maxAgeDays} days (${source}).`);
 const output = path.resolve("src/data/roleBenchmarks.json");
 const matches: MatchDetail[] = [];
 const tiers = new Set<string>();
 const patches = new Set<string>();
-for (const file of readdirSync(sampleDir).filter((name) => name.endsWith(".json")).sort()) {
+for (const file of sampleMatchFiles(readdirSync(sampleDir))) {
   const raw = JSON.parse(readFileSync(path.join(sampleDir, file), "utf8"));
   const detail = parseMatchDetail(raw, raw.metadata?.matchId);
   // Remakes, aborted games and very short games say little about normal performance.
