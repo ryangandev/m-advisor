@@ -157,6 +157,8 @@ function harness(specs: MemberSpec[], options: { mock?: boolean; realSpectator?:
   let clock = 1_900_000_000_000;
   const games = new Map<string, ActiveGame | Error>();
   const requests: string[] = [];
+  /** Lookups that stay unanswered until released, by PUUID, to model a slow Riot. */
+  const holds = new Map<string, Promise<void>>();
   const records = new Map<string, HorseRecord[]>();
   const latest = new Map<string, string | null>();
   const matches = new Map<string, MatchDetail>();
@@ -198,6 +200,7 @@ function harness(specs: MemberSpec[], options: { mock?: boolean; realSpectator?:
     gameStart: {
       activeGame: async (puuid) => {
         requests.push(puuid);
+        await holds.get(puuid);
         if (options.realSpectator) return getActiveGame(puuid);
         const game = games.get(puuid);
         if (game instanceof Error) throw game;
@@ -222,7 +225,7 @@ function harness(specs: MemberSpec[], options: { mock?: boolean; realSpectator?:
     for (const player of game.participants) if (player.puuid) games.delete(player.puuid);
   };
   return {
-    monitor, client, channel, move, blocked, voiceBlocked, games, requests, records, latest, matches, generated, played, errors, infos, settings, sent, order, enter, leaveGame,
+    monitor, client, channel, move, blocked, voiceBlocked, games, requests, holds, records, latest, matches, generated, played, errors, infos, settings, sent, order, enter, leaveGame,
     dependencies,
     /** The fake clock the watcher reads. */
     now: () => clock,
@@ -830,6 +833,56 @@ test("after logged failures, the first check that works says so once", async () 
   bot.games.set("acct-a", new RiotApiError("Riot API returned an invalid active game.", "invalid_response"));
   await bot.tick();
   assert.equal(bot.errors.length, 2);
+});
+
+test("a game found on an early account is announced before the later accounts' requests are answered", async () => {
+  const bot = harness([{ id: A, puuids: ["acct-a"], channel: "voice-1" }, { id: B, puuids: ["acct-b"], channel: "voice-1" }, { id: C, puuids: ["acct-c"], channel: "voice-1" }]);
+  bot.settings.voice = false;
+  bot.enter(spectatorGame(9100, [{ puuid: "acct-a", teamId: 100, championId: AHRI }]));
+  const slow = deferred();
+  bot.holds.set("acct-b", slow.promise);
+  const ticking = bot.start();
+  await until(() => bot.requests.includes("acct-b"), "the request for the second account");
+  await flush();
+  assert.equal(bot.sent.length, 1, "the card is out while the second account's request is still pending");
+  assert.equal(bot.requests.includes("acct-c"), false, "the third account is not asked yet");
+  slow.resolve();
+  assert.deepEqual(await ticking, { started: 1, posted: 1, errors: 0 });
+  assert.deepEqual(bot.requests, ["acct-a", "acct-b", "acct-c"]);
+  assert.equal(bot.sent.length, 1);
+});
+
+test("a premade is one card for everyone in it, sent before a later account's request, with no request for the friends it lists", async () => {
+  const bot = harness([
+    { id: A, puuids: ["acct-a"], channel: "voice-1" }, { id: B, puuids: ["acct-b"], channel: "voice-1" }, { id: C, puuids: ["acct-c"], channel: "voice-1" },
+  ]);
+  bot.settings.voice = false;
+  bot.enter(spectatorGame(9200, [{ puuid: "acct-a", teamId: 100, championId: AHRI }, { puuid: "acct-b", teamId: 100, championId: LUX }]));
+  const slow = deferred();
+  bot.holds.set("acct-c", slow.promise);
+  const ticking = bot.start();
+  await until(() => bot.requests.includes("acct-c"), "the request for the third account");
+  await flush();
+  assert.deepEqual(bot.requests, ["acct-a", "acct-c"], "the friend in the list is not asked");
+  assert.equal(bot.sent.length, 1);
+  assert.equal(bot.sent[0].message.content, `<@${A}> <@${B}>`, "both friends are in the one card");
+  slow.resolve();
+  assert.deepEqual(await ticking, { started: 1, posted: 1, errors: 0 });
+  assert.equal(bot.sent.length, 1);
+});
+
+test("a friend whose own request lands in an already announced game adds no second card", async () => {
+  const bot = harness([{ id: A, puuids: ["acct-a"], channel: "voice-1" }, { id: B, puuids: ["acct-b"], channel: "voice-1" }]);
+  bot.settings.voice = false;
+  // Riot lists the second friend's seat without a PUUID, so only their own request finds the game.
+  const game = spectatorGame(9300, [{ puuid: "acct-a", teamId: 100, championId: AHRI }, { puuid: null, teamId: 100, championId: LUX }]);
+  bot.games.set("acct-a", game);
+  bot.games.set("acct-b", game);
+  assert.deepEqual(await bot.start(), { started: 1, posted: 1, errors: 0 });
+  assert.deepEqual(bot.requests, ["acct-a", "acct-b"]);
+  assert.equal(bot.sent.length, 1);
+  await bot.tick();
+  assert.equal(bot.sent.length, 1);
 });
 
 test("an account that keeps failing next to a working one is logged once and never reported as recovered", async () => {

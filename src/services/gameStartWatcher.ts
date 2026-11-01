@@ -394,6 +394,18 @@ export class GameStartWatcher {
     }
     // Games found in this tick by the accounts they contain, so a premade costs one request.
     const seen = new Map<string, ActiveGame>();
+    // A game decided to start gets its card at once, not after the remaining accounts' requests, which can each wait for the
+    // pacer and the fetch. The card lists every tracked player in the game's participant list, so a friend found later,
+    // by this game's list or by an account of their own, adds nothing to it and never starts a second one.
+    const tried = new Set<string>();
+    const observeAndDeliver = async (presence: AccountPresence, puuid: string, game: ActiveGame): Promise<void> => {
+      if (!this.observe(presence, puuid, game, tick, requiredChannelId)) return;
+      result.started++;
+      const entry = this.gameStarts.get(matchIdOf(game));
+      if (!entry) return;
+      tried.add(entry.matchId);
+      await this.deliverEntry(entry, result);
+    };
     for (const { puuid, owner } of accounts) {
       if (!this.live()) return;
       let presence = this.accounts.get(puuid);
@@ -403,7 +415,7 @@ export class GameStartWatcher {
       }
       const shared = seen.get(puuid);
       if (shared) {
-        if (this.observe(presence, puuid, shared, tick, requiredChannelId)) result.started++;
+        await observeAndDeliver(presence, puuid, shared);
         continue;
       }
       const { state } = presence;
@@ -447,9 +459,9 @@ export class GameStartWatcher {
         continue;
       }
       for (const participant of game.participants) if (participant.puuid) seen.set(participant.puuid, game);
-      if (this.observe(presence, puuid, game, tick, requiredChannelId)) result.started++;
+      await observeAndDeliver(presence, puuid, game);
     }
-    await this.deliverPending(result, requiredChannelId);
+    await this.deliverPending(result, requiredChannelId, tried);
   }
 
   /**
@@ -530,21 +542,27 @@ export class GameStartWatcher {
     if (this.gameStarts.size > GAME_STARTS_LIMIT) this.gameStarts.delete(this.gameStarts.keys().next().value!);
   }
 
-  /** Every started game whose text or voice is still due gets a try, within the window. */
-  private async deliverPending(result: GameStartTickResult, requiredChannelId?: string): Promise<void> {
+  /** Every started game whose text or voice is still due gets a try, within the window; `tried` games had theirs in this tick already. */
+  private async deliverPending(result: GameStartTickResult, requiredChannelId?: string, tried: ReadonlySet<string> = new Set()): Promise<void> {
     for (const entry of [...this.gameStarts.values()]) {
       if (!this.live()) return;
-      if (entry.status !== "started" || entry.voice !== "waiting") continue;
-      if (requiredChannelId !== undefined) entry.requiredChannelId = requiredChannelId;
-      try {
-        await this.deliver(entry, result);
-      } catch (error) {
-        if (!this.live()) return;
-        // A brief that cannot be built is not retried: the next tick would fail the same way.
-        entry.voice = "failed";
-        result.errors++;
-        this.dependencies.log(new Error(`The 军师赛前锦囊 of game ${entry.matchId} failed: ${errorMessage(error)}`));
-      }
+      if (tried.has(entry.matchId)) continue;
+      if (requiredChannelId !== undefined && entry.status === "started" && entry.voice === "waiting") entry.requiredChannelId = requiredChannelId;
+      await this.deliverEntry(entry, result);
+    }
+  }
+
+  /** One try for a started game whose text or voice is still due. It never rejects. */
+  private async deliverEntry(entry: GameStartEntry, result: GameStartTickResult): Promise<void> {
+    if (entry.status !== "started" || entry.voice !== "waiting") return;
+    try {
+      await this.deliver(entry, result);
+    } catch (error) {
+      if (!this.live()) return;
+      // A brief that cannot be built is not retried: the next tick would fail the same way.
+      entry.voice = "failed";
+      result.errors++;
+      this.dependencies.log(new Error(`The 军师赛前锦囊 of game ${entry.matchId} failed: ${errorMessage(error)}`));
     }
   }
 

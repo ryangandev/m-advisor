@@ -228,6 +228,9 @@ It checks once right away when the session starts, and soon after a member joins
 Each tick asks spectator-v5 through `getActiveGame` for every account of the members in the session, once per PUUID, in bind order.
 In real mode a saved `MOCK-` account is skipped without a request or a log line; the match poll already warns about it.
 Once one account returns a game, every other account among that game's participants counts as in that game for this tick without its own request, so a premade costs one request.
+A game decided to start gets its card at once, before the remaining accounts are asked, because each request can wait for the pacer and the fetch and the 90 second window starts at detection.
+The card lists every tracked player in the game's participant list, so a friend found later, through that list or by their own request, adds nothing to it and never starts a second card.
+A game that is still waiting for a usable channel is tried again at the end of every tick.
 An account already seen in a game is asked again only on every sixth tick (2 minutes), until spectator answers that it is not in a game.
 Once the match it was seen in is finished it may already be in the next game, so it is asked on every tick like an account in no game, until spectator no longer lists the old game or lists a different one.
 No account is ever asked twice within 20 seconds, counted from the start of the tick that asked it and across monitoring sessions of the guild.
