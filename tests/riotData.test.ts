@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, test } from "node:test";
 import { getAccountByRiotId, getRankedEntries, getSummonerByPuuid } from "../src/utils/riotApi";
-import { getLatestSRMatchId, getMatchDetail, getMatchTimeline, parseMatchDetail, SR_QUEUE_IDS, TIMELINE_REQUESTER_OPTIONS } from "../src/utils/riotMatchApi";
+import { getLatestSRMatchId, getMatchDetail, getMatchTimeline, parseMatchDetail, SR_QUEUE_IDS, TIMELINE_QUEUE_WAIT_MS, TIMELINE_REQUESTER_OPTIONS, TIMELINE_TIMEOUT_MS } from "../src/utils/riotMatchApi";
 import { fetchMatchEvents } from "../src/services/matchEvents";
 import { createRiotRequester, getRiotDataLabel, getRiotMode, isMockData, resetMockData, RiotApiError, simulateMockMatch } from "../src/services/riotData";
+import type { MatchDetail } from "../src/types";
+import { RiotPacer } from "../src/services/riotPacing";
+import { fakeClock, idle } from "./helpers/fakeClock";
 import { withoutRiotPacing } from "./helpers/unpacedRiot";
 
 // These tests send many requests to a fake Riot on the real clock; pacing is tested in riotPacing.test.ts.
@@ -149,7 +152,7 @@ test("a timeline 429 stays on the timeline requester and never blocks match requ
 
 test("timeline requests make one attempt and are aborted at the timeout", async () => {
   process.env.RIOT_MODE = "real";
-  assert.deepEqual(TIMELINE_REQUESTER_OPTIONS, { timeoutMs: 5_000, maxRetries: 0, maxRetryDelayMs: 0 });
+  assert.deepEqual(TIMELINE_REQUESTER_OPTIONS, { timeoutMs: 5_000, maxRetries: 0, maxRetryDelayMs: 0, maxQueueWaitMs: 2_000 });
   const requester = (fetchImpl: typeof fetch, timeoutMs: number = TIMELINE_REQUESTER_OPTIONS.timeoutMs) => createRiotRequester({
     ...TIMELINE_REQUESTER_OPTIONS, timeoutMs, apiKey: () => "test-secret", fetch: fetchImpl, sleep: async () => assert.fail("timelines never wait or retry"),
   });
@@ -171,6 +174,31 @@ test("timeline requests make one attempt and are aborted at the timeout", async 
     await assert.rejects(getMatchTimeline("NA1_FAIL", requester(failing)), { status });
     assert.equal(attempts, 1, `${status} is not retried`);
   }
+});
+
+test("a timeline queued behind a held pacer slot gives up after the short queue wait, not the fetch timeout, and logs once", async () => {
+  process.env.RIOT_MODE = "real";
+  // The monitor stops waiting at 8 s (TIMELINE_WAIT_MS in gameMonitor.ts): queue wait plus the fetch must end before that.
+  assert.ok(TIMELINE_QUEUE_WAIT_MS + TIMELINE_TIMEOUT_MS < 8_000);
+  const clock = fakeClock(1_000);
+  // One request per 4 s window, already taken: the timeline's turn would come after 4 s, within the old 5 s wait but past 2 s.
+  const pacer = new RiotPacer({ windows: [{ riotSeconds: 1, windowMs: 4_000, limit: 1, bulkLimit: 1 }], now: clock.now, setTimer: clock.setTimer, clearTimer: clock.clearTimer, stopping: () => false });
+  await pacer.acquire("americas.api.riotgames.com");
+  let fetches = 0;
+  const requester = createRiotRequester({
+    ...TIMELINE_REQUESTER_OPTIONS, apiKey: () => "test-key", pacer, now: clock.now, fetch: (async () => { fetches++; return new Response(null, { status: 500 }); }) as typeof fetch,
+  });
+  const warnings: string[] = [];
+  const detail = { info: { aborted: false, earlySurrender: false, gameDuration: 1_800 } } as MatchDetail;
+  let result: unknown = "pending";
+  void fetchMatchEvents("NA1_QUEUED", detail, { timeline: (id) => getMatchTimeline(id, requester), warn: (message) => warnings.push(message) })
+    .then((events) => { result = events; });
+  await idle(2);
+  assert.equal(result, null, "falls back to no moments without waiting for the 4 s turn");
+  assert.ok(clock.now() - 1_000 <= TIMELINE_QUEUE_WAIT_MS, "within the queue wait on the pacer's clock");
+  assert.equal(fetches, 0, "the refused request is never sent");
+  assert.equal(warnings.length, 1, "logged once");
+  assert.match(warnings[0], /rate_limited: .*not sent/);
 });
 
 test("real mode and invalid mode never fall back to fixtures", async () => {

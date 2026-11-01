@@ -112,7 +112,7 @@ Going past either answers 429 with a Retry-After of up to the rest of the 2-minu
 - The Retry-After cooldown still applies on top.
   A request first waits out a short cooldown (or fails on a long one), then waits for its turn.
   When a new 429 started a cooldown while it waited, it gives the turn back and honors that cooldown too.
-- A requester that never waits out a cooldown (spectator, league and timelines, `maxRetryDelayMs` 0) waits at most its 5 s timeout for a turn.
+- A requester that never waits out a cooldown (spectator, league and timelines, `maxRetryDelayMs` 0) waits at most its queue limit for a turn: its 5 s timeout, or 2 s for timelines, so that the wait plus the 5 s fetch stays under the monitor's 8 s timeline limit.
   When the turn would come later, the request is refused at once as `rate_limited` with the wait as `retryAfterMs`, and it is never sent.
   The game start watcher and the rank tracker already skip a `rate_limited` read quietly, and a refused timeline leaves the report on statistics only.
   Any other requester waits as long as its turn takes.

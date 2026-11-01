@@ -115,10 +115,19 @@ async function fetchMatchDetail(matchId: string, cacheKey: string, options: Matc
 /** A timeline request is aborted after this long, so it never holds up the announcement. */
 export const TIMELINE_TIMEOUT_MS = 5_000;
 /**
- * Timelines are optional flavor, so they get their own requester: one attempt, aborted at the timeout, and a 429
- * on it never sets the shared cooldown that profile and match requests honor. Its own cooldown fails fast instead of waiting.
+ * How long a timeline request may wait for a turn from the pacer. Without it the wait defaults to the request timeout, so
+ * a queued request could wait 5 s and then fetch for 5 s, longer than the 8 s the monitor gives the whole timeline
+ * (TIMELINE_WAIT_MS in gameMonitor.ts). Queue wait plus the fetch timeout stays under that, so the monitor's limit stays
+ * the backstop for a stuck dependency, and a timeline that cannot get a turn in time is refused here as one `rate_limited`
+ * failure that is logged once.
  */
-export const TIMELINE_REQUESTER_OPTIONS = { timeoutMs: TIMELINE_TIMEOUT_MS, maxRetries: 0, maxRetryDelayMs: 0 } as const;
+export const TIMELINE_QUEUE_WAIT_MS = 2_000;
+/**
+ * Timelines are optional flavor, so they get their own requester: one attempt, aborted at the timeout, and a 429
+ * on it never sets the shared cooldown that profile and match requests honor. Its own cooldown fails fast instead of waiting,
+ * and so does a pacer queue that would take longer than TIMELINE_QUEUE_WAIT_MS.
+ */
+export const TIMELINE_REQUESTER_OPTIONS = { timeoutMs: TIMELINE_TIMEOUT_MS, maxRetries: 0, maxRetryDelayMs: 0, maxQueueWaitMs: TIMELINE_QUEUE_WAIT_MS } as const;
 const timelineRequest = createRiotRequester(TIMELINE_REQUESTER_OPTIONS);
 
 /**
