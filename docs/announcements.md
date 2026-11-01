@@ -162,7 +162,7 @@ Ties are decided on the displayed score, one decimal place.
 The members sharing the top score are the 车队 MVP together, and the 本局背锅 is named only when exactly one member has the lowest score.
 When several members share the lowest score nobody takes the blame: they are 并列垫底.
 When every member has the same score there is neither an MVP nor a 背锅, and the members are simply 并列.
-A single 背锅 is blamed even when that member is 特等马 or 上等马, because the blame is only relative.
+A single 背锅 is blamed even when that member is 上等马, because the blame is only relative.
 
 A second embed titled `车队内战` is sent in the same message right after the report embed.
 It lists each member's mention, champion, tier, score and team rank, such as 队内第 2/5, then names the MVP and the 背锅, each with a short 军师 line about play only.
@@ -172,7 +172,7 @@ The members appear as mentions inside the embed, which notifies nobody, so `allo
 
 The speech ends with one more sentence, such as `车队内战，A最好，B背锅。`.
 It names no tier, and its names are the report's sanitized names, trimmed to keep it within 29 characters.
-When the 背锅 is a 特等马 or 上等马 it reads `B今天只是相对背锅` or `B只是相对背锅` instead.
+When the 背锅 is a 上等马 it reads `B今天只是相对背锅` or `B只是相对背锅` instead.
 When the best member is only 中等马 or lower, which a duo that finished 4th and 5th can be, it claims no lead: `车队内战，A相对最好，B背锅。`, and the embed line says 相对靠前.
 Ties read `A和B并列最好` (or `并列靠前` when they are only 中等马 or lower), `B和C并列垫底`, and `车队内战，A和B并列。` when everyone is tied.
 Names that would sound the same after trimming keep the distinguishing end of the name instead, and fall back to the champions when that is not enough.
@@ -185,14 +185,15 @@ So if a member is unbound between the text post and a voice retry, the spoken se
 Each match goes through these steps once it has a usable channel, in order:
 
 1. The timeline moments are fetched once per match with `fetchMatchEvents`, injected as the monitor's `events` dependency.
-2. The speaker, the speech and the channel report are built from the match and those moments with `buildMatchAnnouncement(detail, speakerPuuid, mock, { events })`.
+2. The speaker, the speech and the channel report are built from the match and those moments with `buildMatchAnnouncement(detail, speakerPuuid, mock, { events, party })`.
 3. The text report is posted to the chosen channel, unless it was already posted for this match.
 4. When the post succeeds, the 马厩 records of the posted report are written.
 5. The voice report is queued and played.
 6. When the voice succeeded but the text could not be posted, for example without Send Messages, the 马厩 records of the spoken report are written then.
 
 A timeline that fails, or that has not answered after 8 seconds, falls back to no moments, logs once and never blocks or fails the report.
-The request itself is aborted after 5 seconds, so the monitor's own limit only guards against a stuck dependency.
+The request waits at most 2 seconds for a turn from the Riot pacer and is aborted after 5 seconds of fetching, so it ends within 7 seconds and logs once on its own.
+The monitor's 8 second limit therefore only guards against a stuck dependency.
 Stopping the session ends that wait at once as a cancellation, with nothing posted or logged as a fallback.
 
 The text goes out only when the voice is about to be queued: the session is current, the speaker still owns the account and is in voice, and the channel matches any required `/simulate` channel.
