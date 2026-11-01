@@ -292,6 +292,7 @@ test("selection defaults to the latest record of the right kind and finds a chos
   assert.equal(findVerdictRecord("g", "friend", true)?.matchId, "NA1_300");
   assert.equal(findVerdictRecord("g", "friend", false, "NA1_100")?.matchId, "NA1_100");
   assert.equal(findVerdictRecord("g", "friend", false, "100")?.matchId, "NA1_100", "a bare number is read as an NA1 match");
+  assert.equal(findVerdictRecord("g", "friend", false, "na1_100")?.matchId, "NA1_100", "the platform prefix is read in any case");
   assert.equal(findVerdictRecord("g", "friend", false, "NA1_300"), undefined, "a mock record is not found in real mode");
   assert.equal(findVerdictRecord("g", "friend", false, "NA1_400"), undefined, "another member's match is not theirs");
   assert.equal(findVerdictRecord("g", "nobody", false), undefined);

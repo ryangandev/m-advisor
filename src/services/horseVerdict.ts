@@ -296,7 +296,9 @@ export function appealRuling(verdict: Verdict): string {
 /** Lets a member's latest record, or a chosen one, be explained. Mock and real records are never mixed. */
 export function findVerdictRecord(guildId: string, discordUserId: string, mock: boolean, matchId?: string | null): HorseRecord | undefined {
   if (!matchId) return listHorseRecords(guildId, { mock, discordUserId, order: "desc", limit: 1 })[0];
-  const candidates = /^\d+$/.test(matchId) ? [matchId, `NA1_${matchId}`] : [matchId];
+  // Riot's platform prefix is matched in any case, as the autocomplete filter does; a mock ID's suffix is exact.
+  const typed = /^na1_/i.test(matchId) ? `NA1_${matchId.slice(4)}` : matchId;
+  const candidates = /^\d+$/.test(typed) ? [typed, `NA1_${typed}`] : [typed];
   for (const candidate of candidates) {
     const record = listMatchHorseRecords(guildId, candidate, mock).find((entry) => entry.discordUserId === discordUserId);
     if (record) return record;
@@ -304,7 +306,7 @@ export function findVerdictRecord(guildId: string, discordUserId: string, mock: 
   return undefined;
 }
 
-/** A member's latest records, newest first, to offer as /why match choices. */
-export function listVerdictChoices(guildId: string, discordUserId: string, mock: boolean, limit = 25): HorseRecord[] {
+/** A member's records, newest first, to offer as /why match choices; all of them when no `limit` is given. */
+export function listVerdictChoices(guildId: string, discordUserId: string, mock: boolean, limit?: number): HorseRecord[] {
   return listHorseRecords(guildId, { mock, discordUserId, order: "desc", limit });
 }

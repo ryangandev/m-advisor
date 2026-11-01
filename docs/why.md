@@ -8,7 +8,8 @@ Everything is read from the 马厩 records described in [马厩](stable.md); no 
 
 `user` defaults to the caller and `match` to their latest record of the kind the bot runs on, real or mock.
 The `match` option autocompletes the member's 25 latest records, newest first, as `tier · champion · score · result · Pacific date`, with a 模拟 prefix in mock mode.
-Typing filters the list, and a bare number such as `5123456789` is read as `NA1_5123456789`.
+Typing searches all of the member's records of the current kind, not only those 25, and still shows at most 25.
+A bare number such as `5123456789` is read as `NA1_5123456789`, and the `NA1_` prefix may be typed in any case.
 `findVerdictRecord` and `listVerdictChoices` in `src/services/horseVerdict.ts` do the selection.
 
 Only bound members have records, so a stranger gets a private empty state that explains binding, and nobody else in the match ever appears.

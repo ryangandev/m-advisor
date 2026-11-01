@@ -225,6 +225,26 @@ test("the match option suggests the member's recent games of the current kind, n
   assert.match(choiceName(seededSupport({ mock: true })), /^模拟 · 没有马/);
 });
 
+test("typing in the match option searches past the 25 latest games", async () => {
+  seed([
+    seededSupport({ matchId: "NA1_1000", playedAt: Date.UTC(2026, 8, 1), tier: "特等马" }),
+    ...Array.from({ length: 25 }, (_, index) => seededSupport({ matchId: `NA1_${2000 + index}`, playedAt: Date.UTC(2026, 9, 1) + index * 3_600_000 })),
+  ]);
+  const latest = autocomplete();
+  await whyCommand.autocomplete!(latest.stub);
+  assert.equal(latest.responses[0].length, 25);
+  assert.ok(!latest.responses[0].some((choice) => choice.value === "NA1_1000"), "nothing typed lists only the latest 25");
+
+  for (const typed of ["特等", "1000", "na1_1000"]) {
+    const search = autocomplete({ typed });
+    await whyCommand.autocomplete!(search.stub);
+    assert.deepEqual(search.responses[0].map((choice) => choice.value), ["NA1_1000"], `typing ${typed} finds the older game`);
+  }
+  const many = autocomplete({ typed: "没有马" });
+  await whyCommand.autocomplete!(many.stub);
+  assert.equal(many.responses[0].length, 25, "a search still offers at most 25 choices");
+});
+
 test("only the member can appeal; anyone else gets a private, playful refusal", async () => {
   seed([seededSupport()]);
   const { stub, calls } = button("why-appeal:r:support-friend:NA1_5100000001", "bystander");
