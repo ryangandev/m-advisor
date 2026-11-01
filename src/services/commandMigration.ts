@@ -38,7 +38,13 @@ export async function retireLegacyGlobalCommands(
   }
   const retired: string[] = [];
   for (const command of candidates) {
-    await api.delete(Routes.applicationCommand(applicationId, command.id));
+    try {
+      await api.delete(Routes.applicationCommand(applicationId, command.id));
+    } catch (error) {
+      // A rerun finishes the job, but the operator must see what this run already removed.
+      const message = error instanceof Error ? error.message : "Command deletion failed.";
+      throw new Error(`Retired ${retired.length} known legacy global commands before a failure (${retired.join(", ") || "none"}): ${message}`, { cause: error });
+    }
     retired.push(command.name);
   }
   return retired;

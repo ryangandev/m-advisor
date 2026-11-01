@@ -7,8 +7,9 @@ const app = "900000000000000001";
 const guild = "900000000000000002";
 const manifest = ["announcer", "bind", "bindings", "profile", "simulate", "testvoice", "unbind"];
 const legacy = ["announcer", "bind", "bindings", "profile", "testvc", "unbind"].map((name, index) => ({ id: String(900000000000000100n + BigInt(index)), name, type: 1 }));
-function fixture(options: { guilds?: unknown; registered?: unknown; globals?: unknown; failDelete?: boolean } = {}) {
+function fixture(options: { guilds?: unknown; registered?: unknown; globals?: unknown; failDelete?: boolean; failDeleteAt?: number } = {}) {
   const deleted: string[] = [];
+  let deletes = 0;
   const api = {
     get: async (route: string) => {
       if (route === Routes.userGuilds()) return options.guilds ?? [{ id: guild }];
@@ -17,7 +18,8 @@ function fixture(options: { guilds?: unknown; registered?: unknown; globals?: un
       throw new Error("Unexpected read route");
     },
     delete: async (route: string) => {
-      if (options.failDelete) throw new Error("Simulated REST failure");
+      deletes += 1;
+      if (options.failDelete || deletes === options.failDeleteAt) throw new Error("Simulated REST failure");
       deleted.push(route);
     },
   } as unknown as Pick<REST, "get" | "delete">;
@@ -67,6 +69,14 @@ test("REST failure stays visible instead of reporting a successful migration", a
   const f = fixture({ failDelete: true });
   await assert.rejects(retireLegacyGlobalCommands(f.api, app, guild, manifest), /Simulated REST failure/);
   assert.deepEqual(f.deleted, []);
+});
+test("a failure after earlier deletions names the commands already retired", async () => {
+  const f = fixture({ failDeleteAt: 3 });
+  await assert.rejects(retireLegacyGlobalCommands(f.api, app, guild, manifest), (error: Error) => {
+    assert.equal(error.message, "Retired 2 known legacy global commands before a failure (announcer, bind): Simulated REST failure");
+    return true;
+  });
+  assert.equal(f.deleted.length, 2);
 });
 test("invalid IDs, empty manifests and duplicate manifest names fail before reads", async () => {
   const f = fixture();
