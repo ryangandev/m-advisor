@@ -169,7 +169,7 @@ const minuteOf = (timestamp: number) => timestamp < 60_000 ? "1分钟不到" : `
 /** First blood after this is no longer the opening of the game. */
 export const OPENING_MS = 5 * 60_000;
 
-/** A timeline moment replaces the statistic line, so citing it never lengthens the report. */
+/** A timeline moment replaces one statistic line, so the report stays about the same length. */
 function praiseEventLine(event: MatchEvent): string | undefined {
   const at = minuteOf(event.timestamp);
   switch (event.kind) {
