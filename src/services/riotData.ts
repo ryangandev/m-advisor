@@ -287,7 +287,8 @@ export interface RiotRequesterOptions {
   /**
    * The longest a request waits for its turn before it is rejected as `rate_limited` without being sent.
    * A requester that never waits out a cooldown (`maxRetryDelayMs` 0, such as spectator, league and timelines) waits
-   * at most its `timeoutMs`; any other waits as long as the turn takes, until the bot stops.
+   * at most its `timeoutMs` unless it sets this (timelines set `TIMELINE_QUEUE_WAIT_MS`, 2 s); any other waits as long
+   * as the turn takes, until the bot stops.
    */
   maxQueueWaitMs?: number;
 }
