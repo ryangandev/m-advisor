@@ -9,8 +9,9 @@ export const RANK_RETRY_FLOOR_MS = 60_000;
 /** At most this many reads per account per match: the first at detection, then the retries. */
 export const MAX_RANK_READS = 4;
 /**
- * The tracker's own limit on one read, above the league requester's 5 second timeout, so a stuck dependency can never
- * hold the serialized queue. A read that hits it counts as a timeout.
+ * The tracker's own limit on one read, so a stuck dependency can never hold the serialized queue. A read that hits it
+ * counts as a timeout. A league read can take 5 s waiting for a pacer turn plus 5 s fetching, which equals this guard,
+ * so the requester's own timeout normally fires first and the guard is only a backstop.
  */
 export const RANK_READ_GUARD_MS = 10_000;
 /** At most this many accounts' match reads are remembered; the oldest is forgotten first. */

@@ -69,6 +69,7 @@ Other modes, such as Arena with up to eight teams, are never ranked or announced
 
 `getMatchTimeline()` reads `/lol/match/v5/matches/{matchId}/timeline` on the Americas host with its own requester.
 That requester makes one attempt, aborts the request after 5 seconds, never retries, and fails at once during its own 429 cooldown instead of waiting.
+It waits at most 2 seconds for a turn from the [pacer](#request-pacing) and is refused as `rate_limited` when the turn would come later.
 A 429 on a timeline therefore never sets the shared cooldown that profile and match requests honor.
 `parseMatchTimeline()` in `src/utils/matchTimeline.ts` keeps only champion kills with their positions, first blood and multi-kill awards, and epic monster kills.
 It maps participant IDs to PUUIDs from `info.participants`, falling back to the order of `metadata.participants`, and skips malformed events instead of rejecting the timeline.
@@ -112,7 +113,9 @@ Going past either answers 429 with a Retry-After of up to the rest of the 2-minu
 - The Retry-After cooldown still applies on top.
   A request first waits out a short cooldown (or fails on a long one), then waits for its turn.
   When a new 429 started a cooldown while it waited, it gives the turn back and honors that cooldown too.
-- A requester that never waits out a cooldown (spectator, league and timelines, `maxRetryDelayMs` 0) waits at most its queue limit for a turn: its 5 s timeout, or 2 s for timelines, so that the wait plus the 5 s fetch stays under the monitor's 8 s timeline limit.
+- A requester that never waits out a cooldown (spectator, league and timelines, `maxRetryDelayMs` 0) waits at most its queue limit for a turn: 5 s for spectator and league (their `timeoutMs`), or 2 s for timelines.
+  The timeline limit is shorter so that its wait plus the 5 s fetch stays under the monitor's 8 s timeline limit.
+  A spectator or league read can therefore take up to 5 s of queue plus 5 s of fetch.
   When the turn would come later, the request is refused at once as `rate_limited` with the wait as `retryAfterMs`, and it is never sent.
   The game start watcher and the rank tracker already skip a `rate_limited` read quietly, and a refused timeline leaves the report on statistics only.
   Any other requester waits as long as its turn takes.
@@ -173,7 +176,8 @@ Spectator's own requester also reads the `errorCode` token of a 404 (kept only i
 
 `matchIdOf(game)` is `NA1_${gameId}`, the match-v5 ID the game will have once finished.
 `isLoading(game)` is true while `gameStartTime` is 0.
-Spectator has its own requester with one attempt, a 5 second timeout and no waiting, like the timeline requester.
+Spectator has its own requester with one attempt and a 5 second timeout, like the timeline requester.
+It never waits out a cooldown and waits at most 5 seconds for a pacer turn.
 A spectator 429 therefore never sets the shared na1 cooldown that `/profile` and `/bind` honor, and its own cooldown fails fast.
 A 401 or 403 is thrown as a `RiotApiError`; `isSpectatorAuthError()` recognizes it so the watcher can disable itself for the session.
 The watcher's log line tells the developer to check `RIOT_API_KEY` and does not say matches are still announced: a dead key stops the match poll too.
@@ -200,7 +204,8 @@ Mock accounts that simulate a failure fail the spectator request the same way, a
 It exists to read an account's rank and LP before and after a ranked game.
 `/profile` still uses `getRankedEntries()` and its own parser.
 
-The league endpoint has its own requester, like spectator: one attempt, a 5 second timeout, no retries and no waiting.
+The league endpoint has its own requester, like spectator: one attempt, a 5 second timeout and no retries.
+It never waits out a cooldown and waits at most 5 seconds for a pacer turn.
 The caller schedules any retry.
 A league 429 therefore never sets the shared na1 cooldown that `/profile` and `/bind` honor, and the league requester's own cooldown fails fast.
 Riot still counts every request against the same na1 app limit on its side, and the shared [pacer](#request-pacing) counts it with the rest.
