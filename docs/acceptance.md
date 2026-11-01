@@ -24,6 +24,7 @@ npm run verify:local
 ```
 
 This verifier forces mock data and local speech, creates an isolated temporary database and uses a simulated Discord channel.
+It reads only the `LOCAL_TTS_*` overrides from `.env`, as the bot does, so it measures the same speech runtime; tokens and the Riot key in that file are never loaded.
 It binds `MockLoss#NA1`, establishes a silent baseline, creates a loss and runs the actual match-monitor and shared announcement queue.
 The installed Qwen model generates the full five-horse Chinese report one sentence chunk at a time, and the verifier checks that the speech reads all five tiers and the channel embed is labeled as mock.
 The simulated transport decodes and stitches the chunks with the same code as Discord playback, and the installed FFmpeg binary converts the stitched stream to 48 kHz stereo Opus.

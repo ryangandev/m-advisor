@@ -17,6 +17,7 @@ import { recordHorseRecords } from "../src/store/horseRecordStore";
 import { VoiceAnnouncementService } from "../src/services/voiceAnnouncements";
 import { generateTTS, shutdownTTS } from "../src/utils/tts";
 import { SENTENCE_PAUSE_MS, decodeSpeechFile, prepareSpeechPcm } from "../src/utils/voicePlayback";
+import { loadLocalTtsEnv } from "./localTtsEnv";
 
 const exec = promisify(execFile);
 
@@ -34,6 +35,8 @@ async function verify(): Promise<void> {
   if (!codec) throw new Error("FFmpeg is unavailable.");
   // This verifier deliberately uses isolated mock data and no Discord connection.
   process.env.RIOT_MODE = "mock";
+  // The bot reads these speech overrides from .env; no other key (token, Riot key) is loaded into this isolated run.
+  loadLocalTtsEnv();
   const directory = await mkdtemp(path.join(os.tmpdir(), "m-advisor-e2e-"));
   process.env.DATABASE_PATH = path.join(directory, "bot.sqlite3");
   const evidenceDirectory = path.resolve("test-results");
