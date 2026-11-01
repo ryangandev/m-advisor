@@ -1,20 +1,26 @@
 // Collects recent real ranked solo matches as the reference sample for horse ranking benchmarks.
 // Raw matches contain other players' identities, so they stay in the ignored .data directory.
 import "dotenv/config";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { DEFAULT_MAX_AGE_DAYS, parseFlags, parseOrExit, runSample } from "./benchmarkArgs";
 import { createRiotRequester, useRiotPacer } from "../src/services/riotData";
 import { RiotPacer } from "../src/services/riotPacing";
 
-const args = new Map(process.argv.slice(2).map((arg) => arg.replace(/^--/, "").split("=") as [string, string]));
-const tiers = (args.get("tiers") ?? "SILVER,GOLD,PLATINUM,EMERALD,DIAMOND").split(",");
-const divisions = (args.get("divisions") ?? "II").split(",");
-const perDivision = Number(args.get("per-division") ?? 40);
-const outDir = path.resolve(args.get("out") ?? ".data/benchmark-sample");
-// Only recent games, so the reference reflects the current patches.
-const maxAgeDays = Number(args.get("max-age-days") ?? 60);
-const startTime = Math.floor(Date.now() / 1000) - maxAgeDays * 86_400;
-mkdirSync(outDir, { recursive: true });
+const TIERS = ["IRON", "BRONZE", "SILVER", "GOLD", "PLATINUM", "EMERALD", "DIAMOND"];
+const DIVISIONS = ["I", "II", "III", "IV"];
+const args = parseOrExit(() => parseFlags(process.argv.slice(2), {
+  tiers: { kind: "list", allowed: TIERS },
+  divisions: { kind: "list", allowed: DIVISIONS },
+  "per-division": { kind: "positiveInt" },
+  out: { kind: "string" },
+  "max-age-days": { kind: "positiveInt" },
+}));
+const tiers = (args.get("tiers") as string[] | undefined) ?? ["SILVER", "GOLD", "PLATINUM", "EMERALD", "DIAMOND"];
+const divisions = (args.get("divisions") as string[] | undefined) ?? ["II"];
+const perDivision = (args.get("per-division") as number | undefined) ?? 40;
+const outDir = path.resolve((args.get("out") as string | undefined) ?? ".data/benchmark-sample");
+// Only recent games, so the reference reflects the current patches. The build reads this window back from the manifest.
+const maxAgeDays = (args.get("max-age-days") as number | undefined) ?? DEFAULT_MAX_AGE_DAYS;
 
 // Development keys allow 100 requests per two minutes; pace below that instead of relying on 429s.
 // The pacer's wait timers keep this one-shot script alive, so it never exits in the middle of a wait as if it had finished.
@@ -28,28 +34,4 @@ async function riot<T>(url: string): Promise<T> {
   return request<T>(url);
 }
 
-async function sample(): Promise<void> {
-  let saved = 0;
-  for (const tier of tiers) {
-    for (const division of divisions) {
-      const entries = await riot<Array<{ puuid?: string }>>(
-        `https://na1.api.riotgames.com/lol/league/v4/entries/RANKED_SOLO_5x5/${tier}/${division}?page=1`);
-      for (const { puuid } of entries.filter((entry) => entry.puuid).slice(0, perDivision)) {
-        try {
-          const [matchId] = await riot<string[]>(
-            `https://americas.api.riotgames.com/lol/match/v5/matches/by-puuid/${encodeURIComponent(puuid!)}/ids?queue=420&count=1&startTime=${startTime}`);
-          const file = path.join(outDir, `${matchId}.json`);
-          if (!matchId || existsSync(file)) continue;
-          const match = await riot<Record<string, unknown>>(`https://americas.api.riotgames.com/lol/match/v5/matches/${matchId}`);
-          writeFileSync(file, JSON.stringify({ ...match, _tier: tier }));
-          saved++;
-          console.log(`${tier} ${division}: ${matchId} (${saved} saved)`);
-        } catch (error) {
-          console.log(`${tier} ${division}: skipped (${error instanceof Error ? error.message : String(error)})`);
-        }
-      }
-    }
-  }
-  console.log(`Saved ${saved} new matches to ${outDir}.`);
-}
-void sample().catch((error: unknown) => { console.error(error instanceof Error ? error.message : "Sampling failed."); process.exitCode = 1; });
+void runSample({ riot, tiers, divisions, perDivision, maxAgeDays, outDir }).catch((error: unknown) => { console.error(error instanceof Error ? error.message : "Sampling failed."); process.exitCode = 1; });
