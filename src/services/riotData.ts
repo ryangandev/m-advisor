@@ -1,5 +1,4 @@
 import { randomBytes } from "node:crypto";
-import { setTimeout as delay } from "node:timers/promises";
 import { buildMockActiveGame, buildMockMatch, buildMockProfile, buildMockTimeline } from "../fixtures/riotFixtures";
 import type { MockOutcome, MockProfile, RawMatch } from "../fixtures/riotFixtures";
 import type { RankedEntry } from "../types";
@@ -354,7 +353,10 @@ function pacingError(error: unknown): unknown {
 
 export function createRiotRequester(options: RiotRequesterOptions = {}): RiotRequest {
   const fetchImpl = options.fetch ?? ((...args) => fetch(...args));
-  const sleep = options.sleep ?? (async (milliseconds: number) => { await delay(milliseconds); });
+  // Cooldowns and backoffs wait on the pacer, so they end at shutdown and never hold the bot's process open.
+  const sleep = options.sleep ?? (async (milliseconds: number) => {
+    try { await (options.pacer ?? getRiotPacer()).wait(milliseconds); } catch (error) { throw pacingError(error); }
+  });
   const now = options.now ?? Date.now;
   const timeoutMs = options.timeoutMs ?? 10_000;
   const retries = options.maxRetries ?? 2;

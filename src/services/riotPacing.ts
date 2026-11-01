@@ -147,6 +147,26 @@ export class RiotPacer {
   }
 
   /**
+   * Sleeps for `delayMs` on the pacer's timers, for a requester's cooldown or backoff, so that wait follows the same
+   * rules as a wait for a turn: unref'd unless `keepAlive`, and rejected as stopping within `stopCheckMs` of shutdown.
+   */
+  wait(delayMs: number): Promise<void> {
+    const until = this.now() + delayMs;
+    return new Promise<void>((resolve, reject) => {
+      const step = (): void => {
+        if (this.closed || this.stopping()) {
+          reject(stoppedError());
+          return;
+        }
+        const left = until - this.now();
+        if (left <= 0) resolve();
+        else this.setTimer(step, Math.min(left, this.stopCheckMs));
+      };
+      step();
+    });
+  }
+
+  /**
    * Takes Riot's own count for the longest window from a response's `X-App-Rate-Limit-Count`. When Riot has counted
    * more than the pacer, such as requests from before a restart or from another process on the same key, the
    * difference is counted as sent. `sentAt` is when the answered request was sent: Riot counted only requests that
