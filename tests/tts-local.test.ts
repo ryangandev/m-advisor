@@ -15,6 +15,12 @@ if (process.env.DISCORD_TOKEN || process.env.RIOT_API_KEY) {
   emit({event: "fatal"});
   process.exit(1);
 }
+// Like the real worker, refuse to start when the output directory is missing.
+const outputDir = process.argv[process.argv.indexOf("--output-dir") + 1];
+if (!fs.existsSync(outputDir) || !fs.statSync(outputDir).isDirectory()) {
+  emit({event: "fatal", error: "configuration"});
+  process.exit(1);
+}
 if (mode === "fatal-once" && !fs.existsSync(process.env.FAKE_STAMP)) {
   fs.writeFileSync(process.env.FAKE_STAMP, "1");
   emit({event: "fatal", error: "configuration"});
@@ -289,4 +295,27 @@ test("starting the worker sweeps stale speech directories but keeps its own", as
     await assert.rejects(access(stale));
     await access(wav);
   } finally { await rm(stale, { recursive: true, force: true }); await f.cleanup(); }
+});
+
+test("a speech folder that disappeared is recreated before the next request and before a restarted worker", async () => {
+  const f = await fixture();
+  try {
+    const first = await f.service.generate("第一句。", "old");
+    const folder = path.dirname(first);
+    // A temp cleaner removes the idle folder while the bot keeps running.
+    await rm(folder, { recursive: true, force: true });
+    const second = await f.service.generate("第二句。", "old");
+    assert.equal(path.dirname(second), folder, "the same path is reused, so the running worker keeps working");
+    await access(second);
+    // A restarted worker is started against a folder that exists.
+    await rm(folder, { recursive: true, force: true });
+    (f.service as unknown as { failWorker(error: Error): void }).failWorker(new Error("simulated crash"));
+    const third = await f.service.generate("第三句。", "old");
+    await access(third);
+    const pids = (await readFile(f.log, "utf8")).trim().split("\n").map((line) => JSON.parse(line).pid);
+    assert.equal(pids[0], pids[1]);
+    assert.notEqual(pids[1], pids[2]);
+    await f.service.shutdown();
+    await assert.rejects(access(folder), "shutdown still removes the folder");
+  } finally { await f.cleanup(); }
 });

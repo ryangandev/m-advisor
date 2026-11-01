@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { access, lstat, mkdtemp, open, readdir, realpath, rm } from "node:fs/promises";
+import { access, lstat, mkdir, mkdtemp, open, readdir, realpath, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createInterface, type Interface } from "node:readline";
@@ -215,6 +215,11 @@ export class LocalTtsService {
     }
   }
 
+  /**
+   * The output folder, created on first use. The path is kept for the life of the process, so a folder that
+   * vanished (a temp cleaner) is recreated at the same path before each worker start and each request; a running
+   * worker keeps writing to that path.
+   */
   private async directory(): Promise<string> {
     this.outputDirectory ??= mkdtemp(path.join(os.tmpdir(), `${TTS_DIRECTORY_PREFIX}${process.pid}-`))
       .then(async (directory) => {
@@ -222,7 +227,12 @@ export class LocalTtsService {
         await sweepStaleTtsDirectories(os.tmpdir(), own);
         return own;
       });
-    return this.outputDirectory;
+    const directory = await this.outputDirectory;
+    if (this.closed) return directory;
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+    // Shutdown may have removed the folder while this was awaiting; do not leave a new one behind.
+    if (this.closed) await rm(directory, { recursive: true, force: true });
+    return directory;
   }
 
   private async startWorker(): Promise<LocalTtsStatus> {
