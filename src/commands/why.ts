@@ -102,7 +102,8 @@ const whyCommand: BotCommand = {
     const chosen = interaction.options.get("user")?.value;
     const memberId = typeof chosen === "string" && chosen ? chosen : interaction.user.id;
     const typed = String(focused.value).trim().toLowerCase();
-    const choices = listVerdictChoices(guildId, memberId, isMockData(), CHOICE_LIMIT)
+    // Typed text searches every record of the member, so an older game can still be found; nothing typed lists the latest.
+    const choices = listVerdictChoices(guildId, memberId, isMockData(), typed ? undefined : CHOICE_LIMIT)
       .map((record) => ({ name: choiceName(record), value: record.matchId }))
       .filter((choice) => !typed || choice.name.toLowerCase().includes(typed) || choice.value.toLowerCase().includes(typed));
     await interaction.respond(choices.slice(0, CHOICE_LIMIT));
