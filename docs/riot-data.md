@@ -117,6 +117,7 @@ Going past either answers 429 with a Retry-After of up to the rest of the 2-minu
   The game start watcher and the rank tracker already skip a `rate_limited` read quietly, and a refused timeline leaves the report on statistics only.
   Any other requester waits as long as its turn takes.
 - At shutdown a waiting request is refused within a second (`unavailable`, never sent), and so is every later one.
+  A requester's Retry-After cooldown and its backoff after a network error or a 5xx wait on the pacer's timers too, so they end the same way.
 - Inside the bot, waiting uses unref'd timers, so a wait never keeps the process alive after shutdown.
   A one-shot script needs the opposite, or it would exit in the middle of a wait as if it had finished: `scripts/sample-matches.ts` installs a pacer with `keepAlive`.
 

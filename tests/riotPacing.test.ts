@@ -244,6 +244,42 @@ test("at shutdown a waiting request is refused within a second, and so is every 
 
 // The requester and the pacer together.
 
+test("a requester's cooldown and backoff wait on the pacer, so they end within a second of shutdown", async () => {
+  for (const status of [429, 503]) {
+    const clock = fakeClock();
+    let stopping = false;
+    const target = pacer(clock, { stopping: () => stopping });
+    const sentAt: number[] = [];
+    const requester = createRiotRequester({
+      apiKey: () => "test", now: clock.now, pacer: target,
+      fetch: (async () => {
+        sentAt.push(clock.now());
+        return sentAt.length === 1 ? new Response(null, { status, headers: { "Retry-After": "8" } }) : Response.json({ ok: true });
+      }) as typeof fetch,
+    });
+    // Without a shutdown the wait runs on the pacer's clock and the retry goes after it.
+    assert.deepEqual(await settle(clock, requester("https://americas.api.riotgames.com/one")), { ok: true });
+    assert.deepEqual(sentAt, [0, 8_000], `${status}: the retry waits out Retry-After`);
+
+    sentAt.length = 0;
+    const second = createRiotRequester({
+      apiKey: () => "test", now: clock.now, pacer: target,
+      fetch: (async () => { sentAt.push(clock.now()); return new Response(null, { status, headers: { "Retry-After": "8" } }); }) as typeof fetch,
+    });
+    let error: unknown;
+    second("https://americas.api.riotgames.com/two").catch((caught: unknown) => { error = caught; });
+    await idle();
+    assert.equal(sentAt.length, 1);
+    stopping = true;
+    clock.advance(1_000);
+    await idle();
+    assert.ok(error instanceof RiotApiError, `${status}: the wait is refused at shutdown`);
+    assert.equal(error.code, "unavailable");
+    assert.equal(sentAt.length, 1, `${status}: nothing is sent after shutdown`);
+    assert.equal(clock.pending(), 0, `${status}: no timer is left behind`);
+  }
+});
+
 test("every attempt of a requester takes a turn, and a refused turn is a RiotApiError without a request", async () => {
   const clock = fakeClock();
   let stopping = false;
