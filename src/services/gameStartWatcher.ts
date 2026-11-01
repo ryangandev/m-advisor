@@ -190,6 +190,12 @@ export interface GameStartOutcome {
   voice: PregameVoiceOutcome;
 }
 
+/** What one tick saw of Riot: the kinds of failure it had, and whether any check was answered. */
+interface TickKinds {
+  failed: Set<string>;
+  answered: boolean;
+}
+
 const errorMessage = (error: unknown): string => error instanceof Error ? error.message : "Unknown error";
 
 /**
@@ -319,30 +325,44 @@ export class GameStartWatcher {
     };
   }
 
-  /** Logs an error once per kind until a check works again, so a Riot outage does not repeat every 20 seconds. */
-  private logOnce(error: unknown, context: string): void {
+  /**
+   * Logs an error once per kind until a tick no longer has it, so a Riot outage does not repeat every 20 seconds.
+   * The kind is noted for this tick even when it is already logged, so `recovered` can tell it still fails.
+   */
+  private logOnce(error: unknown, context: string, tick: TickKinds): void {
     const key = riotErrorKind(error);
+    tick.failed.add(key);
     if (this.loggedErrors.has(key)) return;
     this.loggedErrors.add(key);
     this.dependencies.log(new Error(`${context}: ${errorMessage(error)} (logged once until a check works again)`));
   }
 
-  /** A check answered after failures were logged: say so once, so a stuck watcher and a recovered one look different. */
-  private recovered(): void {
-    if (this.loggedErrors.size === 0) return;
-    this.dependencies.info(`Game start checks work again after ${[...this.loggedErrors].join(", ")} failures.`);
-    this.loggedErrors.clear();
+  /**
+   * A tick in which a check answered, with the kinds of failure it had: a logged kind it no longer had is forgotten, so it is
+   * logged again if it returns, and one line says so, so a stuck watcher and a recovered one look different. A kind that keeps
+   * failing on one account therefore never mutes a different kind on another, and never reports a recovery while it fails.
+   */
+  private recovered(tick: TickKinds): void {
+    if (!tick.answered) return;
+    const cleared = [...this.loggedErrors].filter((kind) => !tick.failed.has(kind));
+    if (cleared.length === 0) return;
+    for (const kind of cleared) this.loggedErrors.delete(kind);
+    this.dependencies.info(this.loggedErrors.size === 0
+      ? `Game start checks work again after ${cleared.join(", ")} failures.`
+      : `Game start checks no longer fail with ${cleared.join(", ")}; still failing with ${[...this.loggedErrors].join(", ")}.`);
   }
 
   /** One tick. It never rejects: the timer fires it without waiting, so anything unexpected is logged and counted instead. */
   private async run(requiredChannelId?: string): Promise<GameStartTickResult> {
     const result: GameStartTickResult = { started: 0, posted: 0, errors: 0 };
+    const kinds: TickKinds = { failed: new Set(), answered: false };
     try {
-      await this.check(result, requiredChannelId);
+      await this.check(result, kinds, requiredChannelId);
     } catch (error) {
       result.errors++;
-      if (this.live()) this.logOnce(error, "A game start check broke off");
+      if (this.live()) this.logOnce(error, "A game start check broke off", kinds);
     }
+    if (this.live()) this.recovered(kinds);
     return result;
   }
 
@@ -354,7 +374,7 @@ export class GameStartWatcher {
     for (const [matchId, pick] of picks) if (now - pick.at >= PICK_MEMORY_MS) picks.delete(matchId);
   }
 
-  private async check(result: GameStartTickResult, requiredChannelId?: string): Promise<void> {
+  private async check(result: GameStartTickResult, kinds: TickKinds, requiredChannelId?: string): Promise<void> {
     const tick = ++this.ticks;
     const startedAt = this.now();
     this.forget(startedAt);
@@ -415,10 +435,10 @@ export class GameStartWatcher {
         if (error instanceof RiotApiError && error.code === "rate_limited") continue;
         // Anything else, including a 404 that is not "not in a game", is a failed check: the state stays as it was.
         result.errors++;
-        this.logOnce(error, "Riot did not say whether an account is in a game");
+        this.logOnce(error, "Riot did not say whether an account is in a game", kinds);
         continue;
       }
-      this.recovered();
+      kinds.answered = true;
       // The member may have left, rejoined or been unbound while Riot answered.
       if (!this.live() || this.accounts.get(puuid) !== presence) continue;
       if (!game) {
