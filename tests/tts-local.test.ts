@@ -72,10 +72,11 @@ async function fixture(env: NodeJS.ProcessEnv = {}, timeoutMs = 1_500, queueLimi
   const modelRecord = path.join(directory, "model.json");
   const log = path.join(directory, "requests.jsonl");
   await Promise.all([writeFile(workerPath, FAKE_WORKER), writeFile(modelRecord, "{}")]);
+  const warnings: string[] = [];
   const service = new LocalTtsService({ pythonPath: process.execPath, workerPath,
-    modelRecord, mediaRoot: directory, timeoutMs, queueLimit,
+    modelRecord, mediaRoot: directory, timeoutMs, queueLimit, warn: (message) => warnings.push(message),
     workerEnv: { FAKE_LOG: log, FAKE_STAMP: path.join(directory, "stamp"), ...env } });
-  return { service, directory, log,
+  return { service, directory, log, warnings,
     async cleanup() { await service.shutdown(); await rm(directory, { recursive: true, force: true }); },
   };
 }
@@ -318,4 +319,39 @@ test("a speech folder that disappeared is recreated before the next request and 
     await f.service.shutdown();
     await assert.rejects(access(folder), "shutdown still removes the folder");
   } finally { await f.cleanup(); }
+});
+
+test("a worker crash is warned about once, with fixed text, even when the retry on a fresh worker recovers", async () => {
+  const f = await fixture({ FAKE_TTS_MODE: "crash-once" });
+  try {
+    await assert.rejects(f.service.generate("私密战报文字", "old"), /exited/);
+    await f.service.generate("私密战报文字", "old");
+    assert.equal(f.warnings.length, 1);
+    assert.match(f.warnings[0], /worker stopped: Local TTS worker exited/);
+    assert.doesNotMatch(f.warnings[0], /私密/);
+  } finally { await f.cleanup(); }
+});
+
+test("garbage output and a generation deadline are each warned about once, and shutdown is not a failure", async () => {
+  const garbage = await fixture({ FAKE_TTS_MODE: "bad-protocol" });
+  try {
+    await assert.rejects(garbage.service.generate("私密战报文字"), /invalid response/);
+    assert.equal(garbage.warnings.length, 1);
+    assert.match(garbage.warnings[0], /invalid response/);
+  } finally { await garbage.cleanup(); }
+  const hung = await fixture({ FAKE_TTS_MODE: "hang-once" }, 1_000);
+  try {
+    await assert.rejects(hung.service.generate("私密战报文字"), /timed out/);
+    assert.equal(hung.warnings.length, 1);
+    assert.match(hung.warnings[0], /timed out/);
+    assert.doesNotMatch(hung.warnings[0], /私密/);
+  } finally { await hung.cleanup(); }
+  const idle = await fixture({ FAKE_READY_DELAY: "200" });
+  try {
+    const pending = idle.service.generate("私密战报文字");
+    const settled = assert.rejects(pending, /shut down/);
+    await idle.service.shutdown();
+    await settled;
+    assert.deepEqual(idle.warnings, []);
+  } finally { await idle.cleanup(); }
 });

@@ -83,6 +83,8 @@ A crash, malformed protocol response or active request deadline stops the worker
 The next request starts a fresh worker.
 The transport does not replay failed announcements automatically, allowing the match monitor to control retry and duplicate prevention.
 There is no cloud speech fallback.
+Each stopped worker (crash, malformed output, startup or generation deadline) logs one warning with a fixed message, even when the announcement's chunk retry then succeeds on a fresh worker.
+The warning never contains announcement text, and a deliberate shutdown logs none.
 Worker diagnostics are not printed to bot logs.
 
 ## Verification
