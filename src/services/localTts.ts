@@ -4,6 +4,7 @@ import { access, lstat, mkdir, mkdtemp, open, readdir, realpath, rm } from "node
 import os from "node:os";
 import path from "node:path";
 import { createInterface, type Interface } from "node:readline";
+import { logWarn } from "../utils/log";
 
 export const LOCAL_TTS_MODEL = "mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-8bit";
 
@@ -15,6 +16,8 @@ export interface LocalTtsOptions {
   timeoutMs: number;
   queueLimit: number;
   workerEnv?: NodeJS.ProcessEnv;
+  /** Receives one fixed-text warning per failed worker; `logWarn` by default. */
+  warn?: (message: string) => void;
 }
 
 export interface LocalTtsStatus {
@@ -401,6 +404,9 @@ export class LocalTtsService {
     this.lines?.close();
     this.lines = undefined;
     worker?.kill("SIGKILL");
+    // The chunk retry hides a failure that cost a cold model reload, so say so. Every message passed here is
+    // fixed text, never request text; shutdown is not a failure.
+    if (worker && !this.closed) (this.options.warn ?? logWarn)(`Local speech worker stopped: ${error.message}`);
     const pending = [...(this.active ? [this.active] : []), ...this.queue];
     this.active = undefined;
     this.queue = [];
