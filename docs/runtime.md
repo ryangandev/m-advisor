@@ -73,6 +73,9 @@ A repeat of the same signal within about 1 second of its first arrival is theref
 A different signal while the bot is stopping (for example closing the launcher window after Ctrl+C) joins the running shutdown.
 Only a repeat of the same signal more than 1 second after its first arrival, while the bot is still stopping, ends the process at once with exit code 1, and a 15 second deadline forces exit if cleanup hangs.
 Starting again restores saved bindings and checks whether the tracked members are already in voice.
+Only one bot process may run per data directory: before login the bot takes an exclusive lock on `<BOT_DATA_DIR>/bot.lock.sqlite3` (an empty SQLite file, not the database).
+A second process logs `Another M-Advisor is already running with this data directory (...); stop it first.` and exits with code 1 without logging in.
+The operating system drops the lock when the process ends, even after a crash or SIGKILL, so no stale lock or pid file needs cleaning up.
 In real mode, startup warns about each saved mock account; `/bind` with a real Riot ID removes them.
 In real mode, after login, the bot also makes one request to the na1 `lol/status/v4/platform-data` endpoint to check `RIOT_API_KEY`.
 An accepted key is one info line, `RIOT_API_KEY accepted by Riot.`
