@@ -1624,3 +1624,66 @@ test("a 4-stack's failed start read is asked again on the in-game rechecks, one 
   assert.equal(snapshots.length, 1 + 3, "a player is asked at most 1 + 3 times per game");
   assert.equal(startWatcher(bot).rankStarts.size, 0);
 });
+
+// A logged error kind is cleared only by the accounts it was seen on.
+
+test("an early tick that skips the failing account does not report it recovered, nor log it again", async () => {
+  const bot = harness([
+    { id: A, puuids: ["acct-a"], channel: "voice-1" }, { id: B, puuids: ["acct-b"], channel: "voice-1" }, { id: C, puuids: ["acct-c"], channel: null },
+  ]);
+  bot.games.set("acct-a", new RiotApiError("Riot API returned an unexpected 404 for an active game lookup.", "invalid_response", 404));
+  await bot.start();
+  assert.equal(bot.errors.length, 1);
+  // A third member joins 5 s later: the early tick skips the two accounts asked under 20 s ago and asks only the new one.
+  bot.advance(5_000);
+  bot.move(C, "voice-1");
+  bot.sync();
+  await bot.monitor.pollGameStart(GUILD);
+  assert.deepEqual(bot.requests, ["acct-a", "acct-b", "acct-c"]);
+  assert.deepEqual(bot.infos.filter((line) => line.includes("work again") || line.includes("no longer fail")), []);
+  // The regular tick asks the failing account again: still the same kind, still one log line.
+  await bot.tick();
+  assert.equal(bot.requests.filter((puuid) => puuid === "acct-a").length, 2);
+  assert.equal(bot.errors.length, 1, "not logged again");
+  assert.deepEqual(bot.infos.filter((line) => line.includes("work again") || line.includes("no longer fail")), []);
+  // Once it is asked and answers, that is the one recovery line.
+  bot.games.delete("acct-a");
+  await bot.tick();
+  assert.equal(bot.infos.filter((line) => line.includes("Game start checks work again after invalid_response:404")).length, 1);
+});
+
+test("a rate-limited refusal of the failing account is not a recovery", async () => {
+  const bot = harness([{ id: A, puuids: ["acct-a"], channel: "voice-1" }, { id: B, puuids: ["acct-b"], channel: "voice-1" }]);
+  const failure = new RiotApiError("Riot API returned an unexpected 404 for an active game lookup.", "invalid_response", 404);
+  bot.games.set("acct-a", failure);
+  await bot.start();
+  assert.equal(bot.errors.length, 1);
+  // The pacer refuses the failing account for one tick while the other one answers.
+  bot.games.set("acct-a", new RiotApiError("The Riot request budget for this host is used up, so the request was not sent.", "rate_limited", undefined, 3000));
+  await bot.tick();
+  assert.deepEqual(bot.infos.filter((line) => line.includes("work again") || line.includes("no longer fail")), []);
+  bot.games.set("acct-a", failure);
+  await bot.tick();
+  assert.equal(bot.errors.length, 1, "not logged again");
+  assert.deepEqual(bot.infos.filter((line) => line.includes("work again") || line.includes("no longer fail")), []);
+});
+
+test("a kind seen on two accounts is cleared only once both were asked and neither fails with it", async () => {
+  const bot = harness([{ id: A, puuids: ["acct-a"], channel: "voice-1" }, { id: B, puuids: ["acct-b"], channel: "voice-1" }, { id: C, puuids: ["acct-c"], channel: "voice-1" }]);
+  const failure = () => new RiotApiError("Riot API returned an unexpected 404 for an active game lookup.", "invalid_response", 404);
+  bot.games.set("acct-a", failure());
+  bot.games.set("acct-b", failure());
+  await bot.start();
+  assert.equal(bot.errors.length, 1, "one line for the kind");
+  // The first account answers again, the second still fails with the kind.
+  bot.games.delete("acct-a");
+  await bot.tick();
+  assert.deepEqual(bot.infos.filter((line) => line.includes("work again") || line.includes("no longer fail")), []);
+  // The second is refused by the pacer: not asked, so still not recovered.
+  bot.games.set("acct-b", new RiotApiError("The Riot request budget for this host is used up, so the request was not sent.", "rate_limited", undefined, 3000));
+  await bot.tick();
+  assert.deepEqual(bot.infos.filter((line) => line.includes("work again") || line.includes("no longer fail")), []);
+  bot.games.delete("acct-b");
+  await bot.tick();
+  assert.equal(bot.infos.filter((line) => line.includes("Game start checks work again after invalid_response:404")).length, 1);
+});
