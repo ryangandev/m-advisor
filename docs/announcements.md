@@ -425,6 +425,7 @@ Each message has one short plain voice job in the shared voice queue, with one a
 
 - A line is queued only after the report's own voice has finished, never before it and never ahead of it. Lines that become ready earlier wait in a queue and are flushed in order when it finishes; lines that become ready later, from the late update, are queued at once.
 - It is queued only if a member of the reported team is still in a usable voice channel and still owns the account; an enemy or a stranger in voice does not count. Otherwise the announcement stays text only, with one info line.
+- The late update comes minutes after the report, so the session that reported may be over by then, when everyone left voice and came back. The line is then queued in the guild's running session, with the same checks and the poll's pinned channel. If no session is running, the announcement stays text only, with the same info line.
 - If the report's voice hits its attempt cap, the waiting lines stay text only, with one info line.
 - It speaks tiers as `黄金二`, for example `军师贺喜！小明单双排升到铂金四了。` or `小明单双排掉回黄金一，别急，军师陪你重新上马。`
 - Each sentence is chosen from a small pool, seeded by `rank:<matchId>:<puuid>`, so the same match always says the same thing.

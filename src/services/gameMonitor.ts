@@ -1577,8 +1577,15 @@ export class GameMonitor {
   }
 
   private speakRank(cast: RankCast, line: string): void {
-    const { client, guildId, session } = cast;
-    if (!this.current(guildId, session)) return;
+    const { client, guildId } = cast;
+    // The late update comes minutes after the report, so the session that reported may be over (everyone left and came
+    // back): the guild's running session, if any, carries the line, under the same party, ownership and channel checks.
+    const session = this.current(guildId, cast.session) ? cast.session : this.sessions.get(guildId);
+    if (!session || !this.current(guildId, session)) {
+      this.dependencies.info(`The 段位播报 of match ${cast.matchId} is text only: nobody of the team is in a voice channel announcements can use.`);
+      return;
+    }
+    cast.session = session;
     let pick: string | undefined;
     // Only the reported team's members, still bound to their account, count: an enemy or a stranger in voice does not.
     const ids = () => cast.party.filter(({ memberId, puuid }) => this.ownerOf(guildId, puuid) === memberId).map(({ memberId }) => memberId);

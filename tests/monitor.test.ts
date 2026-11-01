@@ -2324,6 +2324,76 @@ test("a late 段位播报 is text only when nobody of the reported team is still
   assert.equal(bot.errors.length, 0);
 });
 
+const LATE_RANK_ROWS = (rank: ReturnType<typeof withRank>) => {
+  rank.league.set("alice", [ranked("PLATINUM", "IV", 7, 11, 10)]);
+  rank.league.set("bob", [ranked("SILVER", "I", 12, 10, 11)]);
+  rank.league.set("zed", [ranked("PLATINUM", "III", 71, 11, 10)]);
+};
+const TEXT_ONLY_INFO = /段位播报 of match ranked-trio is text only: nobody of the team is in a voice channel/;
+
+test("a late 段位播报 is spoken in the guild's new session when the team left voice and came back after the report", async () => {
+  const { bot, rank } = await rankedTrio("cast-restart-guild", { retryFloorMs: 30 });
+  const queued = recordAnnouncements(bot);
+  assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
+  // Everyone drops out of voice for a moment, which stops the session, and then they are back in a fresh one.
+  for (const id of ["alice-id", "bob-id", "zed-id"]) bot.move(id, null);
+  bot.sync();
+  for (const id of ["alice-id", "bob-id", "zed-id"]) bot.move(id, "x");
+  bot.sync();
+  LATE_RANK_ROWS(rank);
+  await until(() => castsOf(bot).length === 1, "the late 段位播报");
+  await until(() => bot.generated.some((text) => text.startsWith("模拟段位播报，")), "the late line being spoken");
+  assert.equal(queued.filter((text) => text.startsWith("模拟段位播报，")).length, 1, "one voice job for the line");
+  assert.ok(!queued[0].startsWith("模拟段位播报，"), "the report's own voice came first");
+  assert.ok(!bot.infos.some((line) => TEXT_ONLY_INFO.test(line)), "it is not text only");
+  assert.equal(bot.errors.length, 0);
+});
+
+test("a late 段位播报 is text only, with an info line, when the team left voice and nobody is back to run a session", async () => {
+  const { bot, rank } = await rankedTrio("cast-gone-session-guild", { retryFloorMs: 30 });
+  const queued = recordAnnouncements(bot);
+  assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
+  for (const id of ["alice-id", "bob-id", "zed-id"]) bot.move(id, null);
+  bot.sync();
+  LATE_RANK_ROWS(rank);
+  await until(() => castsOf(bot).length === 1, "the late 段位播报");
+  await until(() => bot.infos.some((line) => TEXT_ONLY_INFO.test(line)), "the text only line");
+  assert.equal(queued.length, 1, "no voice job for the line");
+  assert.equal(bot.errors.length, 0);
+});
+
+test("a late 段位播报 in a new session still needs a reported team member in a usable channel", async () => {
+  const { bot, rank } = await rankedTrio("cast-new-session-strangers-guild", { retryFloorMs: 30 });
+  const queued = recordAnnouncements(bot);
+  assert.deepEqual(await bot.poll(), { announced: 1, errors: 0 });
+  // The reported team (alice and bob) leaves for good; only the bound friend of the other team is back in a new session.
+  for (const id of ["alice-id", "bob-id", "zed-id"]) bot.move(id, null);
+  bot.sync();
+  bot.move("zed-id", "x");
+  bot.sync();
+  LATE_RANK_ROWS(rank);
+  await until(() => castsOf(bot).length === 1, "the late 段位播报");
+  await until(() => bot.infos.some((line) => TEXT_ONLY_INFO.test(line)), "the text only line");
+  assert.equal(queued.length, 1, "the other team's friend does not count");
+  assert.equal(bot.errors.length, 0);
+});
+
+test("a late 段位播报 in a new session honors the channel the poll was pinned to", async () => {
+  const { bot, rank } = await rankedTrio("cast-new-session-pinned-guild", { retryFloorMs: 30 });
+  const queued = recordAnnouncements(bot);
+  // The poll is pinned to channel x, like a /simulate poll.
+  assert.deepEqual(await bot.monitor.poll(bot.client, bot.guildId, "x"), { announced: 1, errors: 0 });
+  for (const id of ["alice-id", "bob-id", "zed-id"]) bot.move(id, null);
+  bot.sync();
+  for (const id of ["alice-id", "bob-id", "zed-id"]) bot.move(id, "y");
+  bot.sync();
+  LATE_RANK_ROWS(rank);
+  await until(() => castsOf(bot).length === 1, "the late 段位播报");
+  await until(() => bot.infos.some((line) => TEXT_ONLY_INFO.test(line)), "the text only line");
+  assert.equal(queued.length, 1, "no voice job outside the pinned channel");
+  assert.equal(bot.errors.length, 0);
+});
+
 test("a late 段位播报 is not posted into a server the bot has left, and that is an info line", async () => {
   const { bot, rank } = await rankedTrio("cast-left-guild", { retryFloorMs: 30 });
   const queued = recordAnnouncements(bot);
