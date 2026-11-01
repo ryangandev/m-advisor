@@ -13,6 +13,7 @@ import { shutdownDatabase } from "./store/database";
 import { getVoiceConnections } from "@discordjs/voice";
 import { beginShutdown, isStopping } from "./services/shutdownState";
 import { logError, logInfo, logToFileOnly, startFileLog } from "./utils/log";
+import { acquireInstanceLock, InstanceLockHeldError, type InstanceLock } from "./utils/instanceLock";
 
 dotenv.config({ quiet: true });
 logInfo(`Bot starting; logs are also saved in ${startFileLog()}.`);
@@ -58,8 +59,24 @@ async function loadEvents(): Promise<void> {
   }
 }
 
+// Held until the process ends; the operating system also drops it if the process dies without releasing it.
+let instanceLock: InstanceLock | undefined;
+
+function takeInstanceLock(): void {
+  try {
+    instanceLock = acquireInstanceLock();
+  } catch (error) {
+    if (error instanceof InstanceLockHeldError) {
+      throw new Error(`Another M-Advisor is already running with this data directory (${error.directory}); stop it first.`);
+    }
+    throw error;
+  }
+}
+
 async function bootstrap(): Promise<void> {
   if (isStopping()) return;
+  // Before anything can log in: two bots with one token and one database would announce every match twice.
+  takeInstanceLock();
   const mode = getRiotMode();
   if (mode === "real" && !process.env.RIOT_API_KEY?.trim()) {
     throw new Error("RIOT_MODE=real requires RIOT_API_KEY. Use mock mode to test without a key.");
@@ -113,6 +130,7 @@ function shutdown(): Promise<void> {
     // A report still being sent gets a few seconds to finish before the database closes under it.
     await cleanup("report scheduler", () => finishReportScheduler());
     await cleanup("database", shutdownDatabase);
+    await cleanup("instance lock", () => instanceLock?.release());
     if (failed) logError("Bot stopped with cleanup errors; see the messages above.");
     else logInfo("Bot stopped; speech process and database closed.");
   });

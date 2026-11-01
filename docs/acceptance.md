@@ -97,6 +97,7 @@ npm run verify:discord -- --confirm-live
 ```
 
 The explicit flag is required because this check connects to Discord, joins voice and posts two visibly simulated reports.
+It takes the same data-directory lock as the normal bot before login, so it refuses to run, with a message to stop the bot first, while the bot is running (see [runtime](runtime.md)).
 It forces mock Riot data and local Qwen speech within its own process, and uses an isolated temporary SQLite database.
 It establishes a silent historical baseline, announces a win with Serena and a loss with Uncle_Fu, and checks the exact completed match IDs.
 The next poll must remain silent after each outcome.

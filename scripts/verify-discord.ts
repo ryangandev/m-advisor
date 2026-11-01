@@ -14,6 +14,7 @@ import { pollGuildNow, stopAllPolling } from "../src/services/gameMonitor";
 import { reconcileGuildMonitoring } from "../src/services/monitorLifecycle";
 import { simulateMockMatch } from "../src/services/riotData";
 import { prewarmTTS, shutdownTTS } from "../src/utils/tts";
+import { acquireInstanceLock, InstanceLockHeldError, type InstanceLock } from "../src/utils/instanceLock";
 
 dotenv.config({ quiet: true });
 
@@ -36,7 +37,14 @@ async function verify(): Promise<void> {
     }
   });
   const started = Date.now();
+  let instanceLock: InstanceLock | undefined;
   try {
+    // The same lock the normal bot takes before login, so the two exclude each other.
+    try { instanceLock = acquireInstanceLock(); }
+    catch (error) {
+      if (error instanceof InstanceLockHeldError) throw new Error(`The normal M-Advisor bot is running with this data directory (${error.directory}); stop it first, then run the verifier again.`);
+      throw error;
+    }
     const ready = once(client, Events.ClientReady, { signal: AbortSignal.timeout(30_000) });
     await Promise.all([client.login(process.env.DISCORD_TOKEN), ready]);
     const guild = client.guilds.cache.get(guildId);
@@ -91,7 +99,7 @@ async function verify(): Promise<void> {
     let cleanupFailed = false;
     for (const cleanup of [
       async () => stopAllPolling(), async () => client.destroy(), shutdownTTS,
-      async () => closeDatabase(), async () => rm(directory, { recursive: true, force: true }),
+      async () => closeDatabase(), async () => rm(directory, { recursive: true, force: true }), async () => instanceLock?.release(),
     ]) {
       try { await cleanup(); }
       catch (error) { cleanupFailed = true; console.error("Live verifier cleanup failed:", error instanceof Error ? error.name : "unknown error"); }
