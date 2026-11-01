@@ -57,12 +57,18 @@ export async function getRecentMatchIds(puuid: string, count = 20, options: Matc
  * The newest match in a supported Summoner's Rift queue. A match whose queue is already known costs no request:
  * a non-Summoner's-Rift one is skipped and a supported one is returned as it is, so only matches never seen before
  * are fetched, newest first, until the first supported one.
+ * `options` applies to the ID list request and, unless `detailOptions` is given, to each detail lookup too. A caller
+ * that wants one attempt for the list but the requester's retries for a new match's detail passes both.
  */
-export async function getLatestSRMatchId(puuid: string, options: MatchRequestOptions = {}): Promise<string | null> {
+export async function getLatestSRMatchId(
+  puuid: string,
+  options: MatchRequestOptions = {},
+  detailOptions: MatchRequestOptions = options,
+): Promise<string | null> {
   const mode = getRiotMode();
   for (const matchId of await getRecentMatchIds(puuid, 20, options)) {
     const known = touch(queueCache, `${mode}:${matchId}`);
-    const queueId = known ?? (await getMatchDetail(matchId, options)).info.queueId;
+    const queueId = known ?? (await getMatchDetail(matchId, detailOptions)).info.queueId;
     if (isAnnouncedQueue(queueId)) return matchId;
   }
 

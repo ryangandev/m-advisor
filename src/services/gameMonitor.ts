@@ -1729,11 +1729,12 @@ export const rankTracker = new RankTracker({
 
 /**
  * The poll's latest-match read: one attempt per request, because the next poll is already the retry. During a Riot outage
- * each account then costs one request per poll instead of three. A new match's detail keeps the requester's retries, so a
- * brief 5xx does not delay its announcement by a whole poll.
+ * each account then costs one request per poll instead of three. Only the ID list is one attempt: a new match's detail
+ * (an uncached one is fetched here, then cached) keeps the requester's retries, so a brief 5xx does not delay its
+ * announcement by a whole poll.
  */
 export function pollLatestMatchId(puuid: string): Promise<string | null> {
-  return getLatestSRMatchId(puuid, { retry: false });
+  return getLatestSRMatchId(puuid, { retry: false }, {});
 }
 
 const monitor = new GameMonitor({
