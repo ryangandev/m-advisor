@@ -256,8 +256,9 @@ A spectator 401 or 403 turns the watcher off for the rest of the session with on
 The same key is used for match polling, so a rejected key also stops the match polling and the session.
 A spectator 429 skips that account for this tick quietly and is never shown to anyone.
 Any other failure, including a 404 that is not Riot's `NOT_FOUND`, is a failed check that leaves the account's state as it was, and it never turns the watcher off.
-Each kind of failure is logged once.
-A tick in which a check answered forgets the logged kinds that did not fail in that tick and logs one line saying so: the checks work again, or a kind no longer fails while another still does.
+Each kind of failure is logged once, with the accounts it was seen on remembered.
+A tick in which a check answered forgets a logged kind only when every account it was seen on was asked in that tick and did not fail with it, and logs one line saying so: the checks work again, or a kind no longer fails while another still does.
+An account the tick skipped (asked under 20 seconds ago, or inside the 2 minute in-game recheck spacing) or that Riot's pacer refused as `rate_limited` was not asked, so it keeps its kind logged; an early tick for a joining member therefore never reports a recovery or logs the same failure again.
 A kind that keeps failing on one account therefore stays muted while other accounts work, and is never reported as recovered.
 A failure anywhere else in a tick, such as a database read, is logged and counted the same way; a tick never rejects, because its timer does not wait for it.
 The watcher's log lines start with `Game start check failed:`, apart from the match poll's `Match monitoring failed:`.

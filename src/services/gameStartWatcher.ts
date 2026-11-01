@@ -192,9 +192,15 @@ export interface GameStartOutcome {
   voice: PregameVoiceOutcome;
 }
 
-/** What one tick saw of Riot: the kinds of failure it had, and whether any check was answered. */
+/** Stands for a failure that belongs to no account, such as a database read; every tick counts it as asked. */
+const NO_ACCOUNT = "";
+
+/** What one tick saw of Riot: the accounts it asked, the kinds of failure each had, and whether any check was answered. */
 interface TickKinds {
-  failed: Set<string>;
+  /** The accounts Riot was asked about and did not refuse as rate_limited; a skipped or refused one was not asked. */
+  asked: Set<string>;
+  /** The accounts that failed with each kind. */
+  failed: Map<string, Set<string>>;
   answered: boolean;
 }
 
@@ -210,7 +216,8 @@ export class GameStartWatcher {
   private readonly gameStarts = new Map<string, GameStartEntry>();
   /** Ranked games whose start read is not done yet, by match ID. */
   private readonly rankStarts = new Map<string, RankStart>();
-  private readonly loggedErrors = new Set<string>();
+  /** The kinds of failure logged and not yet recovered, with the accounts each was seen on. */
+  private readonly loggedErrors = new Map<string, Set<string>>();
   private timer?: NodeJS.Timeout;
   private inFlight?: Promise<GameStartTickResult>;
   private tickAgain = false;
@@ -278,6 +285,15 @@ export class GameStartWatcher {
       if (owners.get(puuid) === presence.owner) continue;
       this.accounts.delete(puuid);
       this.releaseRankStarts(puuid);
+      this.forgetFailures(puuid);
+    }
+  }
+
+  /** An account that left no longer fails: a kind seen only on it is forgotten, quietly, since nothing was asked again. */
+  private forgetFailures(puuid: string): void {
+    for (const [kind, accounts] of this.loggedErrors) {
+      accounts.delete(puuid);
+      if (accounts.size === 0) this.loggedErrors.delete(kind);
     }
   }
 
@@ -328,36 +344,51 @@ export class GameStartWatcher {
   }
 
   /**
-   * Logs an error once per kind until a tick no longer has it, so a Riot outage does not repeat every 20 seconds.
-   * The kind is noted for this tick even when it is already logged, so `recovered` can tell it still fails.
+   * Logs an error once per kind until a tick has asked every account the kind was seen on and none failed with it, so a Riot
+   * outage does not repeat every 20 seconds. The kind and the account are noted for this tick even when it is already logged,
+   * so `recovered` can tell it still fails.
    */
-  private logOnce(error: unknown, context: string, tick: TickKinds): void {
+  private logOnce(error: unknown, context: string, tick: TickKinds, puuid = NO_ACCOUNT): void {
     const key = riotErrorKind(error);
-    tick.failed.add(key);
-    if (this.loggedErrors.has(key)) return;
-    this.loggedErrors.add(key);
+    const failed = tick.failed.get(key) ?? new Set<string>();
+    failed.add(puuid);
+    tick.failed.set(key, failed);
+    const seen = this.loggedErrors.get(key);
+    if (seen) {
+      seen.add(puuid);
+      return;
+    }
+    this.loggedErrors.set(key, new Set([puuid]));
     this.dependencies.log(new Error(`${context}: ${errorMessage(error)} (logged once until a check works again)`));
   }
 
   /**
-   * A tick in which a check answered, with the kinds of failure it had: a logged kind it no longer had is forgotten, so it is
-   * logged again if it returns, and one line says so, so a stuck watcher and a recovered one look different. A kind that keeps
-   * failing on one account therefore never mutes a different kind on another, and never reports a recovery while it fails.
+   * A tick in which a check answered: a logged kind is forgotten once every account it was seen on was asked in this tick and
+   * did not fail with it, so it is logged again if it returns, and one line says so, so a stuck watcher and a recovered one look
+   * different. An account the tick skipped (asked under 20 s ago, or in the 2 minute in-game recheck spacing) or Riot's pacer
+   * refused (`rate_limited`) was not asked, so it keeps its kind logged. A kind that keeps failing on one account therefore
+   * never mutes a different kind on another, and never reports a recovery while it fails or while nobody asked.
    */
   private recovered(tick: TickKinds): void {
     if (!tick.answered) return;
-    const cleared = [...this.loggedErrors].filter((kind) => !tick.failed.has(kind));
+    const cleared: string[] = [];
+    for (const [kind, accounts] of this.loggedErrors) {
+      for (const puuid of accounts) {
+        if (tick.asked.has(puuid) && !tick.failed.get(kind)?.has(puuid)) accounts.delete(puuid);
+      }
+      if (accounts.size === 0) cleared.push(kind);
+    }
     if (cleared.length === 0) return;
     for (const kind of cleared) this.loggedErrors.delete(kind);
     this.dependencies.info(this.loggedErrors.size === 0
       ? `Game start checks work again after ${cleared.join(", ")} failures.`
-      : `Game start checks no longer fail with ${cleared.join(", ")}; still failing with ${[...this.loggedErrors].join(", ")}.`);
+      : `Game start checks no longer fail with ${cleared.join(", ")}; still failing with ${[...this.loggedErrors.keys()].join(", ")}.`);
   }
 
   /** One tick. It never rejects: the timer fires it without waiting, so anything unexpected is logged and counted instead. */
   private async run(requiredChannelId?: string): Promise<GameStartTickResult> {
     const result: GameStartTickResult = { started: 0, posted: 0, errors: 0 };
-    const kinds: TickKinds = { failed: new Set(), answered: false };
+    const kinds: TickKinds = { asked: new Set([NO_ACCOUNT]), failed: new Map(), answered: false };
     try {
       await this.check(result, kinds, requiredChannelId);
     } catch (error) {
@@ -445,14 +476,16 @@ export class GameStartWatcher {
             + "for this monitoring session. If RIOT_API_KEY expired, paste a new key into .env and restart."));
           return;
         }
-        // A rate limit only skips this account for this tick; it is expected and stays quiet.
+        // A rate limit only skips this account for this tick; it is expected and stays quiet, and the account was not asked.
         if (error instanceof RiotApiError && error.code === "rate_limited") continue;
         // Anything else, including a 404 that is not "not in a game", is a failed check: the state stays as it was.
+        kinds.asked.add(puuid);
         result.errors++;
-        this.logOnce(error, "Riot did not say whether an account is in a game", kinds);
+        this.logOnce(error, "Riot did not say whether an account is in a game", kinds, puuid);
         continue;
       }
       kinds.answered = true;
+      kinds.asked.add(puuid);
       // The member may have left, rejoined or been unbound while Riot answered.
       if (!this.live() || this.accounts.get(puuid) !== presence) continue;
       if (!game) {
