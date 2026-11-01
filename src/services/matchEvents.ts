@@ -118,25 +118,34 @@ function fights(deaths: Death[]): Death[][] {
   return groups.filter((group) => group.length >= FIGHT_MIN_DEATHS);
 }
 
-function fightEvents(fight: Death[], objectives: Objective[], players: MatchParticipant[]): MatchEvent[] {
+/**
+ * The fight's own deaths decide who won it and how many takedowns count, but a death that the place filter kept out
+ * of the fight (chased off, caught on the way in, or without a position) still happened, so the two claims about a
+ * player's own fate are checked against every death in the match.
+ */
+function fightEvents(fight: Death[], allDeaths: Death[], objectives: Objective[], players: MatchParticipant[]): MatchEvent[] {
   const events: MatchEvent[] = [];
   const start = fight[0].timestamp;
-  const until = fight.at(-1)!.timestamp + OBJECTIVE_WINDOW_MS;
+  const end = fight.at(-1)!.timestamp;
+  const until = end + OBJECTIVE_WINDOW_MS;
   const center = centroid(fight);
   // A fight is named after a monster only when it happened at that monster's pit and the team took it.
   const monsterFor = (teamId: number) => objectives.filter((objective) => objective.teamId === teamId
     && objective.timestamp >= start && objective.timestamp <= until && nearPit(center, objective.monster)).sort(MONSTER_ORDER)[0]?.monster;
   const deathsOf = (teamId: number) => fight.filter((death) => death.victim.teamId === teamId).length;
   const enemyTeam = (teamId: number) => players.find((player) => player.teamId !== teamId)?.teamId ?? -1;
-  // The first to fall in a fight their team did not win.
+  // The first to fall in a fight their team did not win, with no teammate down in the moments before.
   const first = fight[0].victim;
-  if (deathsOf(first.teamId) >= deathsOf(enemyTeam(first.teamId))) {
+  const teammateFellFirst = allDeaths.some((death) => death.victim.teamId === first.teamId && death.timestamp < start
+    && death.timestamp >= start - FIGHT_GAP_MS);
+  if (!teammateFellFirst && deathsOf(first.teamId) >= deathsOf(enemyTeam(first.teamId))) {
     events.push({ puuid: first.puuid, timestamp: start, kind: "lostFightFirstDeath", ...withMonster(monsterFor(enemyTeam(first.teamId))) });
   }
-  // A survivor of a won fight who took part in most of its kills.
+  // A survivor of a won fight who took part in most of its kills, and did not die at any point while it lasted.
   for (const player of players) {
     const enemy = enemyTeam(player.teamId);
-    if (deathsOf(enemy) <= deathsOf(player.teamId) || fight.some((death) => death.victim === player)) continue;
+    if (deathsOf(enemy) <= deathsOf(player.teamId)
+      || allDeaths.some((death) => death.victim === player && death.timestamp >= start && death.timestamp <= end)) continue;
     const takedowns = fight.filter((death) => death.victim.teamId === enemy
       && (death.killer === player || death.assisters.includes(player))).length;
     if (takedowns >= MIN_FIGHT_TAKEDOWNS) {
@@ -214,7 +223,7 @@ export function extractMatchEvents(detail: MatchDetail, timeline: MatchTimeline)
     }
   }
   events.push(...objectiveDeaths(deaths, objectives));
-  for (const fight of fights(deaths)) events.push(...fightEvents(fight, objectives, players));
+  for (const fight of fights(deaths)) events.push(...fightEvents(fight, deaths, objectives, players));
   return events.sort((a, b) => a.timestamp - b.timestamp);
 }
 
