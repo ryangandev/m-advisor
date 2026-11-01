@@ -262,7 +262,7 @@ It depends on an injected `readEntries(puuid)`, which is `getLeagueEntries` in p
   The game start watcher remembers the first sighting and passes it with `snapshot(puuids, { matchId, since })`.
   On each later in-game recheck it asks again for the players who still have no successful read from that time on.
   A timeout or a 429 at the start therefore does not leave an older read as the before-value, which would count a dodge or decay as part of the game.
-  A player is asked at most 1 + 3 times per game, and the tracker's 60 second floor still spaces the reads.
+  A player is asked at most 1 + 3 times per game, counting one attempt per tick however many of the tracked players see the game in it, so a premade keeps its in-game retries; the tracker's 60 second floor still spaces the reads.
   The watcher forgets a game's start bookkeeping when its accounts leave the game or voice, when the game finishes, and when it stops.
 - A game the watcher saw at its start whose before-value is older than that sighting is not given a normal LP change.
   Its `change`, `promoted` and `demoted` result becomes `unattributable`, because the older read may hold a dodge or decay.

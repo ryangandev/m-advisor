@@ -148,6 +148,8 @@ interface RankStart {
   since: number;
   /** Start reads asked for so far, by player; one more than the retries at most. */
   attempts: Map<string, number>;
+  /** The tick of each player's latest attempt, so the accounts of a premade that see the game in one tick count one. */
+  askedTick: Map<string, number>;
   /** The accounts of this watcher that see the game; the entry goes with the last of them. */
   observers: Set<string>;
 }
@@ -477,7 +479,7 @@ export class GameStartWatcher {
     const known = this.gameStarts.get(matchId);
     // LP does not move during a game, so its start, announced or skipped, is the best before-value; it absorbs a
     // dodge or decay since the last read. A read that failed or was skipped is tried again on the later in-game rechecks.
-    this.readRankStart(game, matchId, puuid, !known);
+    this.readRankStart(game, matchId, puuid, !known, tick);
     if (known?.status === "started") return false;
     const fresh = isLoading(game) || (notInThisGame && game.gameLength <= FRESH_GAME_SECONDS);
     const reason = !isAnnouncedGame(game) ? `queue ${game.gameQueueConfigId ?? "unknown"} on map ${game.mapId ?? "unknown"} is not announced`
@@ -502,11 +504,12 @@ export class GameStartWatcher {
    * The first sighting remembers its time, and every later sighting (the in-game rechecks) asks again for the players
    * who still have no successful read from that time on, so a timeout or a 429 at the start does not leave an older read
    * as the before-value, which would count a dodge or decay as part of the game. The tracker's own floor paces the retries,
-   * and a player is asked at most 1 + RANK_START_RETRIES times per game; a player who never got a read is shown as
+   * and a player is asked at most 1 + RANK_START_RETRIES times per game, counting one attempt per tick however many of the
+   * tracked accounts see the game in it (a premade), so the in-game rechecks keep their retries; a player who never got a read is shown as
    * unattributable by the tracker, which is told the first sighting.
    * A game whose finished match is already known is over and reads nothing. A failure is logged and changes nothing else.
    */
-  private readRankStart(game: ActiveGame, matchId: string, observer: string, first: boolean): void {
+  private readRankStart(game: ActiveGame, matchId: string, observer: string, first: boolean, tick: number): void {
     const rank = this.dependencies.rank;
     if (!rank || game.gameQueueConfigId === null || !rankedQueueFor(game.gameQueueConfigId)) return;
     if (this.host.finished(matchId)) {
@@ -515,7 +518,7 @@ export class GameStartWatcher {
     }
     if (first) {
       this.rankStarts.delete(matchId);
-      this.rankStarts.set(matchId, { since: this.now(), attempts: new Map(), observers: new Set() });
+      this.rankStarts.set(matchId, { since: this.now(), attempts: new Map(), askedTick: new Map(), observers: new Set() });
       if (this.rankStarts.size > GAME_STARTS_LIMIT) this.rankStarts.delete(this.rankStarts.keys().next().value!);
     }
     const start = this.rankStarts.get(matchId);
@@ -525,10 +528,15 @@ export class GameStartWatcher {
       const members = this.dependencies.members(this.host.guildId);
       const players = liveParticipants(members, boundParticipants(members, game.participants)).map(({ puuid }) => puuid);
       const { hasReadSince } = rank;
+      // Players who still have no read and attempts left; a premade's later observers in the same tick find them asked already.
       const waiting = players.filter((puuid) => (start.attempts.get(puuid) ?? 0) <= RANK_START_RETRIES
         && !hasReadSince?.call(rank, puuid, start.since));
-      for (const puuid of waiting) start.attempts.set(puuid, (start.attempts.get(puuid) ?? 0) + 1);
-      if (waiting.length > 0 || first) rank.snapshot(waiting, { matchId, since: start.since });
+      const asking = waiting.filter((puuid) => start.askedTick.get(puuid) !== tick);
+      for (const puuid of asking) {
+        start.attempts.set(puuid, (start.attempts.get(puuid) ?? 0) + 1);
+        start.askedTick.set(puuid, tick);
+      }
+      if (asking.length > 0 || first) rank.snapshot(asking, { matchId, since: start.since });
       // Done once everyone has a read or has used the attempts, or when the tracker cannot say (one attempt per game).
       if (waiting.length === 0 || !hasReadSince) this.rankStarts.delete(matchId);
     } catch (error) {

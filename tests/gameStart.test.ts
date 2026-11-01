@@ -1591,3 +1591,36 @@ test("an account whose old match finished finds the loading requeue on the very 
   assert.equal((await bot.tick()).started, 1, "no waiting for the sixth tick");
   assert.equal(bot.requests.length, 2);
 });
+
+// A premade's start read: one attempt per player per tick, however many of them see the game.
+
+test("a 4-stack's failed start read is asked again on the in-game rechecks, one attempt per player per tick", async () => {
+  const bot = harness([
+    { id: A, puuids: ["acct-a"], channel: "voice-1" }, { id: B, puuids: ["acct-b"], channel: "voice-1" },
+    { id: C, puuids: ["acct-c"], channel: "voice-1" }, { id: F, puuids: ["acct-f"], channel: "voice-1" },
+  ]);
+  const snapshots: string[][] = [];
+  // Every start read fails, so nobody ever has a read since the first sighting. Only the game's own reads are counted.
+  bot.dependencies.rank = {
+    snapshot: (puuids: readonly string[], options?: { matchId: string }) => { if (options?.matchId === "NA1_7201") snapshots.push([...puuids]); },
+    hasReadSince: () => false,
+  } as never;
+  bot.settings.voice = false;
+  bot.enter(spectatorGame(7201, [
+    { puuid: "acct-a", teamId: 100, championId: AHRI }, { puuid: "acct-b", teamId: 100, championId: LUX },
+    { puuid: "acct-c", teamId: 100, championId: LEE_SIN }, { puuid: "acct-f", teamId: 100, championId: 238 },
+  ], { queue: 440 }));
+  await bot.start();
+  assert.equal(snapshots.length, 1, "the first tick asks once, though four accounts see the game");
+  assert.deepEqual([...snapshots[0]].sort(), ["acct-a", "acct-b", "acct-c", "acct-f"]);
+  assert.equal(startWatcher(bot).rankStarts.size, 1, "the start read is still being waited for");
+  for (let tick = 2; tick <= 6; tick++) await bot.tick();
+  assert.equal(snapshots.length, 1, "no retry before the in-game recheck");
+  await bot.tick();
+  assert.equal(snapshots.length, 2, "the first in-game recheck asks again");
+  assert.deepEqual([...snapshots[1]].sort(), ["acct-a", "acct-b", "acct-c", "acct-f"]);
+  // One first read and three retries per player, then the bookkeeping is gone.
+  for (let tick = 0; tick < 30; tick++) await bot.tick();
+  assert.equal(snapshots.length, 1 + 3, "a player is asked at most 1 + 3 times per game");
+  assert.equal(startWatcher(bot).rankStarts.size, 0);
+});
