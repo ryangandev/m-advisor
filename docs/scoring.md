@@ -129,7 +129,7 @@ The 271-character mock report produced 52.6 seconds of Serena audio, so a typica
 ### Timeline moments
 
 When the match-v5 timeline is available, a concrete moment can replace the statistic in the praise or the roast.
-It replaces that one line rather than adding one, so the report does not grow; the openers, closers and phrase choices stay the same.
+It replaces that one line rather than adding one, so the report stays about the same length; the openers, closers and phrase choices stay the same.
 At most one moment is cited for the 特等马 and one for the 没有马, and without a qualifying moment the line is the statistic as before.
 `src/services/matchEvents.ts` extracts the moments and `announcementText.ts` words them.
 On the `MockWin` and `MockLoss` baseline reports, citing timeline moments changed speech from 287 to 283 and from 275 to 281 characters.
